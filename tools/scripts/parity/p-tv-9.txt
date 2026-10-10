@@ -1,0 +1,31 @@
+# G4 parity tour: P-TV-9 previous / next episode buttons on the episode page (S1E2 has both).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+# Search episodes → open S1E2's episode page.
+key up
+key right
+key enter
+wait-screen search
+idle
+type Episode
+wait 600
+idle
+key down
+key right
+key enter
+wait-screen episode
+idle
+shot p-tv-9
+quit

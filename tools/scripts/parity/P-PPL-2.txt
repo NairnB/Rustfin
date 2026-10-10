@@ -1,0 +1,37 @@
+# P-PPL-2 person's films and shows on the server: connect → sign in as viewer → Ember Rising → cast →
+# Ada Quill → the "On this server" grid.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right
+key enter
+wait-screen search
+idle
+type Ember Rising
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key down
+key enter
+wait-screen person
+idle
+key down
+idle
+shot p-ppl-2
+
+quit

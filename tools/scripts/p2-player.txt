@@ -25,20 +25,10 @@ wait 600
 idle
 key down
 key enter
-wait-screen series
+wait-screen show
 idle
 
-# Season 1
-key down
-key enter
-wait-screen season
-idle
-
-# Episode 1 → Play
-key down
-key enter
-wait-screen episode
-idle
+# Play the episode under the pointer (Xvfb parks it on the first episode row, hover-focus wins over keys).
 key enter
 wait-screen player
 wait 3000
@@ -46,12 +36,16 @@ shot player-video
 key down
 shot player-osd
 key back
-wait-screen episode
+wait-screen show
 
-# Back to Season 1, open Episode 3, play, then let it end into the up-next countdown.
+# Back to search, open the Episode 3 page, play, then let it end into the up-next countdown.
 key back
-wait-screen season
-key down
+wait-screen search
+key up
+key backspace 11
+type Episode 3
+wait 600
+idle
 key down
 key enter
 wait-screen episode

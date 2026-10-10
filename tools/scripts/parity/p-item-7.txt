@@ -1,0 +1,32 @@
+# G3 P-ITEM-7 parity tour: the heart (favourite) button on the movie page. Signs in as viewer, opens
+# "Amber Tide", moves focus to the heart button (last in the row) and shoots it. No server write.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 10
+wait 400
+idle
+shot p-item-7
+quit

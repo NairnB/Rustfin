@@ -1,0 +1,10 @@
+# P-AUTH-10 parity tour (G13): the login disclaimer under the form (set on the throwaway server for the run).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+shot p-auth-10
+quit

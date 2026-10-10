@@ -1,0 +1,44 @@
+# G8 parity tour: P-ITEM-18 Media info panel (scrolled to the bottom; path hidden for the viewer).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right
+key enter
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+idle
+wait 1500
+idle
+shot p-item-18
+quit

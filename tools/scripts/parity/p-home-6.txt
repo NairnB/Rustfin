@@ -1,0 +1,57 @@
+# G3 P-HOME-6 parity tour: the Favourites row on Home. Signs in as viewer, opens "Amber Tide", toggles it
+# as a favourite (the heart is the last button), returns Home and shoots the Favourites row, then toggles it
+# back off so the server is left clean.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 10
+key enter
+wait 600
+idle
+key back
+wait-screen search
+key back
+wait-screen home
+idle
+shot p-home-6
+# clean up: re-open the film and toggle the favourite back off
+key up 10
+key left 10
+key right
+key enter
+wait-screen search
+idle
+type amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 10
+key enter
+wait 600
+idle
+quit

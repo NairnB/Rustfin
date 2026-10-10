@@ -1,0 +1,27 @@
+# P-LIB-16 parity tour (G11): Suggestions tab of a movie library (Archive).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key enter
+wait-screen library
+idle
+key up
+key left 10
+key right
+key enter
+wait 1500
+idle
+shot p-lib-16
+quit

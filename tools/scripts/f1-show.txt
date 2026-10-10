@@ -1,0 +1,35 @@
+# F1 show page (R-F1-3): connect → sign in → search "Drift Rebels" → open the show page, screenshot it.
+# Run once per watched state (tools/testserver/watch-state.sh new|mid|newseason|all) and rename show.png after
+# each run (show-new, show-mid, show-newseason, show-all). End with `watch-state.sh new` to leave the server clean.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+
+# Reach Search: Up to the top bar, Right to Search, Enter.
+key up
+key right
+key enter
+wait-screen search
+idle
+
+# search "Drift Rebels" (only the Series matches) and open it.
+type Drift Rebels
+wait 600
+idle
+key down
+key enter
+wait-screen show
+idle
+shot show
+
+quit

@@ -1,0 +1,62 @@
+# F3 render tour: tester (admin) opens "Star Drift - Beacon", sets 0 BBY in the Story year editor, shoots the editor,
+# saves, shoots the item page (facts line "… · 0 BBY"), then the search card, then clears the year again.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Beacon
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+shot f3-before
+key right 5
+key enter
+idle
+shot f3-editor
+key right 2
+key enter
+wait 1500
+idle
+shot f3-item
+key back
+wait-screen search
+key back
+wait-screen home
+idle
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+shot f3-card
+key down 4
+key enter
+wait-screen movie
+idle
+shot f3-reopen
+key right 6
+key enter
+key right 3
+key enter
+wait 1500
+idle
+shot f3-cleared
+quit

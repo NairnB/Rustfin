@@ -1,0 +1,53 @@
+# G3 P-COLL-6 parity tour: the Favourites page (Films / Shows / Episodes / People). Signs in as viewer,
+# toggles "Amber Tide" as a favourite, opens the Favourites page from the Home top bar and shoots the Films
+# group, then opens the film and toggles it back off so the server is left clean.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 10
+key enter
+wait 600
+idle
+key back
+wait-screen search
+key back
+wait-screen home
+idle
+key up 10
+key left 10
+key right 3
+key enter
+wait-screen favourites
+idle
+shot p-coll-6
+# clean up: open the film and toggle the favourite back off
+key enter
+wait-screen movie
+idle
+key right 10
+key enter
+wait 600
+idle
+quit

@@ -1,0 +1,32 @@
+# P-ADM-18 parity tour (A4): streaming limit
+# Signs in as tester (admin), Settings -> Server admin. Read-only: nothing is saved to the server.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right 2
+key enter
+wait-screen settings
+idle
+key right 6
+key down 3
+key enter
+wait-screen admin
+idle
+key down 11
+key enter
+wait-screen playbackstreaming
+wait 1000
+idle
+shot p-adm-18
+quit

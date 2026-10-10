@@ -1,0 +1,30 @@
+# G7 P-LIB-17 parity tour (tab since G11): a movie library's "Collections" tab lists the BoxSets. Signs in as viewer,
+# opens the Archive library, moves to its Collections tab and opens it.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+# Home → first library (Archive) → Collections tab
+key down 20
+key left 20
+key enter
+wait-screen library
+idle
+key up
+key left 10
+key right 3
+idle
+key enter
+wait-screen collections
+idle
+shot p-lib-17
+quit

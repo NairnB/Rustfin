@@ -1,0 +1,36 @@
+# G9 parity tour: P-TV-5 mark season / series watched on the Drift Rebels page (marks season 1, shoots, then restores).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Drift Rebels
+wait 600
+idle
+key down
+key enter
+wait-screen show
+wait 2500
+idle
+key right 3
+key enter
+wait 1500
+idle
+shot p-tv-5
+key enter
+wait 1500
+idle
+quit

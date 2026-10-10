@@ -1,0 +1,41 @@
+# G4 parity tour: P-PLAY-16 previous / next episode in the player OSD (an episode with both neighbours).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+# Search → Night Shift Stories show page.
+key up
+key right
+key enter
+wait-screen search
+idle
+type Night Shift
+wait 600
+idle
+key down
+key enter
+wait-screen show
+idle
+
+# Down to the episode list, down to S1E2, play it.
+key down
+key down
+key enter
+wait-screen player
+wait 3000
+
+# Reveal the OSD (previous + next episode buttons).
+key down
+wait 400
+shot p-play-16
+quit

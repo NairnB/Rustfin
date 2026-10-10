@@ -1,0 +1,35 @@
+# G9 parity tour: P-TV-10 Shuffle on the show page → player with a queue (OSD shows the next episode).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Drift Rebels
+wait 600
+idle
+key down
+key enter
+wait-screen show
+wait 2500
+idle
+key right 2
+key enter
+wait-screen player
+wait 3000
+key down
+wait 400
+shot p-tv-10
+quit

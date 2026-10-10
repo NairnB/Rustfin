@@ -4,15 +4,17 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:-$ROOT/target/shots}; shift || true
-SCRIPTS=("$@"); [ ${#SCRIPTS[@]} -gt 0 ] || SCRIPTS=("$ROOT"/tools/scripts/*.txt)
+SCRIPTS=("$@"); [ ${#SCRIPTS[@]} -gt 0 ] || SCRIPTS=("$ROOT"/tools/scripts/*.txt "$ROOT"/tools/scripts/parity/*.txt)
 mkdir -p "$OUT"; rm -f "$OUT"/*.png "$OUT"/*.log
 cargo build --release -p jf-desktop -q
 fail=0; want=""
 for SCRIPT in "${SCRIPTS[@]}"; do
   n=$(basename "$SCRIPT" .txt); DATA=$(mktemp -d)
+  # optional first line "# args: --screen gallery" → extra app arguments
+  EXTRA=$(head -n1 "$SCRIPT" | sed -n 's/^# args: //p')
   echo "== $n"
   if ! timeout 300 xvfb-run -a -s "-screen 0 1920x1080x24" "$ROOT/target/release/rustfin" --data-dir "$DATA" \
-      --size 1920x1080 --script "$SCRIPT" --shots "$OUT" 2>"$OUT/$n.stderr.log" | tee "$OUT/$n.log"; then
+      --size 1920x1080 $EXTRA --script "$SCRIPT" --shots "$OUT" 2>"$OUT/$n.stderr.log" | tee "$OUT/$n.log"; then
     echo "RENDER FAIL: script $n exited non-zero (see $OUT/$n.stderr.log)"; fail=1
   fi
   rm -rf "$DATA"

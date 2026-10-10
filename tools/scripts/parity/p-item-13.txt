@@ -1,0 +1,29 @@
+# P-ITEM-13 parity tour (G2): cast & crew row of person cards (image or initials, name + role).
+# Signs in as viewer, opens "Star Drift - Ember Rising" (Ada Quill as Captain Vela + director Rowan Pike).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Ember Rising
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+shot p-item-13
+quit

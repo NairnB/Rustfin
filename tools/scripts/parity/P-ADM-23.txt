@@ -1,0 +1,35 @@
+# P-ADM-23 parity tour (A1): scheduled tasks list by category, then a task's triggers. Signs in as
+# tester (admin), opens Settings → Server admin → Scheduled tasks → first task's detail.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right 2
+key enter
+wait-screen settings
+idle
+key right 6
+key down 3
+key enter
+wait-screen admin
+idle
+key down 15
+key enter
+wait-screen tasks
+idle
+shot p-adm-23
+key enter
+wait-screen taskdetail
+idle
+shot p-adm-23-detail
+quit

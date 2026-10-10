@@ -1,0 +1,18 @@
+# P-AUTH-8 parity tour (G13): Change server → Connect lists the saved server above the discovered ones.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+key down
+key down
+key right
+key right
+key enter
+wait-screen connect
+wait 2500
+idle
+shot p-auth-8
+quit

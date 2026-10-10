@@ -44,7 +44,7 @@ fn episode_request_defaults() {
 fn choices_win() {
     let item: Item = fixture("episode_item.json");
     let info: PlaybackInfo = fixture("playbackinfo.json");
-    let o = PlayOptions { from_start: true, audio: Some(3), subtitle: Some(Some(0)) };
+    let o = PlayOptions { from_start: true, audio: Some(3), subtitle: Some(Some(0)), ..Default::default() };
     let r = build(&client(), &item, &info, &o).unwrap();
     assert_eq!((r.start_secs, r.audio, r.subtitle), (0.0, Some(3), Some(0)));
     let off = PlayOptions { subtitle: Some(None), ..o };

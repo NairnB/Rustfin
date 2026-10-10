@@ -9,7 +9,9 @@
 # The word lists below are written with a bracket inside each word (n[a]me) so this file does not match itself.
 set -euo pipefail
 DIR=$1 MODE=$2
-WORDS='n[a]irn|b[r]own|b[y]re|h[a]mestack|f[a]rm|192\.1[6]8\.|/h[o]me/|g[m]ail|h[o]tmail|w[i]llie|n[i]lk'
+# Machine words match as whole words only (letters on either side = part of another word, e.g. ...ByRequest).
+# Portable form (BSD grep on the Mac has no reliable \b): a non-letter or line edge on each side.
+WORDS='n[a]irn|b[r]own|(^|[^a-z])b[y]re([^a-z]|$)|h[a]mestack|(^|[^a-z])f[a]rm([^a-z]|$)|192\.1[6]8\.|/h[o]me/|g[m]ail|h[o]tmail|w[i]llie|n[i]lk'
 TAILNET='(^|[^0-9])1[0]0\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}'   # carrier-grade NAT range (/10), used by tailnets
 HOMEPATH='/h[o]me/n[a]irn|/U[s]ers/n[a]irn'   # the build machine's home (third-party libs carry other CI paths)
 # Exact third-party names in our binaries or Cargo.lock that contain a listed word (each checked by hand):

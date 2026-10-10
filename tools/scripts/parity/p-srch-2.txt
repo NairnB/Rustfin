@@ -1,0 +1,29 @@
+# P-SRCH-2 parity tour (G13): People and Collections groups.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Star Drift
+wait 1200
+idle
+shot p-srch-2-collections
+key backspace 10
+type Ada Quill
+wait 1200
+idle
+shot p-srch-2
+quit

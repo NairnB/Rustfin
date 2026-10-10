@@ -9,9 +9,10 @@ use crate::platform::Key;
 use crate::settings::ServerEntry;
 use std::time::Duration;
 
-const G_FOUND: usize = 0;
-const G_FIELD: usize = 1;
-const G_BUTTON: usize = 2;
+const G_SAVED: usize = 0;
+const G_FOUND: usize = 1;
+const G_FIELD: usize = 2;
+const G_BUTTON: usize = 3;
 
 pub struct Connect {
     address: String,
@@ -58,6 +59,12 @@ impl Screen for Connect {
         match key {
             Key::Enter => {
                 match self.focus.group {
+                    G_SAVED => {
+                        if let Some(s) = cx.settings.servers.get(self.focus.index) {
+                            let a = s.address.clone();
+                            self.connect(cx, a);
+                        }
+                    }
                     G_FOUND => {
                         if let Some(s) = self.found.get(self.focus.index) {
                             let a = s.address.clone();
@@ -77,6 +84,17 @@ impl Screen for Connect {
                     return true;
                 }
                 self.focus = move_focus(&self.groups, self.focus, key);
+                true
+            }
+            // G13 / P-AUTH-8: Info forgets the focused saved server.
+            Key::Info if self.focus.group == G_SAVED => {
+                if self.focus.index < cx.settings.servers.len() {
+                    let gone = cx.settings.servers.remove(self.focus.index);
+                    if cx.settings.last_server.as_deref() == Some(gone.id.as_str()) {
+                        cx.settings.last_server = None;
+                    }
+                    cx.save_settings();
+                }
                 true
             }
             Key::Back => true, // first screen: nothing to go back to
@@ -123,6 +141,7 @@ impl Screen for Connect {
             cx.spawn("discover", || discover(Duration::from_secs(2)));
         }
         let t = cx.theme;
+        let mut saved_xs = vec![];
         let mut found_xs = vec![];
         let mut field_x = vec![];
         let mut button_x = vec![];
@@ -131,6 +150,23 @@ impl Screen for Connect {
             ui.add_space(t.margin * 2.0);
             parts::title(ui, t, "Connect to Jellyfin");
             ui.add_space(t.gap);
+            if !cx.settings.servers.is_empty() {
+                parts::muted(ui, t, "Saved servers  ·  Info to forget one");
+                ui.add_space(t.gap / 2.0);
+                for (i, s) in cx.settings.servers.iter().enumerate() {
+                    let focused = self.focus == Focus { group: G_SAVED, index: i };
+                    let r = parts::button(ui, t, &format!("{}  ·  {}", s.name, s.address), focused, false);
+                    saved_xs.push(r.rect.center().x);
+                    if r.hovered() {
+                        self.focus = Focus { group: G_SAVED, index: i };
+                    }
+                    if r.clicked() {
+                        clicked = Some(s.address.clone());
+                    }
+                    ui.add_space(t.gap / 3.0);
+                }
+                ui.add_space(t.gap / 2.0);
+            }
             if self.searching {
                 parts::muted(ui, t, "Looking for servers on your network…");
             } else if self.found.is_empty() {
@@ -179,6 +215,7 @@ impl Screen for Connect {
             self.connect(cx, a);
         }
         self.groups = vec![
+            Group { len: saved_xs.len(), cols: 1, xs: saved_xs },
             Group { len: self.found.len(), cols: 1, xs: found_xs },
             Group { len: 1, cols: 1, xs: field_x },
             Group { len: 1, cols: 1, xs: button_x },

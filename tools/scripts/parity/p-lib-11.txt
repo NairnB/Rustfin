@@ -1,0 +1,31 @@
+# P-LIB-11 parity tour (G11): Filters… dialog — Trailer and Special features switched on (feature flags).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+key down
+key right
+key enter
+idle
+key down 2
+key enter
+key right
+key enter
+idle
+shot p-lib-11
+quit

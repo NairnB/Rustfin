@@ -1,0 +1,34 @@
+# G7 P-COLL-1 parity tour: the collection page (backdrop, title, overview, Play all, sort, item grid). Signs in as
+# viewer, Archive → Collections → "Star Drift Saga".
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+# Home → first library (Archive) → Collections tab
+key down 20
+key left 20
+key enter
+wait-screen library
+idle
+key up
+key left 10
+key right 3
+idle
+key enter
+wait-screen collections
+idle
+key enter
+wait-screen collection
+wait 800
+idle
+shot p-coll-1
+quit

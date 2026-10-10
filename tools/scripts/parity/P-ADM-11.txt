@@ -1,0 +1,36 @@
+# P-ADM-11 parity tour (A3): library list, scan, add form
+# Signs in as tester (admin), Settings -> Server admin. Read-only: nothing is saved to the server.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right 2
+key enter
+wait-screen settings
+idle
+key right 6
+key down 3
+key enter
+wait-screen admin
+idle
+key down 5
+key enter
+wait-screen libraries
+wait 1500
+idle
+shot p-adm-11
+key enter
+wait-screen libraryadd
+idle
+shot p-adm-11-add
+quit

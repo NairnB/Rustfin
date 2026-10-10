@@ -1,0 +1,30 @@
+# P-ITEM-1 parity tour (G2): the facts line — year · runtime · official rating · community + critic rating.
+# Signs in as viewer, opens "Star Drift - Ember Rising". The film has no ratings, so the shot shows the base
+# facts line only (the rating segments are drawn when present; see parts::facts_line/star).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Ember Rising
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+shot p-item-1
+quit

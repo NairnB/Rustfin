@@ -1,0 +1,39 @@
+# P-ADM-6 parity tour (A2): Add user form (typed but not created).
+# Signs in as tester (admin), Settings -> Server admin -> Users. Read-only: nothing is saved to the server.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right 2
+key enter
+wait-screen settings
+idle
+key right 6
+key down 3
+key enter
+wait-screen admin
+idle
+key down 4
+key enter
+wait-screen users
+idle
+key up
+key enter
+wait-screen useradd
+idle
+type tmp-demo
+key down
+type demo-pass
+wait 200
+shot p-adm-6
+quit

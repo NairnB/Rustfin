@@ -1,0 +1,42 @@
+# G4 parity tour: P-PLAY-19 volume / mute (OSD volume bar, mute button, volume keys).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+# Search → play a film.
+key up
+key right
+key enter
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3000
+
+# Volume down three times (5 % each) → 85 %, then mute.
+key volumedown
+key volumedown
+key volumedown
+wait 400
+shot p-play-19-volume
+key mute
+wait 400
+shot p-play-19-mute
+quit

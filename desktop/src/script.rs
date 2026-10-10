@@ -72,6 +72,14 @@ fn key(s: &str) -> Option<Key> {
         "space" => Key::PlayPause,
         "backspace" => Key::Backspace,
         "info" => Key::Info,
+        "fullscreen" => Key::Fullscreen,
+        "mute" => Key::Mute,
+        "next" => Key::Next,
+        "previous" => Key::Previous,
+        "chapters" => Key::Chapters,
+        "stats" => Key::Stats,
+        "volumeup" => Key::VolumeUp,
+        "volumedown" => Key::VolumeDown,
         _ => return None,
     })
 }

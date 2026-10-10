@@ -1,0 +1,28 @@
+# P-LIB-20 parity tour (G11): Studios tab of the Shows library.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key right 5
+key enter
+wait-screen library
+idle
+key up
+key left 10
+key right 2
+key enter
+wait 1500
+idle
+shot p-lib-20
+quit

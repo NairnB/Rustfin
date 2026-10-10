@@ -1,0 +1,21 @@
+# P-USER-1 parity tour (G12): Account tab — profile picture and password change (current + new + repeat).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right 2
+key enter
+wait-screen settings
+idle
+shot p-user-1
+quit

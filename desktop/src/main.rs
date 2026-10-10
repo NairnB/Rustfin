@@ -44,6 +44,7 @@ struct Args {
     pass: Option<String>,
     audio: Option<i32>,
     sub: Option<Option<i32>>,
+    screen: Option<String>,
 }
 
 fn args() -> Args {
@@ -60,6 +61,7 @@ fn args() -> Args {
         pass: None,
         audio: None,
         sub: None,
+        screen: None,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -106,6 +108,10 @@ fn args() -> Args {
             "--sub" => {
                 let v = if next == "off" { None } else { Some(next.parse().ok()) };
                 a.sub = v;
+                i += 1
+            }
+            "--screen" => {
+                a.screen = Some(next);
                 i += 1
             }
             _ => {}
@@ -210,7 +216,7 @@ fn playtest_worker(
         .find(|e| e.parent_index_number == Some(1) && e.index_number == Some(1))
         .ok_or_else(|| "S01E01 not found".to_string())?;
     let info = client.playback_info(&ep.id).map_err(|e| e.to_string())?;
-    let opts = PlayOptions { from_start: true, audio, subtitle: sub };
+    let opts = PlayOptions { from_start: true, audio, subtitle: sub, ..Default::default() };
     let mut req = jf_core::playreq::build(&client, &ep, &info, &opts).ok_or_else(|| "no media source".to_string())?;
     // Resume check: JF_PLAYTEST_START=<secs> starts mid-file like a resume would.
     if let Some(s) = std::env::var("JF_PLAYTEST_START").ok().and_then(|v| v.parse().ok()) {
@@ -289,6 +295,11 @@ impl Shell {
                 keys.push(k);
             }
         }
+        // Remote-style keys win over a resting mouse: after a key press egui forgets the pointer until the mouse
+        // really moves (winit then sends CursorMoved again), so hover can't keep pulling focus back.
+        if !keys.is_empty() {
+            g.egui.egui_winit.egui_input_mut().events.push(egui::Event::PointerGone);
+        }
         unsafe {
             use glow::HasContext;
             g.gl.clear_color(0.0, 0.0, 0.0, 1.0);
@@ -299,11 +310,20 @@ impl Shell {
             self.player.draw_video(size.width, size.height);
         }
         let ppp = (size.height as f32 / 1080.0).max(0.75); // R-THEME-3
-        let (app, player) = (&mut self.app, &mut self.player);
-        g.egui.run(&g.window, |ctx| {
-            ctx.set_pixels_per_point(ppp);
-            app.frame(ctx, player, &keys);
-        });
+        {
+            let (app, player) = (&mut self.app, &mut self.player);
+            g.egui.run(&g.window, |ctx| {
+                ctx.set_pixels_per_point(ppp);
+                app.frame(ctx, player, &keys);
+            });
+        }
+        // G4 / P-PLAY-18: apply the window request the player screen made last frame.
+        if let Some(fs) = self.app.take_shell_requests().fullscreen {
+            let want = if fs { Some(winit::window::Fullscreen::Borderless(None)) } else { None };
+            if g.window.fullscreen() != want {
+                g.window.set_fullscreen(want);
+            }
+        }
         g.egui.paint(&g.window);
         if self.first_frame {
             self.first_frame = false;
@@ -410,7 +430,18 @@ fn map_key(k: &WKey, typing: bool) -> Option<Key> {
         WKey::Named(NamedKey::Backspace) if !typing => Key::Back,
         WKey::Named(NamedKey::Space) if !typing => Key::PlayPause,
         WKey::Named(NamedKey::MediaPlayPause) => Key::PlayPause,
-        WKey::Character(c) if !typing && c.as_str() == "i" => Key::Info,
+        WKey::Character(c) if !typing => match c.as_str() {
+            "i" => Key::Info,
+            "f" => Key::Fullscreen,
+            "m" => Key::Mute,
+            "n" => Key::Next,
+            "p" => Key::Previous,
+            "c" => Key::Chapters,
+            "s" => Key::Stats,
+            "+" | "=" => Key::VolumeUp,
+            "-" => Key::VolumeDown,
+            _ => return None,
+        },
         _ => return None,
     })
 }
@@ -464,7 +495,10 @@ fn main() {
     let store = Arc::new(FileStorage::new(dir).expect("data dir"));
     let host =
         std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "Desktop".into());
-    let app = App::new(store, AppOptions { default_server: a.server.clone(), device_name: host });
+    let app = App::new(
+        store,
+        AppOptions { default_server: a.server.clone(), device_name: host, start_screen: a.screen.clone() },
+    );
     let runner = a.script.as_ref().map(|p| {
         let src = std::fs::read_to_string(p).expect("script");
         script::Runner::new(script::parse(&src).unwrap_or_else(|e| panic!("{e}")), started)

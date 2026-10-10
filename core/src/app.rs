@@ -56,6 +56,10 @@ pub struct Cx<'a> {
     pub images: &'a mut Images,
     pub player: &'a mut dyn Player,
     pub opts: &'a AppOptions,
+    /// R-TAG-6: true once the signed-in user is known to be a server admin (false until known).
+    pub admin: bool,
+    /// Requests to the window (fullscreen…), read by the shell after the frame.
+    pub shell: &'a mut crate::platform::ShellRequests,
     /// Seconds since the app started (for timers: debounce, OSD hide, countdowns).
     pub now: f64,
     pub(crate) screen_id: u64,
@@ -110,6 +114,8 @@ pub struct AppOptions {
     pub default_server: Option<String>,
     /// Shown to the server as Device="…" (R-API-1).
     pub device_name: String,
+    /// A screen to open on top after the sign-in state is decided (`--screen`), e.g. "gallery".
+    pub start_screen: Option<String>,
 }
 
 fn device_info(s: &Settings, o: &AppOptions) -> DeviceInfo {
@@ -119,6 +125,10 @@ fn device_info(s: &Settings, o: &AppOptions) -> DeviceInfo {
         version: env!("CARGO_PKG_VERSION").into(),
     }
 }
+
+/// Screen id reserved for the admin check result (real screen ids start at 1).
+const ADMIN_SCREEN: u64 = 0;
+const ADMIN_TAG: &str = "admin";
 
 pub struct App {
     pub theme: Theme,
@@ -133,6 +143,8 @@ pub struct App {
     started: std::time::Instant,
     themed: bool,
     client_key: Option<(String, Option<String>)>,
+    admin: bool,
+    shell: crate::platform::ShellRequests,
 }
 
 impl App {
@@ -156,6 +168,8 @@ impl App {
             started: std::time::Instant::now(),
             themed: false,
             client_key: None,
+            admin: false,
+            shell: Default::default(),
         };
         let first: Box<dyn Screen> = match app.settings.last().cloned() {
             Some(e) if e.session.is_some() => {
@@ -171,6 +185,9 @@ impl App {
             None => ui::connect::screen(app.opts.default_server.clone()),
         };
         app.push(first);
+        if app.opts.start_screen.as_deref() == Some("gallery") {
+            app.push(ui::gallery::screen());
+        }
         app
     }
 
@@ -181,6 +198,11 @@ impl App {
     fn push(&mut self, s: Box<dyn Screen>) {
         self.stack.push((self.next_id, s));
         self.next_id += 1;
+    }
+
+    /// Window requests made during the last frame (taken: the next frame starts empty).
+    pub fn take_shell_requests(&mut self) -> crate::platform::ShellRequests {
+        std::mem::take(&mut self.shell)
     }
 
     pub fn screen_name(&self) -> &'static str {
@@ -207,6 +229,19 @@ impl App {
         let mut nav = vec![];
         let now = self.now();
         let done = self.tasks.drain();
+        let done: Vec<_> = done
+            .into_iter()
+            .filter_map(|d| {
+                if d.screen == ADMIN_SCREEN && d.tag == ADMIN_TAG {
+                    if let Ok(b) = d.payload.downcast::<bool>() {
+                        self.admin = *b;
+                    }
+                    None
+                } else {
+                    Some(d)
+                }
+            })
+            .collect();
         let Some((top_id, _)) = self.stack.last() else { return };
         let top_id = *top_id;
         {
@@ -220,6 +255,8 @@ impl App {
                 images: &mut self.images,
                 player,
                 opts: &self.opts,
+                admin: self.admin,
+                shell: &mut self.shell,
                 now,
                 screen_id: *id,
                 nav: &mut nav,
@@ -252,6 +289,10 @@ impl App {
         if key != self.client_key {
             self.client_key = key;
             self.images.set_client(self.client.clone());
+            self.admin = false;
+            if let Some(c) = self.client.clone() {
+                self.tasks.spawn(ADMIN_SCREEN, ADMIN_TAG, move || c.is_admin().unwrap_or(false));
+            }
         }
     }
 
@@ -290,6 +331,8 @@ impl App {
                 images: &mut self.images,
                 player,
                 opts: &self.opts,
+                admin: self.admin,
+                shell: &mut self.shell,
                 now,
                 screen_id: *id,
                 nav: &mut nav,

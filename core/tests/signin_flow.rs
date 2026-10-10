@@ -30,7 +30,10 @@ fn sign_in_flow_remembers_session() {
     let store = Arc::new(MemStorage::default());
     let ctx = egui::Context::default();
     let mut player = NullPlayer::default();
-    let mut app = App::new(store.clone(), AppOptions { default_server: None, device_name: "flow-test".into() });
+    let mut app = App::new(
+        store.clone(),
+        AppOptions { default_server: None, device_name: "flow-test".into(), start_screen: None },
+    );
 
     // Render the connect screen and let the address field take focus (before discovery finishes).
     for _ in 0..5 {

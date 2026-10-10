@@ -1,11 +1,121 @@
 //! Saved servers and sessions (SPEC §6, R-SET-*). Stored as `settings.json` through `Storage`.
 //! Signatures fixed by the lead; bodies are packet C2.
-use crate::api::Session;
-use crate::platform::Storage;
+use crate::api::{ExtraFilters, Filters, LibraryQuery, SegmentKind, Session, SortBy};
+use crate::platform::{Storage, SubStyle};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub const SETTINGS_KEY: &str = "settings.json";
+
+/// A Home row the user can reorder and hide (G12, P-HOME-5). "Latest" expands to one row per video library.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HomeSection {
+    Continue,
+    NextUp,
+    Favourites,
+    Latest,
+    #[default]
+    Libraries,
+}
+
+impl HomeSection {
+    pub const ALL: [HomeSection; 5] = [
+        HomeSection::Continue,
+        HomeSection::NextUp,
+        HomeSection::Favourites,
+        HomeSection::Latest,
+        HomeSection::Libraries,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HomeSection::Continue => "Continue watching",
+            HomeSection::NextUp => "Next up",
+            HomeSection::Favourites => "Favourites",
+            HomeSection::Latest => "Latest per library",
+            HomeSection::Libraries => "Libraries",
+        }
+    }
+
+    /// The default order: Continue, Next up, Favourites, Latest, Libraries (P-USER-3 / P-HOME-5).
+    pub fn default_order() -> Vec<HomeSection> {
+        HomeSection::ALL.to_vec()
+    }
+}
+
+/// How dates are shown (P-USER-2). Stored in settings; applied to premiere/birth dates.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DateFormat {
+    /// "2026-10-10"
+    #[default]
+    Iso,
+    /// "10/10/2026"
+    Us,
+    /// "10 Oct 2026"
+    Long,
+}
+
+impl DateFormat {
+    pub const ALL: [DateFormat; 3] = [DateFormat::Iso, DateFormat::Us, DateFormat::Long];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DateFormat::Iso => "2026-10-10",
+            DateFormat::Us => "10/10/2026",
+            DateFormat::Long => "10 Oct 2026",
+        }
+    }
+
+    /// Formats an ISO date (the leading `YYYY-MM-DD` part) in this style; anything else is left as-is.
+    pub fn format(self, iso: &str) -> String {
+        let Some((y, m, d)) = parse_iso_date(iso) else {
+            return iso.to_string();
+        };
+        match self {
+            DateFormat::Iso => format!("{y:04}-{m:02}-{d:02}"),
+            DateFormat::Us => format!("{d:02}/{m:02}/{y:04}"),
+            DateFormat::Long => format!("{d:02} {} {y:04}", month_name(m)),
+        }
+    }
+}
+
+/// The first `YYYY-MM-DD` in `s`, as (y, m, d), or None if the string does not start that way.
+fn parse_iso_date(s: &str) -> Option<(i32, u32, u32)> {
+    let s = s.trim();
+    if s.len() < 10 {
+        return None;
+    }
+    let b = s.as_bytes();
+    let d = |i: usize| b[i].is_ascii_digit().then(|| (b[i] - b'0') as u32);
+    if b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let y = (d(0)? as i32) * 1000 + (d(1)? as i32) * 100 + (d(2)? as i32) * 10 + d(3)? as i32;
+    let m = d(5)? * 10 + d(6)?;
+    let dd = d(8)? * 10 + d(9)?;
+    Some((y, m, dd))
+}
+
+fn month_name(m: u32) -> &'static str {
+    match m {
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        _ => "",
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
@@ -18,7 +128,7 @@ pub struct ServerEntry {
     pub session: Option<Session>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     /// Random v4-style 32-hex id, created once (R-API-1).
@@ -26,6 +136,131 @@ pub struct Settings {
     pub servers: Vec<ServerEntry>,
     /// `id` of the server used last.
     pub last_server: Option<String>,
+    /// TMDB API key typed by the user (R-F5-2); never in the code or the repo.
+    pub tmdb_key: String,
+    /// User subtitle preferences (P-USER-5).
+    pub subtitles: SubPrefs,
+    /// Per-library sort + filters (P-LIB-2..9), remembered across sessions. Keyed by library id.
+    pub library_view: HashMap<String, LibraryView>,
+    // ---- G12 user settings (P-USER-* / P-HOME-5) ----
+    /// F3's switch: show the release year on cards and item pages.
+    pub show_release_year: bool,
+    /// F3's switch: show the story year on cards and item pages.
+    pub show_story_year: bool,
+    /// P-USER-2: how dates are shown.
+    pub date_format: DateFormat,
+    /// P-USER-2: draw backdrops on item / show pages.
+    pub backdrops: bool,
+    /// P-USER-4: preferred audio language (display name; empty = any).
+    pub preferred_audio_language: String,
+    /// P-USER-4: max streaming bitrate in kbps (0 = auto); used by G6.
+    pub max_streaming_bitrate: u32,
+    /// P-USER-4: automatically play the next episode after the up-next countdown.
+    pub auto_play_next: bool,
+    /// P-USER-4: OSD skip-back length (seconds).
+    pub skip_back_seconds: u32,
+    /// P-USER-4: OSD skip-forward length (seconds).
+    pub skip_forward_seconds: u32,
+    /// P-HOME-5: Home sections in display order (Favourites is G3's row).
+    pub home_order: Vec<HomeSection>,
+    /// P-HOME-5: Home sections the user hid.
+    pub home_hidden: Vec<HomeSection>,
+    /// G9 / P-TV-7: list missing (and not yet aired) episodes on a show page. Off by default.
+    pub show_missing_episodes: bool,
+    /// G10 / P-PLAY-11: segment kinds skipped automatically during playback (default none).
+    pub auto_skip: Vec<SegmentKind>,
+}
+
+/// When to show subtitles (P-USER-5). `Default` = the server's default for the item.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubMode {
+    #[default]
+    Default,
+    Always,
+    OnlyForced,
+    None,
+}
+
+/// User subtitle preferences (P-USER-5): mode, preferred language (a Jellyfin 3-letter code, empty = any)
+/// and appearance.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(default)]
+pub struct SubPrefs {
+    pub mode: SubMode,
+    pub language: String,
+    pub style: SubStyle,
+}
+
+/// G11 / P-LIB-14: how a library's items are drawn.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ViewMode {
+    #[default]
+    Posters,
+    Thumbs,
+    List,
+}
+
+impl ViewMode {
+    pub const ALL: [ViewMode; 3] = [ViewMode::Posters, ViewMode::Thumbs, ViewMode::List];
+    /// Menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewMode::Posters => "Posters",
+            ViewMode::Thumbs => "Thumbs",
+            ViewMode::List => "List",
+        }
+    }
+}
+
+/// The remembered sort + filters + view mode for one library (P-LIB-2..14).
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct LibraryView {
+    pub sort: SortBy,
+    pub descending: bool,
+    pub filters: Filters,
+    pub extra: ExtraFilters,
+    pub mode: ViewMode,
+}
+
+impl LibraryView {
+    /// The `LibraryQuery` this view describes.
+    pub fn query(&self) -> LibraryQuery {
+        LibraryQuery { sort: self.sort, descending: self.descending, filters: self.filters, extra: self.extra.clone() }
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            device_id: String::new(),
+            servers: vec![],
+            last_server: None,
+            tmdb_key: String::new(),
+            subtitles: SubPrefs::default(),
+            library_view: HashMap::new(),
+            show_release_year: true,
+            show_story_year: true,
+            date_format: DateFormat::Iso,
+            backdrops: true,
+            preferred_audio_language: String::new(),
+            max_streaming_bitrate: 0,
+            auto_play_next: true,
+            skip_back_seconds: 10,
+            skip_forward_seconds: 30,
+            home_order: HomeSection::default_order(),
+            home_hidden: vec![],
+            show_missing_episodes: false,
+            auto_skip: vec![],
+        }
+    }
+}
+
+impl Settings {
+    /// P-HOME-5: a Home section is shown when it is not in the hidden list.
+    pub fn home_visible(&self, section: HomeSection) -> bool {
+        !self.home_hidden.contains(&section)
+    }
 }
 
 impl Settings {

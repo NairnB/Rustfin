@@ -1,0 +1,28 @@
+# P-LIB-9 parity tour (G1): filter chips — Mixed, "Favourites" chip on → 0 items (no favourites on the server).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+key down
+key down
+key left 20
+key right 3
+key enter
+idle
+shot p-lib-9
+quit

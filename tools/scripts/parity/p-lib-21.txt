@@ -1,0 +1,28 @@
+# P-LIB-21 parity tour (G11): Episodes tab of the Shows library — every episode as a thumb card.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key right 5
+key enter
+wait-screen library
+idle
+key up
+key left 10
+key right 4
+key enter
+wait 2500
+idle
+shot p-lib-21
+quit

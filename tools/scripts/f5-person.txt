@@ -1,0 +1,47 @@
+# F5b person page (R-F5-1/2): connect → sign in → search "Ember Rising" → cast → Ada Quill → person page.
+# Shoots the "On this server" grid and the Acting tab with no TMDB key (the hint, no live TMDB calls).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+
+# Reach Search: Up to the top bar, Right to Search, Enter.
+key up
+key right
+key enter
+wait-screen search
+idle
+
+# search "Ember Rising" (the film) and open it.
+type Ember Rising
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+
+# Down to the Cast row, Enter on Ada Quill (first entry).
+key down
+key enter
+wait-screen person
+idle
+shot person-server
+
+# Acting tab: no key set, so the hint is shown (never a live TMDB call).
+key right
+key enter
+wait 300
+idle
+shot person-acting-nokey
+
+quit

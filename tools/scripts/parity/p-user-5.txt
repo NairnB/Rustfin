@@ -1,0 +1,25 @@
+# G5 parity tour: P-USER-5 subtitle preferences (mode, language, appearance) in Settings.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right 2
+key enter
+wait-screen settings
+idle
+key right 3
+idle
+wait 400
+shot p-user-5
+quit

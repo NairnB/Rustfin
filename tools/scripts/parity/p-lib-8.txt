@@ -1,0 +1,24 @@
+# P-LIB-8 parity tour (G1): ascending/descending toggle — Archive, "Descending" toggle on (Name Z–A).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key enter
+wait-screen library
+idle
+key down
+key enter
+idle
+shot p-lib-8
+quit

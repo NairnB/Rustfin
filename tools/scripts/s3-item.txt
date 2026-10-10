@@ -41,29 +41,31 @@ wait 600
 idle
 key down
 key enter
-wait-screen series
+wait-screen show
 idle
 shot series
 
-# season: Down to the Seasons row, Enter on Season 1
+# season: the show page lists the open season's episodes; the pointer parked mid-screen under Xvfb keeps
+# hover-focus on the first episode row, so the season drop-down cannot be reached by keys. Shoot the list.
 key down
-key enter
-wait-screen season
 idle
 shot season
 
-# episode: Down to Episode 2, Enter
+# episode: the show page opens the player from its list, so reach the episode page by search "Episode 2"
+key back
+wait-screen search
+key up
+key backspace 11
+type Episode 2
+wait 600
+idle
 key down
 key enter
 wait-screen episode
 idle
 shot episode
 
-# back up to search, still showing "Night Shift" results
-key back
-wait-screen season
-key back
-wait-screen series
+# back to search, now showing "Episode 2" results
 key back
 wait-screen search
 idle

@@ -1,0 +1,14 @@
+# args: --screen gallery
+# W0 widget gallery tour: the top widgets, the dropdown open, then the dialog.
+wait-screen gallery
+idle
+shot gallery
+key enter
+idle
+shot gallery-dropdown-open
+key back
+key down 4
+key enter
+idle
+shot gallery-dialog
+quit

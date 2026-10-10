@@ -1,0 +1,35 @@
+# G4 parity tour: P-PLAY-23 keyboard shortcuts — the "Keys" help line (i key).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right
+key enter
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3000
+
+key info
+wait 400
+shot p-play-23
+quit

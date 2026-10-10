@@ -1,0 +1,25 @@
+# P-LIB-5 parity tour (G1): sort by community rating — Archive, Sort dropdown → "Community rating".
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key enter
+wait-screen library
+idle
+key enter
+key down 3
+key enter
+idle
+shot p-lib-5
+quit

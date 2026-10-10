@@ -15,7 +15,7 @@ idle
 shot home
 key down 20
 key left 5
-key right 1
+key right 3
 key enter
 wait-screen library
 idle

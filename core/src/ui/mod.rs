@@ -1,15 +1,24 @@
 //! Screens (SPEC §8). Each module exposes `screen(...) -> Box<dyn Screen>`.
+pub mod admin;
+pub mod admin_actions;
+pub mod collection;
 pub mod connect;
+pub mod favourites;
+pub mod gallery;
 pub mod home;
 pub mod imageload;
 pub mod item;
 pub mod library;
 pub mod parts;
+pub mod person;
 pub mod player;
+pub mod playlists;
 pub mod quickconnect;
 pub mod search;
 pub mod settings_screen;
+pub mod show_page;
 pub mod signin;
+pub mod widgets;
 
 use crate::app::{Cx, Screen};
 use crate::platform::Key;

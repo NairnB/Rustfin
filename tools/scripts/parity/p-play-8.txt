@@ -1,0 +1,45 @@
+# G5 parity tour: P-PLAY-8 subtitle offset / sync (subtitlesync).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right
+key enter
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3000
+
+# Open the Subtitles panel (first right shows the OSD, then three more reach "Subtitles").
+key right 4
+key enter
+wait 400
+shot p-play-8
+
+# Offset +0.1 twice → the value shows 0.2 s.
+key down
+key right
+key enter
+key enter
+wait 400
+shot p-play-8-offset
+quit

@@ -112,6 +112,19 @@ pub struct Item {
     pub genres: Vec<String>,
     /// R-TAG-5: server tags (Rustfin's own start with `rf-`).
     pub tags: Vec<String>,
+    pub taglines: Vec<String>,
+    pub critic_rating: Option<f32>,
+    pub studios: Vec<NameId>,
+    pub people: Vec<PersonRef>,
+    pub provider_ids: HashMap<String, String>,
+    pub chapters: Vec<Chapter>,
+    pub is_folder: bool,
+    pub premiere_date: Option<String>,
+    pub date_created: Option<String>,
+    pub local_trailer_count: Option<i32>,
+    pub remote_trailers: Vec<MediaUrl>,
+    pub special_feature_count: Option<i32>,
+    pub part_count: Option<i32>,
     pub series_id: Option<String>,
     pub series_name: Option<String>,
     pub season_id: Option<String>,
@@ -171,4 +184,40 @@ pub enum ImageKind {
     Primary,
     Backdrop,
     Thumb,
+}
+
+#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct NameId {
+    pub name: String,
+    pub id: String,
+}
+
+/// A cast or crew entry on an item (`People`).
+#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct PersonRef {
+    pub name: String,
+    pub id: String,
+    /// Character for actors.
+    pub role: Option<String>,
+    /// "Actor", "Director", "Writer", "Producer", "GuestStar", …
+    #[serde(rename = "Type")]
+    pub kind: String,
+    pub primary_image_tag: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct Chapter {
+    pub start_position_ticks: i64,
+    pub name: Option<String>,
+    pub image_tag: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct MediaUrl {
+    pub url: String,
+    pub name: Option<String>,
 }

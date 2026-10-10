@@ -1,0 +1,30 @@
+# P-ITEM-3 parity tour (G2): genres, studios, directors, writers as short labelled lines.
+# Signs in as viewer, opens "Star Drift - Ember Rising" (director Rowan Pike, no genres/studios/writers).
+# The shot shows "Director  Rowan Pike"; the other lines render when the film has those fields.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Ember Rising
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+shot p-item-3
+quit

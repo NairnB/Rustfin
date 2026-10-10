@@ -5,12 +5,14 @@ use crate::api::{ApiError, Item, Result};
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
+use crate::settings::HomeSection;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum RowId {
     Continue,
     NextUp,
+    Favourites,
     Latest(usize),
     Libraries,
 }
@@ -34,6 +36,7 @@ pub struct Home {
     verify: bool,
     resume: Option<Result<Vec<Item>>>,
     next_up: Option<Result<Vec<Item>>>,
+    favourites: Option<Result<Vec<Item>>>,
     views: Option<Result<Vec<Item>>>,
     latest: HashMap<String, Result<Vec<Item>>>,
     video_views: Vec<Item>,
@@ -50,6 +53,7 @@ pub fn screen(verify_session: bool) -> Box<dyn Screen> {
         verify: verify_session,
         resume: None,
         next_up: None,
+        favourites: None,
         views: None,
         latest: HashMap::new(),
         video_views: vec![],
@@ -77,6 +81,8 @@ impl Home {
         let client = cx.api();
         cx.spawn("next_up", move || client.next_up(20));
         let client = cx.api();
+        cx.spawn("favourites", move || client.favourites("Movie,Series"));
+        let client = cx.api();
         cx.spawn("views", move || client.views());
         if self.verify {
             let client = cx.api();
@@ -87,6 +93,7 @@ impl Home {
     fn reload(&mut self, cx: &Cx) {
         self.resume = None;
         self.next_up = None;
+        self.favourites = None;
         self.views = None;
         self.latest.clear();
         self.video_views.clear();
@@ -94,6 +101,8 @@ impl Home {
         cx.spawn("resume", move || client.resume(20));
         let client = cx.api();
         cx.spawn("next_up", move || client.next_up(20));
+        let client = cx.api();
+        cx.spawn("favourites", move || client.favourites("Movie,Series"));
         let client = cx.api();
         cx.spawn("views", move || client.views());
     }
@@ -127,6 +136,11 @@ impl Home {
                 let client = cx.api();
                 cx.spawn("next_up", move || client.next_up(20));
             }
+            RowId::Favourites => {
+                self.favourites = None;
+                let client = cx.api();
+                cx.spawn("favourites", move || client.favourites("Movie,Series"));
+            }
             RowId::Latest(_) => {
                 self.latest.clear();
                 self.spawn_latest(cx);
@@ -143,6 +157,7 @@ impl Home {
         let items = match id {
             RowId::Continue => self.resume.as_ref()?.as_ref().ok()?,
             RowId::NextUp => self.next_up.as_ref()?.as_ref().ok()?,
+            RowId::Favourites => self.favourites.as_ref()?.as_ref().ok()?,
             RowId::Latest(i) => self.video_views.get(i).and_then(|v| self.latest.get(&v.id))?.as_ref().ok()?,
             RowId::Libraries => self.views.as_ref()?.as_ref().ok()?,
         };
@@ -153,6 +168,7 @@ impl Home {
         match id {
             RowId::Continue => matches!(&self.resume, Some(Err(_))),
             RowId::NextUp => matches!(&self.next_up, Some(Err(_))),
+            RowId::Favourites => matches!(&self.favourites, Some(Err(_))),
             RowId::Latest(i) => {
                 self.video_views.get(i).map(|v| matches!(self.latest.get(&v.id), Some(Err(_)))).unwrap_or(false)
             }
@@ -176,6 +192,8 @@ impl Home {
             Role::Topbar => match self.focus.index {
                 1 => cx.push(super::search::screen()),
                 2 => cx.push(super::settings_screen::screen()),
+                3 => cx.push(super::favourites::screen()),
+                4 => cx.push(super::playlists::list()),
                 _ => {}
             },
             Role::Row(id) => {
@@ -199,10 +217,17 @@ impl Home {
         state: &RowState,
         kind: CardKind,
         focus: Option<usize>,
+        hearts: bool,
     ) -> RowOut {
         let t = cx.theme;
         match state {
-            RowState::Loaded(items) => parts::row(ui, cx, heading, heading, items, kind, focus),
+            RowState::Loaded(items) => {
+                if hearts {
+                    parts::row_favourites(ui, cx, heading, heading, items, kind, focus)
+                } else {
+                    parts::row(ui, cx, heading, heading, items, kind, focus)
+                }
+            }
             RowState::Loading => {
                 ui.add_space(t.row_gap / 2.0);
                 parts::heading(ui, t, heading);
@@ -280,6 +305,10 @@ impl Screen for Home {
                 Err(ApiError::Unauthorized) => cx.signed_out(),
                 r => self.next_up = Some(r),
             },
+            "favourites" => match *payload.downcast::<Result<Vec<Item>>>().unwrap() {
+                Err(ApiError::Unauthorized) => cx.signed_out(),
+                r => self.favourites = Some(r),
+            },
             "views" => match *payload.downcast::<Result<Vec<Item>>>().unwrap() {
                 Err(ApiError::Unauthorized) => cx.signed_out(),
                 Ok(views) => {
@@ -329,10 +358,13 @@ impl Screen for Home {
     fn on_resume(&mut self, cx: &mut Cx) {
         self.resume = None;
         self.next_up = None;
+        self.favourites = None;
         let client = cx.api();
         cx.spawn("resume", move || client.resume(20));
         let client = cx.api();
         cx.spawn("next_up", move || client.next_up(20));
+        let client = cx.api();
+        cx.spawn("favourites", move || client.favourites("Movie,Series"));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
@@ -343,15 +375,46 @@ impl Screen for Home {
         let t = cx.theme;
         let pointer_moved = ui.input(|i| i.pointer.is_moving());
 
-        let mut plan: Vec<(RowId, String, CardKind, RowState)> = vec![
-            (RowId::Continue, "Continue watching".to_string(), CardKind::Thumb, Self::state_of(self.resume.as_ref())),
-            (RowId::NextUp, "Next up".to_string(), CardKind::Thumb, Self::state_of(self.next_up.as_ref())),
-        ];
-        for (i, v) in self.video_views.iter().enumerate() {
-            let st = Self::state_of(self.latest.get(&v.id));
-            plan.push((RowId::Latest(i), format!("Latest {}", v.name), CardKind::Poster, st));
+        // G12 / P-HOME-5: rows follow the user's Home order and hide list.
+        let order = cx.settings.home_order.clone();
+        let mut plan: Vec<(RowId, String, CardKind, RowState)> = vec![];
+        for section in order {
+            if !cx.settings.home_visible(section) {
+                continue;
+            }
+            match section {
+                HomeSection::Continue => plan.push((
+                    RowId::Continue,
+                    "Continue watching".to_string(),
+                    CardKind::Thumb,
+                    Self::state_of(self.resume.as_ref()),
+                )),
+                HomeSection::NextUp => plan.push((
+                    RowId::NextUp,
+                    "Next up".to_string(),
+                    CardKind::Thumb,
+                    Self::state_of(self.next_up.as_ref()),
+                )),
+                HomeSection::Favourites => plan.push((
+                    RowId::Favourites,
+                    "Favourites".to_string(),
+                    CardKind::Poster,
+                    Self::state_of(self.favourites.as_ref()),
+                )),
+                HomeSection::Latest => {
+                    for (i, v) in self.video_views.iter().enumerate() {
+                        let st = Self::state_of(self.latest.get(&v.id));
+                        plan.push((RowId::Latest(i), format!("Latest {}", v.name), CardKind::Poster, st));
+                    }
+                }
+                HomeSection::Libraries => plan.push((
+                    RowId::Libraries,
+                    "Libraries".to_string(),
+                    CardKind::Thumb,
+                    Self::state_of(self.views.as_ref()),
+                )),
+            }
         }
-        plan.push((RowId::Libraries, "Libraries".to_string(), CardKind::Thumb, Self::state_of(self.views.as_ref())));
 
         // Group skeleton: banner? + topbar + one group per visible row, in draw order.
         let topbar_gi = usize::from(self.offline.is_some());
@@ -363,7 +426,7 @@ impl Screen for Home {
             groups.push(Group { len: 2, cols: 2, xs: vec![] });
         }
         roles.push(Role::Topbar);
-        groups.push(Group { len: 3, cols: 3, xs: vec![] });
+        groups.push(Group { len: 5, cols: 5, xs: vec![] });
         let mut gi = topbar_gi + 1;
         for (id, _, _, st) in &plan {
             match st {
@@ -409,6 +472,8 @@ impl Screen for Home {
             match i {
                 1 => cx.push(super::search::screen()),
                 2 => cx.push(super::settings_screen::screen()),
+                3 => cx.push(super::favourites::screen()),
+                4 => cx.push(super::playlists::list()),
                 _ => {}
             }
         }
@@ -474,7 +539,7 @@ impl Screen for Home {
                 }
                 let focus_idx = group_of.get(id).and_then(|g| (*g == focus_group).then_some(focus_index));
                 let top = ui.cursor().top();
-                let out = Self::draw_row(ui, cx, heading, st, *kind, focus_idx);
+                let out = Self::draw_row(ui, cx, heading, st, *kind, focus_idx, *id == RowId::Favourites);
                 let bottom = ui.cursor().top();
                 if focus_idx.is_some() {
                     let rect = egui::Rect::from_min_max(

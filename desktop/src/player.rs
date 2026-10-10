@@ -2,7 +2,7 @@
 //! current. Track mapping (R-PLAY-6) and the remaining polish are packet P1.
 use crate::mpv::{Mpv, END_FILE_REASON_EOF, END_FILE_REASON_ERROR};
 use crate::tracks;
-use jf_core::platform::{PlayRequest, Player, PlayerState, TrackRef};
+use jf_core::platform::{PlayRequest, Player, PlayerState, PlayerStats, SubColour, SubSize, SubStyle, TrackRef};
 
 pub type GetProcFactory = Box<dyn Fn() -> Box<dyn Fn(&std::ffi::CStr) -> *const std::ffi::c_void>>;
 
@@ -174,6 +174,79 @@ impl Player for MpvPlayer {
     fn draw_video(&mut self, w: u32, h: u32) {
         if let Some(m) = &self.mpv {
             m.render(0, w as i32, h as i32);
+        }
+    }
+    /// G4 / P-PLAY-19: mpv `volume` is 0..100; the trait speaks 0.0..1.0.
+    fn set_volume(&mut self, volume: f32) {
+        if let Some(m) = &self.mpv {
+            m.command(&["set", "volume", &format!("{}", (volume.clamp(0.0, 1.0) * 100.0).round())]);
+        }
+    }
+    fn volume(&self) -> f32 {
+        self.mpv
+            .as_ref()
+            .and_then(|m| m.get("volume"))
+            .and_then(|s| s.parse::<f32>().ok())
+            .map(|v| v / 100.0)
+            .unwrap_or(1.0)
+    }
+    fn set_muted(&mut self, muted: bool) {
+        if let Some(m) = &self.mpv {
+            m.command(&["set", "mute", if muted { "yes" } else { "no" }]);
+        }
+    }
+    fn muted(&self) -> bool {
+        self.mpv.as_ref().and_then(|m| m.get("mute")).map(|s| s == "yes").unwrap_or(false)
+    }
+    /// P-PLAY-8: mpv `sub-delay` in seconds.
+    fn set_sub_delay(&mut self, secs: f64) {
+        if let Some(m) = &self.mpv {
+            m.command(&["set", "sub-delay", &format!("{secs:.3}")]);
+        }
+    }
+    /// P-PLAY-9: map `SubStyle` to the mpv subtitle options. The default style leaves every option at its
+    /// mpv default (font-size 55, sub-pos 100, white, outline — no background box).
+    fn set_sub_style(&mut self, style: &SubStyle) {
+        if let Some(m) = &self.mpv {
+            let font_size = match style.size {
+                SubSize::Small => "40",
+                SubSize::Medium => "55",
+                SubSize::Large => "70",
+                SubSize::ExtraLarge => "85",
+            };
+            m.command(&["set", "sub-font-size", font_size]);
+            let pos = style.position.clamp(0.0, 150.0);
+            m.command(&["set", "sub-pos", &format!("{pos}")]);
+            let colour = match style.colour {
+                SubColour::White => "#FFFFFF",
+                SubColour::Yellow => "#FFFF00",
+            };
+            m.command(&["set", "sub-color", colour]);
+            if style.background {
+                m.command(&["set", "sub-back-color", "#000000"]);
+                m.command(&["set", "sub-border-style", "3"]);
+            } else {
+                m.command(&["set", "sub-back-color", "0/0"]);
+                m.command(&["set", "sub-border-style", "0"]);
+            }
+        }
+    }
+    /// P-PLAY-12: mpv `speed`.
+    fn set_speed(&mut self, speed: f64) {
+        if let Some(m) = &self.mpv {
+            m.command(&["set", "speed", &format!("{:.2}", speed.clamp(0.25, 4.0))]);
+        }
+    }
+    /// P-PLAY-20: mpv's own counters.
+    fn stats(&self) -> PlayerStats {
+        let Some(m) = &self.mpv else { return PlayerStats::default() };
+        let num = |name: &str| m.get(name).and_then(|s| s.parse::<f64>().ok());
+        PlayerStats {
+            width: num("width").map(|v| v as u32),
+            height: num("height").map(|v| v as u32),
+            video_bitrate_bps: num("video-bitrate"),
+            dropped_frames: num("frame-drop-count").map(|v| v as i64),
+            buffer_secs: num("demuxer-cache-duration"),
         }
     }
 }

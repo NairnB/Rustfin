@@ -1,0 +1,54 @@
+# G7 P-COLL-3 parity tour: remove a film from a collection. Signs in as tester, adds "Amber Tide" to "Star Drift Saga"
+# (set-up), then Add to… → "Remove from Star Drift Saga" and shoots the page with the collection line gone.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+# Home top bar → Search → "amber" → the film page
+key up
+key right
+key enter
+wait-screen search
+idle
+type amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+# Add to… → Add to collection… → Star Drift Saga
+key right 10
+key left
+key enter
+idle
+key down
+key down 2
+key enter
+wait 600
+idle
+key enter
+wait 1500
+idle
+key right 10
+key left
+key enter
+idle
+key down
+key down 4
+idle
+shot p-coll-3-menu
+key enter
+wait 1500
+idle
+shot p-coll-3
+quit

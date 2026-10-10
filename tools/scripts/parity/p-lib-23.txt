@@ -1,0 +1,28 @@
+# G9 parity tour: P-LIB-23 Play all / Shuffle buttons on a library page (focus on Shuffle), then Play all starts the player.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key enter
+wait-screen library
+idle
+key down 3
+key right
+idle
+shot p-lib-23
+key left
+key enter
+wait-screen player
+wait 2000
+quit

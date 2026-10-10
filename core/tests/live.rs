@@ -93,8 +93,9 @@ fn views_and_library_paging() {
     let Some(u) = url() else { return };
     let c = signed(&u);
     let views = c.views().unwrap();
-    let names: Vec<_> = views.iter().map(|v| v.name.as_str()).collect();
-    assert_eq!(names, ["Archive", "Mixed", "Movies", "Shows"]);
+    // "Playlists" appears while any playlist exists (playlist tests create and delete them).
+    let names: Vec<_> = views.iter().map(|v| v.name.as_str()).filter(|n| *n != "Playlists").collect();
+    assert_eq!(names, ["Archive", "Collections", "Mixed", "Movies", "Shows"]);
     let movies = view(&c, "Movies");
     assert_eq!(movies.collection_type.as_deref(), Some("movies"));
     let p = c.library_page(&movies.id, 0, 100).unwrap();
@@ -246,4 +247,21 @@ fn images_download() {
     let url = c.image_url(m, ImageKind::Primary, image_width_bucket(180.0, 1.0)).unwrap();
     let b = c.get_bytes(&url).unwrap();
     assert_eq!(&b[..2], &[0xff, 0xd8], "jpeg");
+}
+
+// F5b: person pages (R-F5-1, P-PPL-1/2)
+#[test]
+fn person_and_their_items() {
+    let Some(u) = url() else { return };
+    let c = signed(&u);
+    let film = c.search("Ember Rising").unwrap().into_iter().find(|i| i.kind == ItemKind::Movie).unwrap();
+    let full = c.item(&film.id).unwrap();
+    let ada = full.people.iter().find(|p| p.name == "Ada Quill").expect("cast carried on the item");
+    assert_eq!(ada.kind, "Actor");
+    let person = c.person(&ada.id).unwrap();
+    assert_eq!(person.name, "Ada Quill");
+    let items = c.person_items(&ada.id).unwrap();
+    let mut names: Vec<_> = items.iter().map(|i| i.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["Star Drift - Beacon", "Star Drift - Ember Rising", "Star Drift - Shadow Accord"]);
 }

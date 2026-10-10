@@ -1,0 +1,33 @@
+# F4 render tour: tester (admin) → Mixed → Sort "My order" → Info on a card enters move mode, one step right.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+key enter
+key down 20
+key enter
+idle
+key down
+key left 20
+key down
+key down
+key info
+key right
+idle
+shot f4-move
+quit
