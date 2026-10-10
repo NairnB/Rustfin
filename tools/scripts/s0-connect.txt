@@ -1,0 +1,12 @@
+# Render tour (SPEC §11 render): walks every screen against the throwaway server and screenshots each.
+# Each screen packet extends this file with its own section. Shots go to --shots DIR.
+wait-screen connect
+mark connect-shown
+wait 2500          # discovery finishes (2 s)
+idle
+shot connect
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+shot signin

@@ -1,0 +1,8 @@
+libmpv-2.dll is mpv (https://mpv.io) built with FFmpeg (https://ffmpeg.org) and other libraries by the
+mpv-winbuild-cmake project (https://github.com/shinchiro/mpv-winbuild-cmake), release 20260919
+(mpv-dev-x86_64-20260919-git-e76a35ec95.7z, sha256 822edd64fcfbe6cc9d596893de5ed10be01dfda76b87ab03132ee19bede6ff83).
+
+That build is licensed under the GNU General Public License, version 2 or later. The complete corresponding source code
+is available from the project above (its build scripts pin every component's source) and from https://github.com/mpv-player/mpv and https://ffmpeg.org/download.html.
+
+Rustfin itself loads libmpv at run time and is MIT-licensed (see LICENSE.txt).

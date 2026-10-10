@@ -1,0 +1,15 @@
+# Bench part 1: sign in once (saves the session in the data dir).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+quit

@@ -1,0 +1,72 @@
+# Item pages and Search (S3). Walks search → movie → series → season → episode, screenshotting each.
+# Depends on S1 (sign-in) and S2 (home top bar) landing on main before this can run.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+
+# Reach Search: Up to the top bar (S2), Right to Search, Enter.
+key up
+key right
+key enter
+wait-screen search
+idle
+
+# movie: search "Copper" → Copper Sky
+type Copper
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+shot movie
+key back
+wait-screen search
+
+# series: back in the field, clear it, search "Night Shift"
+key up
+key backspace 7
+type Night Shift
+wait 600
+idle
+key down
+key enter
+wait-screen series
+idle
+shot series
+
+# season: Down to the Seasons row, Enter on Season 1
+key down
+key enter
+wait-screen season
+idle
+shot season
+
+# episode: Down to Episode 2, Enter
+key down
+key enter
+wait-screen episode
+idle
+shot episode
+
+# back up to search, still showing "Night Shift" results
+key back
+wait-screen season
+key back
+wait-screen series
+key back
+wait-screen search
+idle
+shot search
+
+quit

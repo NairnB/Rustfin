@@ -1,0 +1,19 @@
+# Render tour (SPEC §11 render): S1 — sign-in and Quick Connect screens.
+wait-screen connect
+wait 2500          # discovery finishes (2 s)
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+shot signin
+key down
+key down
+key left
+key left
+key right
+key enter
+wait-screen quickconnect
+wait 1000
+shot quickconnect
+quit

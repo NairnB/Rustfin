@@ -1,0 +1,15 @@
+# Bench part 2: start with a saved session → Home, then the 500-film library.
+wait-screen home
+idle
+mark home-ready
+mem
+key down 20
+key left 5
+key right 1
+key enter
+wait-screen library
+idle
+mark archive-ready
+bench-keys down 200
+mem
+quit

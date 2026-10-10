@@ -1,0 +1,319 @@
+//! The app: a stack of screens driven one frame at a time by the shell (R-PLAT-4, R-STATE-*).
+use crate::api::{ApiError, Client, DeviceInfo};
+use crate::images::DiskCache;
+use crate::platform::{Key, Player, Storage};
+use crate::settings::Settings;
+use crate::tasks::Pool;
+use crate::theme::Theme;
+use crate::ui::{self, imageload::Images};
+use std::any::Any;
+use std::sync::Arc;
+
+/// One screen. Screens own their data and focus; they talk to the rest of the app through `Cx`.
+pub trait Screen {
+    /// Short stable name ("home", "library", …) used by scripts and logs.
+    fn name(&self) -> &'static str;
+    /// Arrow keys, Enter, Back … for this frame (Back is handled here; return true if consumed,
+    /// otherwise the app pops the screen).
+    fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
+        let _ = (cx, key);
+        false
+    }
+    /// A result of `cx.spawn(tag, …)` for this screen.
+    fn on_done(&mut self, cx: &mut Cx, tag: &'static str, payload: Box<dyn Any + Send>) {
+        let _ = (cx, tag, payload);
+    }
+    /// Draw. Called every frame after keys and results.
+    fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx);
+    /// Player screens: the shell draws video under the UI.
+    fn shows_video(&self) -> bool {
+        false
+    }
+    /// Called when the screen comes back to the top (e.g. refresh resume state after playback).
+    fn on_resume(&mut self, cx: &mut Cx) {
+        let _ = cx;
+    }
+    /// Called when popped or the app quits (player: report stopped).
+    fn on_leave(&mut self, cx: &mut Cx) {
+        let _ = cx;
+    }
+}
+
+pub enum Nav {
+    Push(Box<dyn Screen>),
+    Pop,
+    /// Clear the stack and start from this screen (sign-in done, sign out).
+    Reset(Box<dyn Screen>),
+}
+
+/// What a screen can reach during a frame.
+pub struct Cx<'a> {
+    pub theme: &'a Theme,
+    pub client: &'a mut Option<Client>,
+    pub settings: &'a mut Settings,
+    pub store: &'a Arc<dyn Storage>,
+    pub tasks: &'a Pool,
+    pub images: &'a mut Images,
+    pub player: &'a mut dyn Player,
+    pub opts: &'a AppOptions,
+    /// Seconds since the app started (for timers: debounce, OSD hide, countdowns).
+    pub now: f64,
+    pub(crate) screen_id: u64,
+    pub(crate) nav: &'a mut Vec<Nav>,
+}
+
+impl Cx<'_> {
+    pub fn push(&mut self, s: Box<dyn Screen>) {
+        self.nav.push(Nav::Push(s));
+    }
+    pub fn pop(&mut self) {
+        self.nav.push(Nav::Pop);
+    }
+    pub fn reset(&mut self, s: Box<dyn Screen>) {
+        self.nav.push(Nav::Reset(s));
+    }
+    /// Blocking work on the pool; the result comes back to this screen's `on_done` as `Box<T>`.
+    pub fn spawn<T: Send + 'static>(&self, tag: &'static str, f: impl FnOnce() -> T + Send + 'static) {
+        self.tasks.spawn(self.screen_id, tag, f);
+    }
+    /// Signed-in client (screens past sign-in can rely on it).
+    pub fn api(&self) -> Client {
+        self.client.clone().expect("signed in")
+    }
+    pub fn device(&self) -> DeviceInfo {
+        device_info(self.settings, self.opts)
+    }
+    pub fn save_settings(&self) {
+        let _ = self.settings.save(self.store.as_ref());
+    }
+    /// R-API-5: any screen that gets `Unauthorized` calls this → back to sign-in for the same server.
+    pub fn signed_out(&mut self) {
+        if let Some(c) = self.client.as_mut() {
+            c.session = None;
+        }
+        if let Some(id) = self.settings.last_server.clone() {
+            self.settings.forget_session(&id);
+            self.save_settings();
+        }
+        let c = self.client.clone();
+        if let Some(c) = c {
+            self.reset(ui::signin::screen(c, Some(ApiError::Unauthorized.to_string())));
+        } else {
+            self.reset(ui::connect::screen(None));
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AppOptions {
+    /// Pre-filled server address on the Connect screen (R-SET-3).
+    pub default_server: Option<String>,
+    /// Shown to the server as Device="…" (R-API-1).
+    pub device_name: String,
+}
+
+fn device_info(s: &Settings, o: &AppOptions) -> DeviceInfo {
+    DeviceInfo {
+        name: if o.device_name.is_empty() { "Desktop".into() } else { o.device_name.clone() },
+        id: s.device_id.clone(),
+        version: env!("CARGO_PKG_VERSION").into(),
+    }
+}
+
+pub struct App {
+    pub theme: Theme,
+    pub opts: AppOptions,
+    client: Option<Client>,
+    settings: Settings,
+    store: Arc<dyn Storage>,
+    tasks: Pool,
+    pub images: Images,
+    stack: Vec<(u64, Box<dyn Screen>)>,
+    next_id: u64,
+    started: std::time::Instant,
+    themed: bool,
+    client_key: Option<(String, Option<String>)>,
+}
+
+impl App {
+    /// R-SET-2: a saved session opens Home (checked in the background); otherwise Connect.
+    pub fn new(store: Arc<dyn Storage>, opts: AppOptions) -> App {
+        let settings = Settings::load(store.as_ref());
+        if store.read(crate::settings::SETTINGS_KEY).is_none() {
+            let _ = settings.save(store.as_ref());
+        }
+        let disk = DiskCache::new(store.cache_dir().join("img"), 500 << 20).ok();
+        let mut app = App {
+            theme: Theme::placeholder(),
+            opts,
+            client: None,
+            settings,
+            store,
+            tasks: Pool::new(4),
+            images: Images::new(disk),
+            stack: vec![],
+            next_id: 1,
+            started: std::time::Instant::now(),
+            themed: false,
+            client_key: None,
+        };
+        let first: Box<dyn Screen> = match app.settings.last().cloned() {
+            Some(e) if e.session.is_some() => {
+                let c = Client::with_session(&e.address, app.device(), e.session.unwrap());
+                app.client = Some(c);
+                ui::home::screen(true)
+            }
+            Some(e) => {
+                let c = Client::new(&e.address, app.device());
+                app.client = Some(c.clone());
+                ui::signin::screen(c, None)
+            }
+            None => ui::connect::screen(app.opts.default_server.clone()),
+        };
+        app.push(first);
+        app
+    }
+
+    pub fn device(&self) -> DeviceInfo {
+        device_info(&self.settings, &self.opts)
+    }
+
+    fn push(&mut self, s: Box<dyn Screen>) {
+        self.stack.push((self.next_id, s));
+        self.next_id += 1;
+    }
+
+    pub fn screen_name(&self) -> &'static str {
+        self.stack.last().map(|(_, s)| s.name()).unwrap_or("none")
+    }
+    pub fn shows_video(&self) -> bool {
+        self.stack.last().map(|(_, s)| s.shows_video()).unwrap_or(false)
+    }
+    /// No data loads or image loads pending (scripts wait for this before a screenshot).
+    pub fn is_idle(&self) -> bool {
+        self.tasks.pending() == 0 && self.images.pending() == 0
+    }
+    pub fn now(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+
+    /// One frame: results → keys → draw → navigation.
+    pub fn frame(&mut self, ctx: &egui::Context, player: &mut dyn Player, keys: &[Key]) {
+        if !self.themed {
+            self.theme.apply(ctx);
+            self.themed = true;
+        }
+        self.images.begin_frame(ctx);
+        let mut nav = vec![];
+        let now = self.now();
+        let done = self.tasks.drain();
+        let Some((top_id, _)) = self.stack.last() else { return };
+        let top_id = *top_id;
+        {
+            let (id, screen) = self.stack.last_mut().unwrap();
+            let mut cx = Cx {
+                theme: &self.theme,
+                client: &mut self.client,
+                settings: &mut self.settings,
+                store: &self.store,
+                tasks: &self.tasks,
+                images: &mut self.images,
+                player,
+                opts: &self.opts,
+                now,
+                screen_id: *id,
+                nav: &mut nav,
+            };
+            // R-STATE-3: results for screens that are no longer on top are dropped; screens reload in on_resume.
+            for d in done.into_iter().filter(|d| d.screen == top_id) {
+                screen.on_done(&mut cx, d.tag, d.payload);
+            }
+            for &k in keys {
+                if !screen.on_key(&mut cx, k) && k == Key::Back && cx.nav.is_empty() {
+                    cx.pop();
+                }
+            }
+            let theme_bg = cx.theme.bg;
+            let margin = egui::Margin::symmetric(cx.theme.margin as i8, 0);
+            let frame = if screen.shows_video() {
+                egui::Frame::NONE
+            } else {
+                egui::Frame::NONE.fill(theme_bg).inner_margin(margin)
+            };
+            egui::CentralPanel::default().frame(frame).show(ctx, |ui| screen.ui(ui, &mut cx));
+        }
+        self.images.end_frame(ctx);
+        self.client_changed();
+        self.apply_nav(nav, player);
+    }
+
+    fn client_changed(&mut self) {
+        let key = self.client.as_ref().map(|c| (c.base.clone(), c.session.as_ref().map(|s| s.token.clone())));
+        if key != self.client_key {
+            self.client_key = key;
+            self.images.set_client(self.client.clone());
+        }
+    }
+
+    fn apply_nav(&mut self, nav: Vec<Nav>, player: &mut dyn Player) {
+        for n in nav {
+            match n {
+                Nav::Push(s) => self.push(s),
+                Nav::Pop => {
+                    if self.stack.len() > 1 {
+                        self.leave_top(player);
+                        self.stack.pop();
+                        self.resume_top(player);
+                    }
+                }
+                Nav::Reset(s) => {
+                    while !self.stack.is_empty() {
+                        self.leave_top(player);
+                        self.stack.pop();
+                    }
+                    self.push(s);
+                }
+            }
+        }
+    }
+
+    fn with_top(&mut self, player: &mut dyn Player, f: impl FnOnce(&mut dyn Screen, &mut Cx)) {
+        let mut nav = vec![];
+        let now = self.now();
+        if let Some((id, screen)) = self.stack.last_mut() {
+            let mut cx = Cx {
+                theme: &self.theme,
+                client: &mut self.client,
+                settings: &mut self.settings,
+                store: &self.store,
+                tasks: &self.tasks,
+                images: &mut self.images,
+                player,
+                opts: &self.opts,
+                now,
+                screen_id: *id,
+                nav: &mut nav,
+            };
+            f(screen.as_mut(), &mut cx);
+        }
+        // navigation requested from on_leave/on_resume is ignored on purpose (no loops)
+    }
+    fn leave_top(&mut self, player: &mut dyn Player) {
+        self.with_top(player, |s, cx| s.on_leave(cx));
+    }
+    fn resume_top(&mut self, player: &mut dyn Player) {
+        self.with_top(player, |s, cx| s.on_resume(cx));
+    }
+
+    /// Window closing: let every screen clean up (the player reports stopped).
+    pub fn shutdown(&mut self, player: &mut dyn Player) {
+        while !self.stack.is_empty() {
+            self.leave_top(player);
+            self.stack.pop();
+        }
+        let t = std::time::Instant::now();
+        while self.tasks.pending() > 0 && t.elapsed() < std::time::Duration::from_secs(2) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}

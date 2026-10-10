@@ -1,0 +1,23 @@
+[package]
+name = "jf-desktop"
+description = "Rustfin desktop app: window, GL context and libmpv video for Mac and Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rustfin"
+path = "src/main.rs"
+
+[dependencies]
+jf-core = { path = "../core" }
+egui.workspace = true
+egui_glow = { workspace = true, features = ["winit"] }
+egui-winit = { workspace = true, features = ["clipboard", "links"] }
+glow.workspace = true
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+raw-window-handle = "0.6"
+libloading = "0.8"
+image = { workspace = true }

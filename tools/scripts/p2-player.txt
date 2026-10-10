@@ -1,0 +1,65 @@
+# P2 render tour: player screen, OSD and up-next. Depends on S1 (sign-in), S2 (home top bar) and
+# S3 (item pages) landing on main before this can run.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+
+# Reach Search: Up to the top bar (S2), Right to Search, Enter.
+key up
+key right
+key enter
+wait-screen search
+idle
+type Night Shift
+wait 600
+idle
+key down
+key enter
+wait-screen series
+idle
+
+# Season 1
+key down
+key enter
+wait-screen season
+idle
+
+# Episode 1 → Play
+key down
+key enter
+wait-screen episode
+idle
+key enter
+wait-screen player
+wait 3000
+shot player-video
+key down
+shot player-osd
+key back
+wait-screen episode
+
+# Back to Season 1, open Episode 3, play, then let it end into the up-next countdown.
+key back
+wait-screen season
+key down
+key down
+key enter
+wait-screen episode
+idle
+key enter
+wait-screen player
+wait 21000
+shot up-next
+wait 12000
+shot player-next
+quit

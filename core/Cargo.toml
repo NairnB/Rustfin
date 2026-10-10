@@ -1,0 +1,14 @@
+[package]
+name = "jf-core"
+description = "Jellyfin client core: API, state, screens and drawing (no window, no player)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui.workspace = true
+getrandom = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+image.workspace = true

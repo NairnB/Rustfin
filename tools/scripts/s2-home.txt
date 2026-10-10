@@ -1,0 +1,34 @@
+# S2 render tour: connect → sign in → home → library (Movies) → back → library (Archive).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+shot home
+key down 20
+key left 5
+key right 1
+key enter
+wait-screen library
+idle
+shot library-movies
+key back
+wait-screen home
+idle
+key down 20
+key left 5
+key enter
+wait-screen library
+idle
+shot library-archive
+mark archive-open
+bench-keys down 120
+mem
