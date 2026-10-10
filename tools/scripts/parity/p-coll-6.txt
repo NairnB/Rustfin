@@ -27,6 +27,7 @@ key enter
 wait-screen movie
 idle
 key right 10
+key left
 key enter
 wait 600
 idle
@@ -47,6 +48,7 @@ key enter
 wait-screen movie
 idle
 key right 10
+key left
 key enter
 wait 600
 idle

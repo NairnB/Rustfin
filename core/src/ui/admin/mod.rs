@@ -1,10 +1,11 @@
-//! Admin area (packets A1..A4). The home screen (`name() = "admin"`) is a list with sections;
-//! the built screens (Dashboard, Scheduled tasks, Activity) open from it and everything else shows a
-//! "Coming in a later packet" placeholder.
+//! Admin area (packets A1..A5). The home screen (`name() = "admin"`) is a list with sections;
+//! every row opens its own screen.
 pub mod activity;
 pub mod dashboard;
+pub mod item_more;
 pub mod libraries;
 pub mod server;
+pub mod system;
 pub mod tasks;
 pub mod users;
 
@@ -34,7 +35,12 @@ enum Target {
     Resume,
     Streaming,
     Trickplay,
-    Soon,
+    Devices,
+    Plugins,
+    Catalogue,
+    Repositories,
+    Logs,
+    Keys,
 }
 
 /// The single source of the admin home: section heading → rows (label, target). The flattened row order
@@ -68,12 +74,15 @@ const MENU: [(&str, &[(&str, Target)]); 10] = [
             ("Trickplay", Target::Trickplay),
         ],
     ),
-    ("Devices", &[("Devices", Target::Soon)]),
+    ("Devices", &[("Devices", Target::Devices)]),
     ("Activity", &[("Activity", Target::Activity)]),
     ("Scheduled tasks", &[("Scheduled tasks", Target::Tasks)]),
-    ("Plugins", &[("Plugins", Target::Soon)]),
-    ("Logs", &[("Logs", Target::Soon)]),
-    ("API keys", &[("API keys", Target::Soon)]),
+    (
+        "Plugins",
+        &[("Plugins", Target::Plugins), ("Catalogue", Target::Catalogue), ("Repositories", Target::Repositories)],
+    ),
+    ("Logs", &[("Logs", Target::Logs)]),
+    ("API keys", &[("API keys", Target::Keys)]),
 ];
 
 pub struct AdminHome {
@@ -101,7 +110,7 @@ impl AdminHome {
 
     fn activate(&self, idx: usize, cx: &mut Cx) {
         let flat = Self::flat();
-        let Some((label, target)) = flat.get(idx) else { return };
+        let Some((_, target)) = flat.get(idx) else { return };
         match target {
             Target::Dashboard => cx.push(dashboard::screen()),
             Target::Tasks => cx.push(tasks::screen()),
@@ -118,7 +127,12 @@ impl AdminHome {
             Target::Resume => cx.push(server::resume()),
             Target::Streaming => cx.push(server::streaming()),
             Target::Trickplay => cx.push(server::trickplay()),
-            Target::Soon => cx.push(Box::new(Placeholder(label))),
+            Target::Devices => cx.push(system::devices()),
+            Target::Plugins => cx.push(system::plugins()),
+            Target::Catalogue => cx.push(system::catalogue()),
+            Target::Repositories => cx.push(system::repositories()),
+            Target::Logs => cx.push(system::logs()),
+            Target::Keys => cx.push(system::keys()),
         }
     }
 }
@@ -171,19 +185,6 @@ impl Screen for AdminHome {
             self.focus.index = i;
             self.activate(i, cx);
         }
-    }
-}
-
-/// A "not built yet" screen for admin entries that land in a later packet.
-struct Placeholder(&'static str);
-impl Screen for Placeholder {
-    fn name(&self) -> &'static str {
-        self.0
-    }
-    fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
-        ui.add_space(cx.theme.margin);
-        parts::title(ui, cx.theme, self.0);
-        parts::muted(ui, cx.theme, "Coming in a later packet.");
     }
 }
 

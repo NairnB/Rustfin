@@ -28,7 +28,7 @@ wait-screen movie
 idle
 # Add to… → New playlist… → Create (name pre-filled with the film name)
 key right 10
-key left
+key left 2
 key enter
 idle
 key down
@@ -62,7 +62,7 @@ key enter
 wait-screen movie
 idle
 key right 10
-key left
+key left 2
 key enter
 idle
 key down
@@ -103,12 +103,16 @@ key enter
 wait 1500
 idle
 shot p-coll-5-removed
-# clean up: Delete playlist → confirm
+# clean up: Delete playlist → confirm (dialog: Cancel | Delete, focus starts on Cancel). Let each key's frame
+# settle (idle) so focus moves on the redrawn groups.
 key up 10
+idle
 key right
+idle
 key enter
 idle
 key right
+idle
 key enter
 wait 1500
 idle

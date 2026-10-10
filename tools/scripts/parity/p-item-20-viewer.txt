@@ -1,0 +1,34 @@
+# p-item-20-viewer parity tour (A6): More menu as a non-admin: only Copy link. Signs in as viewer.
+# Nothing is saved, merged, split or deleted: every screen is left with Back / Cancel.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Beacon
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 30
+idle
+key enter
+wait-screen more
+idle
+shot p-item-20-viewer
+quit

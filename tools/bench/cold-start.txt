@@ -3,9 +3,11 @@ wait-screen home
 idle
 mark home-ready
 mem
+# Libraries row (last row on Home), first tile = Archive
 key down 20
-key left 5
-key right 1
+idle
+key left 9
+idle
 key enter
 wait-screen library
 idle

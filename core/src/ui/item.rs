@@ -58,6 +58,8 @@ enum Action {
     // G4 (P-ITEM-17): play from a chapter (start position in seconds).
     PlayChapter(f64),
     ToggleFavorite,
+    // A6 (P-ITEM-20): the "More…" screen (edit, identify, refresh, merge / split, copy link, delete).
+    OpenMore,
     // G8 (P-ITEM-8, P-ITEM-11)
     Trailer,
     OpenVersion,
@@ -343,6 +345,7 @@ impl ItemScreen {
         }
         v.push(("Add to…".to_string(), Action::OpenAddTo));
         v.push(("".to_string(), Action::ToggleFavorite));
+        v.push(("More…".to_string(), Action::OpenMore));
         v
     }
 
@@ -798,6 +801,7 @@ impl ItemScreen {
             // G4 (P-ITEM-17)
             Action::PlayChapter(s) => self.play_chapter(cx, s),
             Action::ToggleFavorite => self.toggle_favorite(cx),
+            Action::OpenMore => cx.push(admin_actions::more_screen(self.current().clone(), self.is_admin)),
             Action::OpenAddTo => self.open_add_menu(cx),
             Action::AddPick(a) => self.pick_add(cx, a),
         }

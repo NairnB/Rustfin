@@ -2,6 +2,7 @@
 //! Signatures are fixed by the lead (tests in `core/tests/` depend on them); bodies are packet C1.
 pub mod admin;
 pub mod gen_admin;
+pub mod item_edit;
 pub mod models;
 
 pub use models::*;

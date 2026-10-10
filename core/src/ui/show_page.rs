@@ -166,6 +166,7 @@ impl ShowPage {
         }
         v.push(Hero::Missing);
         v.push(Hero::Heart);
+        v.push(Hero::More);
         v
     }
 
@@ -237,6 +238,7 @@ impl ShowPage {
             Hero::MarkSeries => self.mark(cx, false),
             Hero::Missing => self.toggle_missing(cx),
             Hero::Heart => self.toggle_favorite(cx),
+            Hero::More => cx.push(super::admin_actions::more_screen(self.series.clone(), cx.admin)),
         }
     }
 
@@ -376,6 +378,7 @@ enum Hero {
     MarkSeries,
     Missing,
     Heart,
+    More,
 }
 
 fn seed() -> u64 {
@@ -617,6 +620,7 @@ impl Screen for ShowPage {
                         let fav = self.series.user_data.as_ref().map(|u| u.is_favorite).unwrap_or(false);
                         parts::heart_button(ui, t, fav, focused)
                     }
+                    Hero::More => parts::button(ui, t, "More…", focused, false),
                 };
                 hero_xs.push(r.rect.center().x);
                 if r.hovered() && moving {

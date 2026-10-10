@@ -1,6 +1,7 @@
 //! F2 "Move to section…" and F4 "Position…" admin controls on the item page (R-F2-3, R-F4-2, R-TAG-6).
 //! Draw nothing unless the signed-in user is a server admin; the item page calls these and forwards the result.
-use crate::api::{ApiError, Item, Result};
+use crate::api::item_edit::identify_kind;
+use crate::api::{ApiError, Item, ItemKind, Result};
 use crate::app::Cx;
 use crate::sections::section_of;
 use crate::tags::{with_order, with_section, with_story, Era, RfTags, StoryYear};
@@ -176,4 +177,56 @@ impl StoryEdit {
             }
         }
     }
+}
+
+// ---------- A6: the "More…" menu (P-ITEM-20, P-ADM-27, P-ITEM-12) ----------
+
+/// What a "More…" row does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MoreAction {
+    Edit,
+    Identify,
+    Refresh,
+    Merge,
+    Split,
+    CopyLink,
+    Delete,
+}
+
+/// The rows of the "More…" menu. A non-admin only gets "Copy link"; Identify is for films and shows, Merge for
+/// films, Split only when the item has more than one version.
+pub fn more_entries(kind: &ItemKind, is_admin: bool, sources: usize) -> Vec<(&'static str, MoreAction)> {
+    let mut v = vec![];
+    if is_admin {
+        v.push(("Edit metadata", MoreAction::Edit));
+        if matches!(kind, ItemKind::Movie | ItemKind::Series) {
+            v.push(("Identify", MoreAction::Identify));
+        }
+        v.push(("Refresh metadata", MoreAction::Refresh));
+        if *kind == ItemKind::Movie {
+            v.push(("Merge versions", MoreAction::Merge));
+            if sources > 1 {
+                v.push(("Split versions", MoreAction::Split));
+            }
+        }
+    }
+    v.push(("Copy link", MoreAction::CopyLink));
+    if is_admin {
+        v.push(("Delete", MoreAction::Delete));
+    }
+    v
+}
+
+/// The kind name Identify searches with (`None` = not identifiable).
+pub fn identify_for(kind: &ItemKind) -> Option<&'static str> {
+    identify_kind(match kind {
+        ItemKind::Movie => "Movie",
+        ItemKind::Series => "Series",
+        _ => "",
+    })
+}
+
+/// The "More…" screen for an item (pushed from the item page).
+pub fn more_screen(item: Item, is_admin: bool) -> Box<dyn crate::app::Screen> {
+    super::admin::item_more::screen(item, is_admin)
 }

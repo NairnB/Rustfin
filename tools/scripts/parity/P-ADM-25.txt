@@ -1,0 +1,42 @@
+# P-ADM-25 parity tour (A5): logs list and one log. Signs in as tester (admin), Settings -> Server admin. Read-only walk.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right 2
+key enter
+wait-screen settings
+idle
+key right 6
+key down 3
+key enter
+wait-screen admin
+idle
+key down 19
+key enter
+wait-screen logs
+wait 1500
+idle
+shot p-adm-25
+key enter
+wait-screen logview
+wait 1500
+idle
+shot p-adm-25-view
+key back
+wait-screen logs
+key back
+wait-screen admin
+idle
+key up 19
+quit

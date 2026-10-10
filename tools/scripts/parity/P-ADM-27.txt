@@ -1,0 +1,58 @@
+# P-ADM-27 parity tour (A6): More -> Edit metadata, Identify (no matches on the offline test server), Refresh metadata. Signs in as tester (admin).
+# Nothing is saved, merged, split or deleted: every screen is left with Back / Cancel.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Beacon
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 30
+idle
+key enter
+wait-screen more
+idle
+key enter
+wait-screen metadata-edit
+wait 800
+idle
+shot p-adm-27
+key back
+wait-screen more
+key down
+key enter
+wait-screen identify
+idle
+key down 2
+key enter
+wait 2500
+idle
+shot p-adm-27-identify
+key back
+wait-screen more
+key down 2
+key enter
+wait-screen metadata-refresh
+idle
+shot p-adm-27-refresh
+key back
+wait-screen more
+quit

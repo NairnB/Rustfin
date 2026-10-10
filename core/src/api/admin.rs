@@ -1,7 +1,8 @@
 //! Server-administration endpoints for packets A1 (P-ADM-1, P-ADM-2, P-ADM-22, P-ADM-23), A2 (P-ADM-5..10) and A3 (P-ADM-11..15). Every call here
 //! is admin-only on the server: a non-admin (or signed-out) caller gets `ApiError::Forbidden` / `Unauthorized`.
 use super::gen_admin::{
-    ActivityLogEntry, LibraryOptions, SessionInfoDto, SystemInfo, TaskInfo, UserDto, UserPolicy, VirtualFolderInfo,
+    ActivityLogEntry, AuthenticationInfo, DeviceInfoDto, LibraryOptions, LogFile, PackageInfo, PluginInfo,
+    RepositoryInfo, SessionInfoDto, SystemInfo, TaskInfo, UserDto, UserPolicy, VirtualFolderInfo,
 };
 use super::{url_encode, Client, Result};
 use serde::{Deserialize, Serialize};
@@ -313,5 +314,123 @@ impl Client {
     /// P-ADM-15: replace a named configuration section.
     pub fn set_named_configuration(&self, key: &str, config: &serde_json::Value) -> Result<()> {
         self.post_ok(&format!("/System/Configuration/{key}"), config)
+    }
+}
+
+/// A5: `{ "Items": [...] }` as the devices and API-key lists answer.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct Items<T> {
+    items: Vec<T>,
+}
+
+/// P-ADM-26: a key shown as bullets plus its last four characters. The full key never reaches a screen or a log.
+pub fn mask_key(key: &str) -> String {
+    let n = key.chars().count();
+    if n < 8 {
+        return "••••".to_string();
+    }
+    let tail: String = key.chars().skip(n - 4).collect();
+    format!("••••••••{tail}")
+}
+
+/// P-ADM-25: the last `max` lines of a log, newest (last written) first.
+pub fn newest_first(text: &str, max: usize) -> Vec<String> {
+    text.lines().rev().take(max).map(str::to_string).collect()
+}
+
+impl Client {
+    /// P-ADM-21: `GET /Devices` (every device that has signed in).
+    pub fn devices(&self) -> Result<Vec<DeviceInfoDto>> {
+        Ok(self.get_json::<Items<DeviceInfoDto>>("/Devices")?.items)
+    }
+
+    /// P-ADM-21: `POST /Devices/Options?id=` with the custom name (empty = back to the device's own name).
+    pub fn rename_device(&self, id: &str, name: &str) -> Result<()> {
+        self.post_ok(&format!("/Devices/Options?id={}", url_encode(id)), &serde_json::json!({ "CustomName": name }))
+    }
+
+    /// P-ADM-21: `DELETE /Devices?id=` (signs that device out). The screen never offers this for the current device.
+    pub fn delete_device(&self, id: &str) -> Result<()> {
+        self.delete_ok(&format!("/Devices?id={}", url_encode(id)))
+    }
+
+    /// P-ADM-26: `GET /Auth/Keys`.
+    pub fn api_keys(&self) -> Result<Vec<AuthenticationInfo>> {
+        Ok(self.get_json::<Items<AuthenticationInfo>>("/Auth/Keys")?.items)
+    }
+
+    /// P-ADM-26: `POST /Auth/Keys?app=` makes a key for that app name.
+    pub fn create_api_key(&self, app: &str) -> Result<()> {
+        self.post_empty_ok(&format!("/Auth/Keys?app={}", url_encode(app)))
+    }
+
+    /// P-ADM-26: `DELETE /Auth/Keys/{key}`.
+    pub fn revoke_api_key(&self, key: &str) -> Result<()> {
+        self.delete_ok(&format!("/Auth/Keys/{}", url_encode(key)))
+    }
+
+    /// P-ADM-25: `GET /System/Logs` (name, size, dates).
+    pub fn log_files(&self) -> Result<Vec<LogFile>> {
+        self.get_json("/System/Logs")
+    }
+
+    /// P-ADM-25: `GET /System/Logs/Log?name=` — the whole file as text.
+    pub fn log_text(&self, name: &str) -> Result<String> {
+        let mut resp = self
+            .agent
+            .get(&self.url(&format!("/System/Logs/Log?name={}", url_encode(name))))
+            .header("Authorization", &self.auth_header())
+            .call()
+            .map_err(super::net)?;
+        super::check_status(&mut resp)?;
+        let bytes = resp.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(super::net)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// P-ADM-24: `GET /Plugins` (installed, with version and status).
+    pub fn plugins(&self) -> Result<Vec<PluginInfo>> {
+        self.get_json("/Plugins")
+    }
+
+    /// P-ADM-24: switch an installed plugin on (`POST /Plugins/{id}/{version}/Enable`); the server may need a restart.
+    pub fn enable_plugin(&self, id: &str, version: &str) -> Result<()> {
+        self.post_empty_ok(&format!("/Plugins/{}/{}/Enable", url_encode(id), url_encode(version)))
+    }
+
+    /// P-ADM-24: switch an installed plugin off (`POST /Plugins/{id}/{version}/Disable`).
+    pub fn disable_plugin(&self, id: &str, version: &str) -> Result<()> {
+        self.post_empty_ok(&format!("/Plugins/{}/{}/Disable", url_encode(id), url_encode(version)))
+    }
+
+    /// P-ADM-24: remove an installed plugin (`DELETE /Plugins/{id}/{version}`).
+    pub fn uninstall_plugin(&self, id: &str, version: &str) -> Result<()> {
+        self.delete_ok(&format!("/Plugins/{}/{}", url_encode(id), url_encode(version)))
+    }
+
+    /// P-ADM-24: `GET /Packages` — the catalogue from the server's repositories.
+    pub fn packages(&self) -> Result<Vec<PackageInfo>> {
+        self.get_json("/Packages")
+    }
+
+    /// P-ADM-24: `POST /Packages/Installed/{name}` for one catalogue version.
+    pub fn install_package(&self, name: &str, guid: &str, version: &str, repository_url: &str) -> Result<()> {
+        self.post_empty_ok(&format!(
+            "/Packages/Installed/{}?assemblyGuid={}&version={}&repositoryUrl={}",
+            url_encode(name),
+            url_encode(guid),
+            url_encode(version),
+            url_encode(repository_url)
+        ))
+    }
+
+    /// P-ADM-24: `GET /Repositories`.
+    pub fn repositories(&self) -> Result<Vec<RepositoryInfo>> {
+        self.get_json("/Repositories")
+    }
+
+    /// P-ADM-24: `POST /Repositories` replaces the whole list (add or remove = edit the list and post it back).
+    pub fn set_repositories(&self, repos: &[RepositoryInfo]) -> Result<()> {
+        self.post_ok("/Repositories", &repos)
     }
 }

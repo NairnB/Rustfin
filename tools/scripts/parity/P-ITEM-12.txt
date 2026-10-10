@@ -1,0 +1,41 @@
+# P-ITEM-12 parity tour (A6): More -> Merge versions (the film has no other copies, so the list says so). Split shows only for a film with several versions. Signs in as tester (admin).
+# Nothing is saved, merged, split or deleted: every screen is left with Back / Cancel.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type Beacon
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 30
+idle
+key enter
+wait-screen more
+idle
+key down 3
+key enter
+wait-screen merge-versions
+wait 1000
+idle
+shot p-item-12
+key back
+wait-screen more
+quit

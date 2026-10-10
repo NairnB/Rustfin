@@ -76,7 +76,7 @@ const DAYS: [&str; 10] =
     ["Everyday", "Weekday", "Weekend", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 /// "2026-10-10T17:00:00.0000000Z" → "2026-10-10 17:00".
-fn short_date(iso: &str) -> String {
+pub(super) fn short_date(iso: &str) -> String {
     let mut s: String = iso.chars().take(16).collect();
     if let Some(pos) = s.find('T') {
         s.replace_range(pos..pos + 1, " ");
