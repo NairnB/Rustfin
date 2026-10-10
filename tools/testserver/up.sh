@@ -12,6 +12,7 @@ docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/
 docker volume create jf-media >/dev/null
 docker run --rm -v jf-media:/media -v "$HERE/make-media.sh:/make-media.sh:ro" --entrypoint bash $IMG /make-media.sh
 docker run --rm -v jf-media:/media -v "$HERE/make-bulk.sh:/make-bulk.sh:ro" --entrypoint bash $IMG /make-bulk.sh
+docker run --rm -v jf-media:/media -v "$HERE/make-saga.sh:/make-saga.sh:ro" --entrypoint bash $IMG /make-saga.sh
 if ! docker ps --format '{{.Names}}' | grep -qx $NAME; then
   docker rm -f $NAME >/dev/null 2>&1 || true
   PUB=(); [ "${JF_TEST_PUBLISH:-}" = 1 ] && PUB=(-p 127.0.0.1:8096:8096 -p 127.0.0.1:7359:7359/udp)
@@ -30,8 +31,15 @@ if J http://$NAME:8096/System/Info/Public | grep -q '"StartupWizardCompleted":fa
   A="Authorization: $AUTH, Token=\"$TOK\""
   J -X POST "http://$NAME:8096/Library/VirtualFolders?name=Movies&collectionType=movies&paths=%2Fmedia%2FMovies&refreshLibrary=false" -H "$A" -d '{"LibraryOptions":{"EnableRealtimeMonitor":false}}'
   J -X POST "http://$NAME:8096/Library/VirtualFolders?name=Archive&collectionType=movies&paths=%2Fmedia%2FArchive&refreshLibrary=false" -H "$A" -d '{"LibraryOptions":{"EnableRealtimeMonitor":false}}'
+  J -X POST "http://$NAME:8096/Library/VirtualFolders?name=Mixed&paths=%2Fmedia%2FMixed&refreshLibrary=false" -H "$A" -d '{"LibraryOptions":{"EnableRealtimeMonitor":false}}'
+  J -X POST "http://$NAME:8096/Users/New" -H "$A" -d '{"Name":"viewer","Password":"view-pass-1"}' >/dev/null   # non-admin user
   J -X POST "http://$NAME:8096/Library/VirtualFolders?name=Shows&collectionType=tvshows&paths=%2Fmedia%2FShows&refreshLibrary=true" -H "$A" -d '{"LibraryOptions":{"EnableRealtimeMonitor":false}}'
   J -X POST "http://$NAME:8096/System/Configuration" -H "$A" -d "$(J http://$NAME:8096/System/Configuration -H "$A" | sed 's/"QuickConnectAvailable":false/"QuickConnectAvailable":true/; s/"MinResumeDurationSeconds":[0-9]*/"MinResumeDurationSeconds":1/')" || true
   sleep 20
+  # collection for the feature tests (made from the six "Star Drift - …" films; NFO <set> needs internet metadata)
+  U=$(J http://$NAME:8096/Users/Me -H "$A" | grep -oE '"Id":"[0-9a-f]{32}"' | head -1 | cut -d'"' -f4)
+  IDS=$(J "http://$NAME:8096/Items?userId=$U&Recursive=true&IncludeItemTypes=Movie&searchTerm=Star%20Drift%20-" -H "$A" \
+        | grep -oE '"Name":"Star Drift - [^"]*","ServerId":"[0-9a-f]+","Id":"[0-9a-f]{32}"' | grep -oE '[0-9a-f]{32}"$' | tr -d '"' | paste -sd, -)
+  J -X POST "http://$NAME:8096/Collections?Name=Star%20Drift%20Saga&Ids=$IDS" -H "$A" >/dev/null
 fi
 echo "http://$NAME:8096"

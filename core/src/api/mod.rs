@@ -21,6 +21,8 @@ pub enum ApiError {
     /// R-API-3: server older than 10.8 (carries the version string).
     TooOld(String),
     BadAddress(String),
+    /// R-TAG-6: the server refused a change (HTTP 403): only admins may edit.
+    Forbidden,
 }
 
 impl std::fmt::Display for ApiError {
@@ -33,6 +35,7 @@ impl std::fmt::Display for ApiError {
             ApiError::Decode(e) => write!(f, "Unexpected reply from the server ({e})"),
             ApiError::TooOld(v) => write!(f, "Server version {v} is too old (needs 10.8 or newer)"),
             ApiError::BadAddress(a) => write!(f, "\"{a}\" is not a server address"),
+            ApiError::Forbidden => f.write_str("Only a server admin can change this"),
         }
     }
 }
@@ -571,5 +574,17 @@ impl Client {
             .map_err(net)?;
         check_status(&mut resp)?;
         resp.body_mut().with_config().limit(20 << 20).read_to_vec().map_err(net)
+    }
+
+    /// R-TAG-6: true when the signed-in user is a server administrator (`/Users/Me` → Policy.IsAdministrator).
+    pub fn is_admin(&self) -> Result<bool> {
+        todo!("T1")
+    }
+
+    /// R-TAG-6: re-read the full item, replace its tag list with `edit(current tags)`, post it back; every other
+    /// field unchanged. Returns the new tag list. Non-admin → `ApiError::Forbidden`.
+    pub fn update_tags(&self, item_id: &str, edit: impl FnOnce(&[String]) -> Vec<String>) -> Result<Vec<String>> {
+        let _ = (item_id, edit);
+        todo!("T1")
     }
 }

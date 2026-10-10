@@ -94,7 +94,7 @@ fn views_and_library_paging() {
     let c = signed(&u);
     let views = c.views().unwrap();
     let names: Vec<_> = views.iter().map(|v| v.name.as_str()).collect();
-    assert_eq!(names, ["Archive", "Movies", "Shows"]);
+    assert_eq!(names, ["Archive", "Mixed", "Movies", "Shows"]);
     let movies = view(&c, "Movies");
     assert_eq!(movies.collection_type.as_deref(), Some("movies"));
     let p = c.library_page(&movies.id, 0, 100).unwrap();

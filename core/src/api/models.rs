@@ -110,6 +110,8 @@ pub struct Item {
     pub official_rating: Option<String>,
     pub community_rating: Option<f32>,
     pub genres: Vec<String>,
+    /// R-TAG-5: server tags (Rustfin's own start with `rf-`).
+    pub tags: Vec<String>,
     pub series_id: Option<String>,
     pub series_name: Option<String>,
     pub season_id: Option<String>,
