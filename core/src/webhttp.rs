@@ -151,10 +151,14 @@ impl RequestBuilder {
     pub fn send_json(mut self, body: &impl Serialize) -> Result<http::Response<Body>, Error> {
         let s = serde_json::to_string(body).map_err(|e| Error::Io(e.to_string()))?;
         self.headers.push(("Content-Type".into(), "application/json".into()));
-        self.run(Some(s))
+        self.run(Some(s.into_bytes()))
+    }
+    /// Raw body (the caller sets Content-Type), e.g. the base64 profile picture.
+    pub fn send(self, body: &[u8]) -> Result<http::Response<Body>, Error> {
+        self.run(Some(body.to_vec()))
     }
 
-    fn run(self, body: Option<String>) -> Result<http::Response<Body>, Error> {
+    fn run(self, body: Option<Vec<u8>>) -> Result<http::Response<Body>, Error> {
         let js = |e: wasm_bindgen::JsValue| Error::Io(format!("xhr: {e:?}"));
         let x = XmlHttpRequest::new().map_err(js)?;
         x.open_with_async(self.method, &self.url, false).map_err(js)?;
@@ -168,7 +172,7 @@ impl RequestBuilder {
             x.set_request_header("Cache-Control", "no-cache").map_err(js)?;
         }
         match &body {
-            Some(b) => x.send_with_opt_str(Some(b)).map_err(js)?,
+            Some(b) => x.send_with_opt_u8_array(Some(b)).map_err(js)?,
             None => x.send().map_err(js)?,
         }
         let status = x.status().map_err(js)?;

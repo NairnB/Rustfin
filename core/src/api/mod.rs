@@ -1565,8 +1565,9 @@ pub fn next_up_path(uid: &str, limit: usize, rewatching: bool, cutoff_days: u32,
     path
 }
 
+// crate::time: std's clock panics in the TV web build (wasm32)
 fn now_unix_secs() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    crate::time::SystemTime::now().duration_since(crate::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 /// RR8: the UTC date `days` before Unix time `now_secs`, as `YYYY-MM-DD`.
