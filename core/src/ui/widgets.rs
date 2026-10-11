@@ -290,40 +290,49 @@ fn dropdown_impl(
     }
     let mut menu_rects = vec![r.rect];
     if state.open {
-        ui.add_space(t.gap / 4.0);
+        // UX R10: the menu is a popover anchored under its button (right-aligned for rows), drawn over the page —
+        // the page does not move when it opens.
         let inset = t.bar_inset;
-        let layout =
-            if row { egui::Layout::right_to_left(egui::Align::Min) } else { egui::Layout::top_down(egui::Align::Min) };
-        ui.with_layout(layout, |ui| {
-            egui::Frame::new()
-                .fill(t.menu_fill)
-                .corner_radius(t.menu_radius)
-                .stroke(Stroke::new(1.0, t.bar_stroke))
-                .shadow(t.shadow(1.0))
-                .inner_margin(egui::Margin::same(inset as i8))
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    egui::ScrollArea::vertical()
-                        .id_salt("w0-dropdown-menu")
-                        .max_height(t.menu_max_h)
-                        .auto_shrink([true, true])
-                        .show(ui, |ui| {
-                            for (i, opt) in options.iter().enumerate() {
-                                let item_focused = focused && state.highlighted == i;
-                                let rr = menu_item(ui, t, opt, item_focused, t.dropdown_w - 2.0 * inset);
-                                out.item_xs.push(rr.rect.center().x);
-                                menu_rects.push(rr.rect);
-                                if rr.hovered() {
-                                    out.item_hovered = Some(i);
-                                    state.highlighted = i;
+        let (anchor, pivot) = if row {
+            (r.rect.right_bottom() + vec2(0.0, t.gap / 4.0), egui::Align2::RIGHT_TOP)
+        } else {
+            (r.rect.left_bottom() + vec2(0.0, t.gap / 4.0), egui::Align2::LEFT_TOP)
+        };
+        egui::Area::new(r.id.with("w0-dropdown-popover"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(anchor)
+            .pivot(pivot)
+            .constrain(true)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(t.menu_fill)
+                    .corner_radius(t.menu_radius)
+                    .stroke(Stroke::new(1.0, t.bar_stroke))
+                    .shadow(t.shadow(1.0))
+                    .inner_margin(egui::Margin::same(inset as i8))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        egui::ScrollArea::vertical()
+                            .id_salt("w0-dropdown-menu")
+                            .max_height(t.menu_max_h)
+                            .auto_shrink([true, true])
+                            .show(ui, |ui| {
+                                for (i, opt) in options.iter().enumerate() {
+                                    let item_focused = focused && state.highlighted == i;
+                                    let rr = menu_item(ui, t, opt, item_focused, t.dropdown_w - 2.0 * inset);
+                                    out.item_xs.push(rr.rect.center().x);
+                                    menu_rects.push(rr.rect);
+                                    if rr.hovered() {
+                                        out.item_hovered = Some(i);
+                                        state.highlighted = i;
+                                    }
+                                    if rr.clicked() {
+                                        out.item_clicked = Some(i);
+                                    }
                                 }
-                                if rr.clicked() {
-                                    out.item_clicked = Some(i);
-                                }
-                            }
-                        });
-                });
-        });
+                            });
+                    });
+            });
         if out.item_clicked.is_none() && ui.input(|i| i.pointer.any_click()) {
             if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 if !menu_rects.iter().any(|r| r.contains(pos)) {

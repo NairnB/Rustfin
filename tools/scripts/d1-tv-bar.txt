@@ -1,0 +1,46 @@
+# args: --tv
+# D1 TV bar tour (UX R2, N1): the top pill bar holds Home · the libraries · Search · user; a library tab opens
+# that library; Favourites/Playlists sit in the user menu; when Home scrolls the bar has a dark backing.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up
+idle
+wait 300
+shot tv-bar
+key right 3
+key enter
+wait-screen library
+idle
+wait 300
+shot tv-bar-library
+key back
+wait-screen home
+idle
+key down 4
+idle
+wait 600
+shot tv-bar-scrolled
+key up 20
+key right 10
+key enter
+idle
+wait 300
+shot tv-user-menu
+key enter
+wait-screen favourites
+idle
+shot tv-favourites
+quit

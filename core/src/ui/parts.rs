@@ -557,28 +557,38 @@ pub fn topbar_with_user(
     focused: Option<usize>,
     user: Option<&str>,
 ) -> (RowOut, Option<Rect>) {
-    // The tvOS top bar: a centred translucent pill of segments (Home is the current one), the user inside it
-    // at the right end. On desktop the app shell's sidebar replaces it (docs/DESIGN-appletv.md §4).
+    // D11: Settings lives once, in the user menu (not also as a tab).
+    pill_bar(ui, cx, &["Home", "Search", "Favourites", "Playlists"], 0, focused, user)
+}
+
+/// The tvOS top bar: a centred translucent pill of `labels` (the `current` one brighter), the user (avatar +
+/// name) as the last segment when given. On desktop the app shell's sidebar replaces it (DESIGN-appletv §4).
+/// Returns the segments' xs/hover/click (user = index `labels.len()`) and the user segment's rect.
+pub fn pill_bar(
+    ui: &mut Ui,
+    cx: &mut Cx,
+    labels: &[&str],
+    current: usize,
+    focused: Option<usize>,
+    user: Option<&str>,
+) -> (RowOut, Option<Rect>) {
     let t = cx.theme;
     let mut out = RowOut { clicked: None, hovered: None, xs: vec![] };
-    // D11: Settings lives once, in the user menu (not also as a tab).
-    const BUTTONS: [&str; 5] = ["Home", "Search", "Favourites", "Playlists", ""];
-    const USER: usize = 4;
-    let n = if user.is_some() { 5 } else { 4 };
-
+    let user_i = labels.len();
+    let n = labels.len() + usize::from(user.is_some());
     let area = Rect::from_min_size(ui.cursor().left_top(), vec2(ui.available_width(), t.topbar_h));
     ui.advance_cursor_after_rect(area);
 
     let font = t.font_w(t.body_size, Weight::Medium);
     let seg_h = t.bar_h - 2.0 * t.bar_inset;
     let avatar = seg_h - 2.0 * t.bar_inset;
-    let mut widths = [0.0f32; 5];
+    let mut widths = vec![0.0f32; n];
     for (i, w) in widths.iter_mut().enumerate().take(n) {
-        let label = if i == USER { user.unwrap_or_default() } else { BUTTONS[i] };
+        let label = if i == user_i { user.unwrap_or_default() } else { labels[i] };
         let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), t.text));
         *w = g.size().x
             + 2.0 * t.bar_item_pad
-            + if i == USER { avatar + t.gap / 4.0 - t.bar_item_pad / 2.0 } else { 0.0 };
+            + if i == user_i { avatar + t.gap / 4.0 - t.bar_item_pad / 2.0 } else { 0.0 };
     }
     let total: f32 = widths.iter().take(n).sum::<f32>() + 2.0 * t.bar_inset;
     let bar =
@@ -586,7 +596,7 @@ pub fn topbar_with_user(
     ui.painter().add(t.shadow(0.6).as_shape(bar, t.bar_h / 2.0));
     ui.painter().rect_filled(bar, t.bar_h / 2.0, t.bar_fill);
     ui.painter().rect_stroke(bar, t.bar_h / 2.0, egui::Stroke::new(1.0, t.bar_stroke), egui::StrokeKind::Inside);
-    let mut rects = [Rect::NOTHING; 5];
+    let mut rects = vec![Rect::NOTHING; n];
     let mut x = bar.left() + t.bar_inset;
     for i in 0..n {
         rects[i] = Rect::from_min_size(pos2(x, bar.top() + t.bar_inset), vec2(widths[i], seg_h));
@@ -595,7 +605,7 @@ pub fn topbar_with_user(
     for (i, rect) in rects.iter().take(n).enumerate() {
         let resp = ui.interact(*rect, ui.id().with(("topbar", i)), Sense::click());
         let a = widgets::focus_amount(ui, t, resp.id, focused == Some(i));
-        let rest = if i == 0 {
+        let rest = if i == current {
             t.glass_hi
         } else if resp.hovered() {
             t.glass
@@ -603,8 +613,8 @@ pub fn topbar_with_user(
             Color32::TRANSPARENT
         };
         let ink = widgets::plate(ui, t, *rect, seg_h / 2.0, rest, a, t.pill_focus_scale);
-        let ink = if i == 0 || a > 0.5 { ink } else { t.text.gamma_multiply(0.8) };
-        if i == USER {
+        let ink = if i == current || a > 0.5 { ink } else { t.text.gamma_multiply(0.8) };
+        if i == user_i {
             let name = user.unwrap_or_default();
             let c = pos2(rect.left() + t.bar_inset + avatar / 2.0, rect.center().y);
             ui.painter().circle_filled(c, avatar / 2.0, t.glass_hi.lerp_to_gamma(t.focus_ink, a));
@@ -613,7 +623,7 @@ pub fn topbar_with_user(
             let tx = c.x + avatar / 2.0 + t.gap / 4.0;
             ui.painter().text(pos2(tx, rect.center().y), Align2::LEFT_CENTER, name, font.clone(), ink);
         } else {
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, BUTTONS[i], font.clone(), ink);
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, labels[i], font.clone(), ink);
         }
         out.xs.push(rect.center().x);
         if resp.hovered() {
@@ -623,7 +633,7 @@ pub fn topbar_with_user(
             out.clicked = Some(i);
         }
     }
-    (out, user.map(|_| rects[USER]))
+    (out, user.map(|_| rects[user_i]))
 }
 
 /// A horizontal row centred in the available width. Centring uses the row's width from the previous frame, so

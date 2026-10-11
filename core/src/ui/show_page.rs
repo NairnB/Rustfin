@@ -20,14 +20,18 @@ const G_RETRY: usize = 3;
 // D2: the sections below the episode row
 const G_NEXT: usize = 4;
 const G_CAST: usize = 5;
-const G_INFO: usize = 6;
-const N_GROUPS: usize = 7;
+// UX #5 / D8: the ••• menu (Mark series, Missing episodes, More…) and the confirm before marking a whole series
+const G_MORE: usize = 6;
+const G_CONFIRM: usize = 7;
+const N_GROUPS: usize = 8;
 
 const OVERVIEW_LINES: usize = 4;
 
 pub struct ShowPage {
     series: Item,
     requested_season: Option<i32>,
+    // D8: the shown season follows Play until the viewer picks one
+    season_chosen: bool,
     episodes: Vec<Item>,
     // RR5 (P-TV-7): episodes the server lists that have not aired yet (shown only with the missing-episodes option).
     unaired: Vec<Item>,
@@ -38,6 +42,8 @@ pub struct ShowPage {
     initialized: bool,
     open_season: i32,
     drop_open: bool,
+    more_open: bool,
+    confirm_series: bool,
     focus: Focus,
     groups: Vec<Group>,
     started: bool,
@@ -47,6 +53,7 @@ pub fn screen(series: Item, season: Option<i32>) -> Box<dyn Screen> {
     Box::new(ShowPage {
         series,
         requested_season: season,
+        season_chosen: season.is_some(),
         episodes: vec![],
         unaired: vec![],
         next_up: None,
@@ -55,6 +62,8 @@ pub fn screen(series: Item, season: Option<i32>) -> Box<dyn Screen> {
         initialized: false,
         open_season: 0,
         drop_open: false,
+        more_open: false,
+        confirm_series: false,
         focus: Focus { group: G_HERO, index: 0 },
         groups: vec![],
         started: false,
@@ -198,7 +207,8 @@ impl ShowPage {
         v
     }
 
-    /// The hero buttons in order: Play, season drop-down, Shuffle, Mark season, Mark series, Missing, heart.
+    /// The hero buttons in order: Play, season drop-down, Shuffle, Mark season, heart, •••. UX #5 / D8: "Mark series"
+    /// and "Missing episodes" live in the ••• menu (`more_entries`), one press further from an accident.
     fn hero_buttons(plan: &ShowPlan) -> Vec<Hero> {
         let mut v = vec![];
         if plan.play.is_some() {
@@ -208,12 +218,36 @@ impl ShowPage {
             v.push(Hero::Drop);
             v.push(Hero::Shuffle);
             v.push(Hero::MarkSeason);
-            v.push(Hero::MarkSeries);
         }
-        v.push(Hero::Missing);
         v.push(Hero::Heart);
         v.push(Hero::More);
         v
+    }
+
+    /// The ••• menu: Mark series (asks first), Missing episodes (P-TV-7), More… (edit, identify, …).
+    fn more_entries(&self, cx: &Cx) -> Vec<(String, Hero)> {
+        let mut v = vec![];
+        if !self.plan().seasons.is_empty() {
+            let all = self.all_played(false);
+            v.push((if all { "Mark series unwatched…" } else { "Mark series watched…" }.to_string(), Hero::MarkSeries));
+        }
+        let missing =
+            if cx.settings.show_missing_episodes { "Missing episodes: shown" } else { "Missing episodes: hidden" };
+        v.push((missing.to_string(), Hero::Missing));
+        v.push(("More…".to_string(), Hero::Details));
+        v
+    }
+
+    /// D8: the season of the episode Play would start, so the row under it shows that season.
+    fn play_season(&self, plan: &ShowPlan) -> Option<i32> {
+        let id = &plan.play.as_ref()?.episode_id;
+        self.episodes.iter().chain(self.next_up.iter()).find(|e| &e.id == id)?.parent_index_number
+    }
+
+    fn close_more(&mut self, plan: &ShowPlan) {
+        self.more_open = false;
+        self.confirm_series = false;
+        self.focus = Focus { group: G_HERO, index: Self::hero_idx(plan, Hero::More).unwrap_or(0) };
     }
 
     fn hero_idx(plan: &ShowPlan, which: Hero) -> Option<usize> {
@@ -281,10 +315,24 @@ impl ShowPage {
             }
             Hero::Shuffle => self.shuffle(cx),
             Hero::MarkSeason => self.mark(cx, true),
-            Hero::MarkSeries => self.mark(cx, false),
-            Hero::Missing => self.toggle_missing(cx),
+            Hero::MarkSeries => {
+                self.confirm_series = true;
+                self.focus = Focus { group: G_CONFIRM, index: 0 }; // Cancel first
+            }
+            Hero::Missing => {
+                self.toggle_missing(cx);
+                self.close_more(plan);
+            }
             Hero::Heart => self.toggle_favorite(cx),
-            Hero::More => cx.push(super::admin_actions::more_screen(self.series.clone(), cx.admin)),
+            Hero::More => {
+                self.more_open = true;
+                self.drop_open = false;
+                self.focus = Focus { group: G_MORE, index: 0 };
+            }
+            Hero::Details => {
+                self.close_more(plan);
+                cx.push(super::admin_actions::more_screen(self.series.clone(), cx.admin));
+            }
         }
     }
 
@@ -308,7 +356,7 @@ impl ShowPage {
     }
 
     /// D2: the hero buttons as the Apple TV action row (same order as `hero_buttons`, so key paths stay).
-    fn action_btns(&self, cx: &Cx, plan: &ShowPlan) -> Vec<ActionBtn> {
+    fn action_btns(&self, plan: &ShowPlan) -> Vec<ActionBtn> {
         let round = |icon, on, caption: &str| ActionBtn::Round { icon, on, caption: caption.to_string() };
         Self::hero_buttons(plan)
             .into_iter()
@@ -320,18 +368,7 @@ impl ShowPage {
                     let on = self.all_played(true);
                     round(RoundIcon::Watched, on, if on { "Mark season unwatched" } else { "Mark season watched" })
                 }
-                Hero::MarkSeries => {
-                    let on = self.all_played(false);
-                    round(RoundIcon::WatchedAll, on, if on { "Mark series unwatched" } else { "Mark series watched" })
-                }
-                Hero::Missing => ActionBtn::Pill(
-                    if cx.settings.show_missing_episodes {
-                        "Missing episodes: shown"
-                    } else {
-                        "Missing episodes: hidden"
-                    }
-                    .to_string(),
-                ),
+                Hero::MarkSeries | Hero::Missing | Hero::Details => ActionBtn::Pill(String::new()), // menu only
                 Hero::Heart => {
                     let fav = self.series.user_data.as_ref().map(|u| u.is_favorite).unwrap_or(false);
                     round(RoundIcon::Favourite, fav, "Favourite")
@@ -351,23 +388,11 @@ impl ShowPage {
             None
         };
         let art = HeroArt { backdrop, logo: at::logo(cx, ui, &self.series) };
-        let rect = at::hero(ui, t, art, t.backdrop_h);
+        // report 2: a content-sized hero, so the episode row shows at 1080 without scrolling
+        let rect = at::hero(ui, t, art, at::hero_fit_h(ui, t, "show-hero"));
         let hero_focus = (self.focus.group == G_HERO).then_some(0);
         if at::focus_moved(ui, egui::Id::new("show-hero"), hero_focus) {
             ui.scroll_to_rect(rect.with_max_y(rect.top() + t.gap), None);
-        }
-        let mut col = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect.shrink2(egui::vec2(0.0, t.gap)))
-                .layout(egui::Layout::bottom_up(egui::Align::Min)),
-        );
-        col.spacing_mut().item_spacing.y = 0.0;
-        col.add_space(t.gap);
-        let rs = at::action_row(&mut col, t, btns, (self.focus.group == G_HERO).then_some(self.focus.index));
-        col.add_space(t.gap);
-        if let Some(ov) = self.series.overview.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
-            at::overview(&mut col, t, ov, false, OVERVIEW_LINES);
-            col.add_space(t.gap / 2.0);
         }
         let years = crate::story::year_line(&self.series, cx.settings.show_release_year, cx.settings.show_story_year);
         let mut meta = at::meta_parts(&Item { run_time_ticks: None, ..self.series.clone() }, &years);
@@ -376,10 +401,19 @@ impl ShowPage {
             let at_ix = meta.len().min(if self.series.official_rating.is_some() { 2 } else { 1 });
             meta.insert(at_ix, format!("{n} Season{}", if n == 1 { "" } else { "s" }));
         }
-        at::meta_row(&mut col, t, &meta, (self.series.community_rating, self.series.critic_rating), &[]);
-        col.add_space(t.gap / 2.0);
-        at::hero_title(&mut col, t, &self.series.name, art.logo);
-        rs
+        let focus = (self.focus.group == G_HERO).then_some(self.focus.index);
+        let series = self.series.clone();
+        at::hero_column(ui, t, rect, "show-hero", |col| {
+            at::hero_title(col, t, &series.name, art.logo);
+            col.add_space(t.gap / 2.0);
+            at::meta_row(col, t, &meta, (series.community_rating, series.critic_rating), &[]);
+            if let Some(ov) = series.overview.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                col.add_space(t.gap / 2.0);
+                at::overview(col, t, ov, false, OVERVIEW_LINES);
+            }
+            col.add_space(t.gap);
+            at::action_row(col, t, btns, focus)
+        })
     }
 
     /// D2: the open season as a row of 16:9 episode cards (unaired ones dimmed, with their air date).
@@ -476,6 +510,8 @@ enum Hero {
     Missing,
     Heart,
     More,
+    /// the ••• menu's "More…" (the item actions screen)
+    Details,
 }
 
 /// P-TV-2: the Play button for the server's next-up episode: "Play S3 E1", or "Resume S3 E1 · 12 min left".
@@ -589,12 +625,42 @@ impl Screen for ShowPage {
         if self.loading {
             return false;
         }
+        if self.confirm_series {
+            let plan = self.plan();
+            match key {
+                Key::Enter => {
+                    if self.focus.group == G_CONFIRM && self.focus.index == 1 {
+                        self.mark(cx, false);
+                    }
+                    self.close_more(&plan);
+                }
+                Key::Back => self.close_more(&plan),
+                Key::Left | Key::Right => self.focus = move_focus(&self.groups, self.focus, key),
+                _ => {}
+            }
+            return true;
+        }
+        if self.more_open {
+            let plan = self.plan();
+            match key {
+                Key::Enter => {
+                    if let Some((_, h)) = self.more_entries(cx).get(self.focus.index).cloned() {
+                        self.press(cx, &plan, h);
+                    }
+                }
+                Key::Back => self.close_more(&plan),
+                Key::Up | Key::Down => self.focus = move_focus(&self.groups, self.focus, key),
+                _ => {}
+            }
+            return true;
+        }
         match key {
             Key::Enter => {
                 let plan = self.plan();
                 if self.drop_open {
                     if let Some(&s) = plan.seasons.get(self.focus.index) {
                         self.open_season = s;
+                        self.season_chosen = true;
                         self.drop_open = false;
                         self.focus = Focus { group: G_HERO, index: Self::hero_drop_idx(&plan).unwrap_or(0) };
                     }
@@ -685,7 +751,16 @@ impl Screen for ShowPage {
         if tag == "next-up" {
             if let Ok(r) = payload.downcast::<Result<Option<Item>>>() {
                 match *r {
-                    Ok(v) => self.next_up = v,
+                    Ok(v) => {
+                        self.next_up = v;
+                        // D8: Play now follows the server's next-up; show that episode's season
+                        if self.initialized && !self.season_chosen {
+                            let plan = self.plan();
+                            if let Some(s) = self.play_season(&plan) {
+                                self.open_season = s;
+                            }
+                        }
+                    }
                     Err(ApiError::Unauthorized) => cx.signed_out(),
                     Err(_) => self.next_up = None,
                 }
@@ -708,7 +783,7 @@ impl Screen for ShowPage {
                 if !self.initialized {
                     self.initialized = true;
                     let plan = self.plan();
-                    self.open_season = self.requested_season.unwrap_or(plan.open_season);
+                    self.open_season = self.requested_season.or(self.play_season(&plan)).unwrap_or(plan.open_season);
                 }
             }
             Err(ApiError::Unauthorized) => cx.signed_out(),
@@ -758,14 +833,17 @@ impl Screen for ShowPage {
 
         let plan = self.plan();
         let moving = ui.input(|i| i.pointer.is_moving());
-        let btns = self.action_btns(cx, &plan);
+        let btns = self.action_btns(&plan);
         let mut hero_xs = vec![];
         let mut drop_xs = vec![];
         let mut list_xs = vec![];
         let mut next_xs = vec![];
         let mut cast_xs = vec![];
-        let mut info_xs = vec![];
         let mut pressed: Option<Hero> = None;
+        let mut more_xs = vec![];
+        let mut more_pick: Option<Hero> = None;
+        let mut confirm_xs = vec![];
+        let mut confirm_pick: Option<usize> = None;
         let mut drop_pick: Option<i32> = None;
         let mut ep_click: Option<Item> = None;
         let mut person: Option<crate::api::PersonRef> = None;
@@ -773,16 +851,32 @@ impl Screen for ShowPage {
         egui::ScrollArea::vertical().id_salt("show-page").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let rs = self.draw_hero(ui, cx, &btns);
+            let modal = self.more_open || self.confirm_series;
             for (idx, (r, h)) in rs.iter().zip(Self::hero_buttons(&plan)).enumerate() {
                 hero_xs.push(r.rect.center().x);
-                if r.hovered() && moving {
+                if r.hovered() && moving && !modal {
                     self.focus = Focus { group: G_HERO, index: idx };
                 }
-                if r.clicked() {
+                if r.clicked() && !modal {
                     pressed = Some(h);
                 }
             }
-            if self.drop_open {
+            if self.more_open {
+                let entries = self.more_entries(cx);
+                let labels: Vec<String> = entries.iter().map(|(l, _)| l.clone()).collect();
+                let focus = (self.focus.group == G_MORE).then_some(self.focus.index);
+                let left = hero_xs.last().copied().unwrap_or(0.0) - t.round_button / 2.0;
+                ui.add_space(t.gap);
+                for (i, r) in at::menu_card(ui, t, &labels, focus, left, t.dropdown_w).iter().enumerate() {
+                    more_xs.push(r.rect.center().x);
+                    if r.hovered() && moving && !self.confirm_series {
+                        self.focus = Focus { group: G_MORE, index: i };
+                    }
+                    if r.clicked() && !self.confirm_series {
+                        more_pick = Some(entries[i].1);
+                    }
+                }
+            } else if self.drop_open {
                 self.draw_season_menu(ui, t, &plan, &mut drop_xs, &mut drop_pick, moving);
             } else {
                 self.draw_episode_row(ui, cx, &mut list_xs, &mut ep_click, moving);
@@ -791,15 +885,16 @@ impl Screen for ShowPage {
             if let Some(next) = self.next_up.clone() {
                 at::section_title(ui, t, "Up Next");
                 let focus = (self.focus.group == G_NEXT).then_some(0);
-                let h = t.wide_h + t.card_title_gap + t.body_size * 1.3;
+                let h = at::wide_card_h(t, 2);
                 let name = self.series.name.clone();
                 let rs = at::row(ui, t, "show-next", 1, h, focus, |ui, _| {
-                    let sub = match (next.parent_index_number, next.index_number) {
-                        (Some(s), Some(e)) => format!("S{s}, E{e} · {}", next.name),
-                        _ => next.name.clone(),
+                    // N2: show name + "S1 · E3" on one line, the episode title under it
+                    let line1 = match (next.parent_index_number, next.index_number) {
+                        (Some(s), Some(e)) => format!("{name} · S{s} · E{e}"),
+                        _ => name.clone(),
                     };
                     let tx = at::tex(cx, ui, &next, ImageKind::Primary, t.wide_w);
-                    at::wide_card(ui, t, tx, &name, &sub, parts::resume_fraction(&next), focus.is_some())
+                    at::wide_card(ui, t, tx, "", &[&line1, &next.name], parts::resume_fraction(&next), focus.is_some())
                 });
                 for r in &rs {
                     next_xs.push(r.rect.center().x);
@@ -829,15 +924,21 @@ impl Screen for ShowPage {
                     }
                 }
             }
+            // D7: read-only facts take no presses; they come into view when focus reaches the last row above them.
             let cols = at::info_columns(&self.series, None, cx.admin);
             if !cols.is_empty() {
+                let top = ui.cursor().top();
                 at::section_title(ui, t, "Information");
-                let focus = (self.focus.group == G_INFO).then_some(self.focus.index);
-                for (i, r) in at::info_section(ui, t, &cols, focus).iter().enumerate() {
-                    info_xs.push(r.rect.center().x);
-                    if r.hovered() && moving {
-                        self.focus = Focus { group: G_INFO, index: i };
-                    }
+                at::info_section(ui, t, &cols, None);
+                let last = [G_CAST, G_NEXT, G_LIST].into_iter().find(|&g| match g {
+                    G_CAST => !cast_xs.is_empty(),
+                    G_NEXT => !next_xs.is_empty(),
+                    _ => true,
+                });
+                let at_last = (Some(self.focus.group) == last).then_some(self.focus.index);
+                if at::focus_moved(ui, egui::Id::new("show-info"), at_last) {
+                    let r = egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), top), ui.cursor().left_top());
+                    ui.scroll_to_rect(r, None);
                 }
             }
             ui.add_space(t.row_gap);
@@ -852,15 +953,49 @@ impl Screen for ShowPage {
         }
         groups[G_NEXT] = Group { len: next_xs.len(), cols: next_xs.len(), xs: next_xs };
         groups[G_CAST] = Group { len: cast_xs.len(), cols: cast_xs.len(), xs: cast_xs };
-        groups[G_INFO] = Group { len: info_xs.len(), cols: info_xs.len(), xs: info_xs };
+        if self.confirm_series {
+            let all = self.all_played(false);
+            let (title, ok) = if all {
+                ("Mark the whole series unwatched?", "Mark unwatched")
+            } else {
+                ("Mark the whole series watched?", "Mark watched")
+            };
+            let body = format!("Every episode of {} changes.", self.series.name);
+            let buttons = vec!["Cancel".to_string(), ok.to_string()];
+            let focus = (self.focus.group == G_CONFIRM).then_some(self.focus.index);
+            let d = widgets::dialog(ui, t, title, &body, &buttons, focus);
+            confirm_xs = d.button_xs;
+            if let (true, Some(i)) = (moving, d.hovered) {
+                self.focus = Focus { group: G_CONFIRM, index: i };
+            }
+            confirm_pick = d.clicked;
+        }
+        if self.confirm_series {
+            // only the dialog takes focus while it is open
+            groups = vec![Group::default(); N_GROUPS];
+            groups[G_CONFIRM] = Group { len: confirm_xs.len(), cols: confirm_xs.len(), xs: confirm_xs };
+        } else if self.more_open {
+            groups = vec![Group::default(); N_GROUPS];
+            groups[G_MORE] = Group { len: more_xs.len(), cols: 1, xs: more_xs };
+        }
         self.groups = groups;
         self.focus = move_focus(&self.groups, self.focus, Key::Enter);
 
         if let Some(h) = pressed {
             self.press(cx, &plan, h);
         }
+        if let Some(h) = more_pick {
+            self.press(cx, &plan, h);
+        }
+        if let Some(i) = confirm_pick {
+            if i == 1 {
+                self.mark(cx, false);
+            }
+            self.close_more(&plan);
+        }
         if let Some(s) = drop_pick {
             self.open_season = s;
+            self.season_chosen = true;
             self.drop_open = false;
             self.focus = Focus { group: G_HERO, index: Self::hero_drop_idx(&plan).unwrap_or(0) };
         }

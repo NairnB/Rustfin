@@ -175,6 +175,8 @@ pub struct App {
     keyboard: bool,
     /// NAV: keyboard focus in the sidebar (index into `shell::entries`); None = in the screen.
     side: Option<usize>,
+    /// UX D30: the sidebar's "Sign out?" confirmation, the focused button (0 = Cancel).
+    confirm: Option<usize>,
     /// NAV: this frame's keys come from a held (auto-repeating) key — they never leave the screen for the sidebar.
     pub keys_held: bool,
     next_id: u64,
@@ -223,6 +225,7 @@ impl App {
             views: vec![],
             keyboard: true,
             side: None,
+            confirm: None,
             keys_held: false,
             next_id: 1,
             started: crate::time::Instant::now(),
@@ -414,9 +417,18 @@ impl App {
         let sidebar = self.opts.desktop && self.shell_on();
         if !sidebar {
             self.side = None;
+            self.confirm = None;
         }
         // NAV: while the sidebar has keyboard focus it takes the keys; the rest go to the screen once it lets go.
-        let keys = if self.side.is_some() { self.sidebar_keys(keys, &mut nav) } else { keys.to_vec() };
+        let keys = if self.confirm.is_some() {
+            // UX D30: the Sign out confirmation takes every key (Cancel is focused first).
+            self.confirm_keys(keys, &mut nav);
+            vec![]
+        } else if self.side.is_some() {
+            self.sidebar_keys(keys, &mut nav)
+        } else {
+            keys.to_vec()
+        };
         let held = std::mem::take(&mut self.keys_held);
         let mut enter_side = false;
         if sidebar {
@@ -586,6 +598,25 @@ impl App {
 
     /// NAV: draws the sidebar and toolbar (egui side/top panels, before the screen's central panel) and turns a
     /// click into navigation.
+    /// UX D30: Left/Right pick Cancel or Sign out, Enter acts, Back cancels.
+    fn confirm_keys(&mut self, keys: &[Key], nav: &mut Vec<Nav>) {
+        for &k in keys {
+            let Some(f) = self.confirm else { return };
+            match k {
+                Key::Left => self.confirm = Some(0),
+                Key::Right => self.confirm = Some(1),
+                Key::Back => self.confirm = None,
+                Key::Enter => {
+                    self.confirm = None;
+                    if f == 1 {
+                        self.leave_session(true, nav);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// NAV: the sidebar place of what is open now (the screen just above Home decides).
     fn current_place(&self) -> Option<ui::shell::Place> {
         let second = self.stack.get(1).map(|(_, s)| (s.name(), s.crumbs()));
@@ -634,6 +665,7 @@ impl App {
             can_forward: !self.forward.is_empty(),
             crumbs: &crumbs,
             focus: self.side,
+            confirm: self.confirm,
         };
         let Some(action) = ui::shell::draw(ctx, &self.theme, &view) else { return };
         self.side = None;
@@ -647,23 +679,35 @@ impl App {
                 self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
                 let _ = self.settings.save(self.store.as_ref());
             }
-            Action::SwitchUser | Action::SignOut => {
-                let Some(mut c) = self.client.clone() else { return };
-                if action == Action::SignOut {
-                    let mut server = c.clone();
-                    self.tasks.spawn(ADMIN_SCREEN, "signout", move || {
-                        let _ = server.sign_out();
-                    });
+            Action::SignOut => self.confirm = Some(0),
+            Action::ConfirmHover(i) => self.confirm = Some(i),
+            Action::ConfirmPick(i) => {
+                self.confirm = None;
+                if i == 1 {
+                    self.leave_session(true, nav);
                 }
-                c.session = None;
-                if let Some(id) = self.settings.last_server.clone() {
-                    self.settings.forget_session(&id);
-                    let _ = self.settings.save(self.store.as_ref());
-                }
-                self.client = Some(c.clone());
-                nav.push(Nav::Reset(ui::signin::screen(c, None)));
             }
+            Action::SwitchUser => self.leave_session(false, nav),
         }
+    }
+
+    /// Switch user / Sign out (`sign_out`: also ends the session on the server): forget this server's session and
+    /// open sign-in on the same server.
+    fn leave_session(&mut self, sign_out: bool, nav: &mut Vec<Nav>) {
+        let Some(mut c) = self.client.clone() else { return };
+        if sign_out {
+            let mut server = c.clone();
+            self.tasks.spawn(ADMIN_SCREEN, "signout", move || {
+                let _ = server.sign_out();
+            });
+        }
+        c.session = None;
+        if let Some(id) = self.settings.last_server.clone() {
+            self.settings.forget_session(&id);
+            let _ = self.settings.save(self.store.as_ref());
+        }
+        self.client = Some(c.clone());
+        nav.push(Nav::Reset(ui::signin::screen(c, None)));
     }
 
     fn client_changed(&mut self) {
@@ -945,5 +989,31 @@ mod tests {
         run(&mut a, &[Key::Up, Key::Up, Key::Up, Key::Enter], false);
         assert_eq!(a.side, None);
         assert_eq!(a.history(), ["home", "search"]);
+    }
+
+    #[test]
+    fn sign_out_from_the_sidebar_asks_first() {
+        let mut a = App::new(Arc::new(MemStorage::default()), AppOptions { desktop: true, ..Default::default() });
+        let mut p = NullPlayer::default();
+        let session = crate::api::Session { user_id: "u".into(), user_name: "tester".into(), token: "t".into() };
+        a.client = Some(Client::with_session("http://127.0.0.1:9", a.device(), session));
+        a.apply_nav(vec![Nav::Reset(s("home"))], &mut p);
+        let ctx = egui::Context::default();
+        let mut run = |a: &mut App, keys: &[Key]| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| a.frame(ctx, &mut p, keys));
+        };
+        run(&mut a, &[]);
+        // The menu's Sign out only opens the confirmation, with Cancel focused; Back and Cancel keep the session.
+        a.confirm = Some(0);
+        run(&mut a, &[Key::Back]);
+        assert_eq!((a.confirm, a.history()), (None, vec!["home"]));
+        a.confirm = Some(0);
+        run(&mut a, &[Key::Enter]);
+        assert_eq!((a.confirm, a.history()), (None, vec!["home"]));
+        // Right → Sign out, Enter → signed out, back on sign-in for the same server.
+        a.confirm = Some(0);
+        run(&mut a, &[Key::Right, Key::Enter]);
+        assert_eq!(a.history(), ["signin"]);
+        assert!(a.client.as_ref().is_some_and(|c| c.session.is_none()));
     }
 }

@@ -27,7 +27,7 @@ wait 300
 shot nav-library
 
 # First film → its page; back with the toolbar arrow.
-click 484 820
+click 484 520
 wait-screen movie
 idle
 shot nav-movie
@@ -61,7 +61,7 @@ shot nav-scrolled
 click 130 393
 wait-screen library
 idle
-click 484 820
+click 484 520
 wait-screen show
 idle
 wait 300

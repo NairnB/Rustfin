@@ -23,8 +23,8 @@ key enter
 wait-screen library
 idle
 shot sections
-# Sections: Down past the sort header (Sort, Descending, chips, Play all / Shuffle) to Movies → TV Shows → Documentaries, then open "Making Star Drift".
-key down 6
+# Sections: the library opens on the first poster (UX R2); Down twice → TV Shows → Documentaries, then open "Making Star Drift".
+key down 2
 key enter
 wait-screen movie
 idle

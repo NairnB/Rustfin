@@ -205,6 +205,11 @@ fn card_rect(g: &GridGeom, t: &Theme, i: usize) -> egui::Rect {
 
 pub struct Library {
     view: Item,
+    /// UX R2: the control row's items in order (one focus group); each maps to the G_DROP / G_TOGGLE / G_PLAY
+    /// focus the keys act on.
+    ctrl: Vec<Focus>,
+    /// UX R2: the library opens on its first poster — set once the first section is drawn, unless a key came first.
+    first_focus: bool,
     items: Vec<Option<Item>>,
     total: usize,
     next_start: usize,
@@ -261,6 +266,8 @@ pub fn screen(view: Item) -> Box<dyn Screen> {
         sort_kinds: vec![],
         gen: 0,
         focus: Focus { group: G_DROP, index: 0 },
+        ctrl: vec![],
+        first_focus: true,
         groups: vec![],
         moving: None,
         drag: None,
@@ -278,6 +285,21 @@ pub fn screen(view: Item) -> Box<dyn Screen> {
 }
 
 impl Library {
+    /// `nav::move_focus` through the control row: the row is one group (`ctrl`) unless a menu is open.
+    fn nav_move(&self, key: Key) -> Focus {
+        let menu = self.dropdown.open || self.view_dd.open;
+        let row = |f: Focus| matches!(f.group, G_DROP | G_TOGGLE | G_PLAY) && !menu;
+        let from = match self.ctrl.iter().position(|&c| c == self.focus) {
+            Some(i) if row(self.focus) => Focus { group: G_DROP, index: i },
+            _ => self.focus,
+        };
+        let to = nav::move_focus(&self.groups, from, key);
+        match self.ctrl.get(to.index) {
+            Some(&c) if to.group == G_DROP && !menu => c,
+            _ => to,
+        }
+    }
+
     fn request_page(&mut self, cx: &Cx) {
         if self.in_flight {
             return;
@@ -984,21 +1006,66 @@ impl Library {
         let sort_labels: Vec<String> = self.sort_kinds.iter().map(|k| k.label().to_string()).collect();
         let view_labels: Vec<String> = ViewMode::ALL.iter().map(|m| m.label().to_string()).collect();
 
-        // Sort + View dropdowns (W0), side by side; each opens its menu under itself.
+        // UX R2: one compact control row — Sort, View, Descending, Filters… (Clear filters), Play all, Shuffle,
+        // Poster Flow — then the quick-filter chips. The row is ONE focus group: `self.ctrl` maps its items back
+        // to the G_DROP / G_TOGGLE / G_PLAY focus the keys act on. Menus open as popovers over the page (R10).
+        let mut tc = t.clone();
+        tc.dropdown_w = t.lib_dropdown_w;
         let mut sort_out = None;
         let mut view_out = None;
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = t.gap;
-            ui.vertical(|ui| {
-                let focused =
-                    self.focus.group == G_DROP && !self.view_dd.open && (self.dropdown.open || self.focus.index == 0);
-                sort_out = Some(widgets::dropdown(ui, t, &mut self.dropdown, "Sort", &sort_labels, focused));
-            });
-            ui.vertical(|ui| {
-                let focused =
-                    self.focus.group == G_DROP && !self.dropdown.open && (self.view_dd.open || self.focus.index == 1);
-                view_out = Some(widgets::dropdown(ui, t, &mut self.view_dd, "View", &view_labels, focused));
-            });
+        let mut ctrl: Vec<(Focus, f32)> = vec![];
+        let mut open_filters = false;
+        let mut clear_filters = false;
+        let mut play_pick: Option<usize> = None;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+            let focused =
+                self.focus.group == G_DROP && !self.view_dd.open && (self.dropdown.open || self.focus.index == 0);
+            let o = widgets::dropdown(ui, &tc, &mut self.dropdown, "Sort", &sort_labels, focused);
+            ctrl.push((Focus { group: G_DROP, index: 0 }, o.button_x));
+            sort_out = Some(o);
+            let focused =
+                self.focus.group == G_DROP && !self.dropdown.open && (self.view_dd.open || self.focus.index == 1);
+            let o = widgets::dropdown(ui, &tc, &mut self.view_dd, "View", &view_labels, focused);
+            ctrl.push((Focus { group: G_DROP, index: 1 }, o.button_x));
+            view_out = Some(o);
+
+            // Ascending/descending toggle (P-LIB-8).
+            let f = Focus { group: G_TOGGLE, index: 0 };
+            let tog = widgets::toggle(ui, t, "Descending", self.prefs.descending, self.focus == f);
+            ctrl.push((f, tog.x));
+            if tog.hovered {
+                *hovered = Some(f);
+            }
+            if tog.clicked {
+                self.prefs.descending = !self.prefs.descending;
+                self.persist(cx);
+                self.reload(cx);
+            }
+
+            // G11 (P-LIB-10..12): the Filters… dialog, and a way to clear what it set.
+            let mut buttons = vec![(Focus { group: G_TOGGLE, index: 1 }, "Filters…")];
+            if !self.prefs.extra.is_empty() {
+                buttons.push((Focus { group: G_TOGGLE, index: 2 }, "Clear filters"));
+            }
+            // Play all / Shuffle / Poster Flow (P-LIB-23, BRIEF-coverflow).
+            for (i, label) in ["Play all", "Shuffle", "Poster Flow"].into_iter().enumerate() {
+                buttons.push((Focus { group: G_PLAY, index: i }, label));
+            }
+            for (f, label) in buttons {
+                let r = parts::button(ui, t, label, self.focus == f, false);
+                ctrl.push((f, r.rect.center().x));
+                if r.hovered() {
+                    *hovered = Some(f);
+                }
+                if r.clicked() {
+                    match f.group {
+                        G_PLAY => play_pick = Some(f.index),
+                        _ if f.index == 1 => open_filters = true,
+                        _ => clear_filters = true,
+                    }
+                }
+            }
         });
         let (Some(sort_out), Some(view_out)) = (sort_out, view_out) else { return None };
         if sort_out.button_hovered && !self.dropdown.open && !self.view_dd.open {
@@ -1026,51 +1093,16 @@ impl Library {
         } else if self.view_dd.open {
             Group { len: ViewMode::ALL.len(), cols: 1, xs: view_out.item_xs }
         } else {
-            Group { len: 2, cols: 2, xs: vec![sort_out.button_x, view_out.button_x] }
+            Group { len: ctrl.len(), cols: ctrl.len(), xs: ctrl.iter().map(|c| c.1).collect() }
         };
+        groups[G_TOGGLE] = Group::default();
+        groups[G_PLAY] = Group::default();
+        self.ctrl = ctrl.into_iter().map(|c| c.0).collect();
 
+        // Filter chip row (P-LIB-9), with what the Filters… dialog set beside it.
         ui.add_space(t.gap / 3.0);
-        let mut open_filters = false;
-        let mut clear_filters = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-
-            // Ascending/descending toggle (P-LIB-8).
-            let tog = widgets::toggle(ui, t, "Descending", self.prefs.descending, self.focus.group == G_TOGGLE);
-            if tog.hovered {
-                *hovered = Some(Focus { group: G_TOGGLE, index: 0 });
-            }
-            if tog.clicked {
-                self.prefs.descending = !self.prefs.descending;
-                self.persist(cx);
-                self.reload(cx);
-            }
-            let mut toggle_xs = vec![tog.x];
-
-            // G11 (P-LIB-10..12): the Filters… dialog, and a way to clear what it set.
-            let focused = self.focus == (Focus { group: G_TOGGLE, index: 1 });
-            let r = parts::button(ui, t, "Filters…", focused, false);
-            toggle_xs.push(r.rect.center().x);
-            if r.hovered() {
-                *hovered = Some(Focus { group: G_TOGGLE, index: 1 });
-            }
-            if r.clicked() {
-                open_filters = true;
-            }
-            if !self.prefs.extra.is_empty() {
-                let focused = self.focus == (Focus { group: G_TOGGLE, index: 2 });
-                let r = parts::button(ui, t, "Clear filters", focused, false);
-                toggle_xs.push(r.rect.center().x);
-                if r.hovered() {
-                    *hovered = Some(Focus { group: G_TOGGLE, index: 2 });
-                }
-                if r.clicked() {
-                    clear_filters = true;
-                }
-            }
-            groups[G_TOGGLE] = Group { len: toggle_xs.len(), cols: toggle_xs.len(), xs: toggle_xs };
-
-            // Filter chip row (P-LIB-9).
             let chips_on = [
                 self.prefs.filters.unplayed,
                 self.prefs.filters.played,
@@ -1092,6 +1124,10 @@ impl Library {
                 self.toggle_filter(cx, i);
             }
             groups[G_CHIPS] = Group { len: chip_labels.len(), cols: chip_labels.len(), xs: chips_out.xs };
+            if !self.prefs.extra.is_empty() {
+                ui.add_space(t.gap / 2.0);
+                parts::muted(ui, t, &format!("Filtered by: {}", self.prefs.extra.summary()));
+            }
         });
         if open_filters {
             self.open_filters(cx);
@@ -1101,30 +1137,6 @@ impl Library {
             self.persist(cx);
             self.reload(cx);
         }
-        if !self.prefs.extra.is_empty() {
-            ui.add_space(t.gap / 3.0);
-            parts::muted(ui, t, &format!("Filtered by: {}", self.prefs.extra.summary()));
-        }
-
-        // Play all / Shuffle (P-LIB-23).
-        ui.add_space(t.gap / 3.0);
-        let mut play_xs = vec![];
-        let mut play_pick: Option<usize> = None;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            for (i, label) in ["Play all", "Shuffle", "Poster Flow"].into_iter().enumerate() {
-                let focused = self.focus.group == G_PLAY && self.focus.index == i;
-                let r = parts::button(ui, t, label, focused, false);
-                play_xs.push(r.rect.center().x);
-                if r.hovered() {
-                    *hovered = Some(Focus { group: G_PLAY, index: i });
-                }
-                if r.clicked() {
-                    play_pick = Some(i);
-                }
-            }
-        });
-        groups[G_PLAY] = Group { len: 3, cols: 3, xs: play_xs };
         match play_pick {
             Some(2) => self.open_flow(cx),
             Some(i) => self.play_library(cx, i == 1),
@@ -1310,6 +1322,7 @@ impl Screen for Library {
     }
 
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
+        self.first_focus = false;
         if self.dlg.is_some() {
             return self.dlg_key(cx, key);
         }
@@ -1352,6 +1365,10 @@ impl Screen for Library {
             self.dropdown = state;
             if let Some(widgets::DropdownEvent::Pick(i)) = ev {
                 self.pick_sort(cx, i);
+            }
+            if !self.dropdown.open {
+                // The menu closed: focus goes back to the Sort button (not a menu row index).
+                self.focus = Focus { group: G_DROP, index: 0 };
             }
             return matches!(key, Key::Up | Key::Down | Key::Enter | Key::Back);
         }
@@ -1471,7 +1488,7 @@ impl Screen for Library {
                     let (f, _) = widgets::chips_key(self.focus.index, CHIP_LABELS.len(), key);
                     self.focus.index = f;
                 } else {
-                    let next = nav::move_focus(&self.groups, self.focus, key);
+                    let next = self.nav_move(key);
                     // Right past the last column of the grid steps onto the A–Z bar.
                     if key == Key::Right && next == self.focus && self.focus.group >= G_SECTIONS && self.az_on {
                         let at = self.item_at(self.focus).map(|i| letter_of(&i.name));
@@ -1484,7 +1501,7 @@ impl Screen for Library {
                 true
             }
             Key::Up | Key::Down => {
-                self.focus = nav::move_focus(&self.groups, self.focus, key);
+                self.focus = self.nav_move(key);
                 true
             }
             _ => false,
@@ -1583,30 +1600,38 @@ impl Screen for Library {
         let t = cx.theme;
         let pointer_moved = ui.input(|i| i.pointer.is_moving());
 
-        ui.add_space(t.margin);
-        parts::title(ui, t, &self.view.name);
-        if self.tab.is_items() {
-            parts::muted(ui, t, &format!("{} items", self.total));
-        }
-        ui.add_space(t.gap / 2.0);
+        // UX R2: a compact header — title and count on one line with the tabs (desktop: the toolbar is above it).
+        ui.add_space(if cx.sidebar { t.gap / 2.0 } else { t.margin });
+        let count = (self.tab.is_items()).then(|| items_label(self.total));
 
         let mut groups: Vec<Group> = vec![Group::default(); G_SECTIONS];
         let mut hovered: Option<Focus> = None;
 
-        // G11 (P-LIB-16, 18..21): tabs above the grid.
-        if self.tabs.len() > 1 {
-            let labels: Vec<String> = self.tabs.iter().map(|x| x.label().to_string()).collect();
-            let sel = self.tabs.iter().position(|&x| x == self.tab).unwrap_or(0);
-            let out = widgets::tabs(ui, t, &labels, sel, (self.focus.group == G_TABS).then_some(self.focus.index));
-            if let Some(i) = out.hovered {
-                hovered = Some(Focus { group: G_TABS, index: i });
+        // Title, item count and (G11, P-LIB-16, 18..21) the tabs on one line.
+        let mut tab_click = None;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+            ui.label(egui::RichText::new(&self.view.name).font(t.font(t.title_size)).color(t.text));
+            if let Some(c) = &count {
+                ui.label(egui::RichText::new(c).font(t.font(t.body_size)).color(t.muted));
             }
-            groups[G_TABS] = Group { len: labels.len(), cols: labels.len(), xs: out.xs };
-            if let Some(&tb) = out.clicked.and_then(|i| self.tabs.get(i)) {
-                self.set_tab(cx, tb);
+            if self.tabs.len() > 1 {
+                ui.add_space(t.gap);
+                let labels: Vec<String> = self.tabs.iter().map(|x| x.label().to_string()).collect();
+                let sel = self.tabs.iter().position(|&x| x == self.tab).unwrap_or(0);
+                let focus = (self.focus.group == G_TABS).then_some(self.focus.index);
+                let out = widgets::tabs(ui, t, &labels, sel, focus);
+                if let Some(i) = out.hovered {
+                    hovered = Some(Focus { group: G_TABS, index: i });
+                }
+                groups[G_TABS] = Group { len: labels.len(), cols: labels.len(), xs: out.xs };
+                tab_click = out.clicked;
             }
-            ui.add_space(t.gap / 2.0);
+        });
+        if let Some(&tb) = tab_click.and_then(|i| self.tabs.get(i)) {
+            self.set_tab(cx, tb);
         }
+        ui.add_space(t.gap / 2.0);
 
         if self.tab.is_items() {
             if let Some(e) = self.error.clone() {
@@ -1629,7 +1654,11 @@ impl Screen for Library {
         self.groups = groups;
         // The A–Z bar is not a nav group (it is vertical); keep a focus on it as it is.
         if !(self.focus.group == G_AZ && self.az_on) {
-            self.focus = nav::move_focus(&self.groups, self.focus, Key::Enter);
+            if self.first_focus && self.groups.get(G_SECTIONS).is_some_and(|g| g.len > 0) {
+                self.first_focus = false;
+                self.focus = Focus { group: G_SECTIONS, index: 0 };
+            }
+            self.focus = self.nav_move(Key::Enter);
         }
         if pointer_moved && self.dlg.is_none() {
             if let Some(f) = hovered {
@@ -1667,6 +1696,15 @@ impl Screen for Library {
 }
 
 // ---------- helpers ----------
+
+/// UX N3: "1 item", "8 items".
+fn items_label(n: usize) -> String {
+    if n == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{n} items")
+    }
+}
 
 fn toggle(v: &mut Vec<String>, s: &str) {
     if let Some(p) = v.iter().position(|x| x == s) {
@@ -1816,6 +1854,13 @@ fn list_rows(ui: &mut egui::Ui, cx: &mut Cx, items: &[Option<Item>], focus: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_count_is_singular_for_one() {
+        assert_eq!(items_label(0), "0 items");
+        assert_eq!(items_label(1), "1 item");
+        assert_eq!(items_label(500), "500 items");
+    }
 
     #[test]
     fn letters_drop_articles_and_bucket_the_rest() {

@@ -20,7 +20,8 @@ key right 2
 key enter
 wait-screen library
 idle
-key up
+# UX R2: from the first poster, Up three times reaches the tabs (chips, control row, tabs).
+key up 3
 key left 10
 key right
 key enter

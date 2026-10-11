@@ -21,7 +21,6 @@ key enter
 wait-screen library
 idle
 wait 2500
-key down 4
 key right 40
 key up
 key enter

@@ -1,0 +1,35 @@
+# UX D29/D30: the user menu opens beside the sidebar (not over Server admin); Sign out asks first, Cancel focused.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+click 130 1038
+wait 300
+shot nav-user-menu
+# Sign out (third item) → the confirmation; Enter on the focused Cancel keeps the session.
+click 380 1035
+wait 300
+shot nav-signout-confirm
+key enter
+wait 300
+wait-screen home
+# Again, then Right → Sign out, Enter: back on sign-in for the same server.
+click 130 1038
+wait 300
+click 380 1035
+wait 300
+key right
+key enter
+wait-screen signin
+quit

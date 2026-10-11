@@ -32,7 +32,11 @@ pub enum Action {
     Open(Place),
     Collapse,
     SwitchUser,
+    /// Sign out was chosen in the user menu: ask first (D30).
     SignOut,
+    /// The confirmation's button under the mouse / clicked (0 = Cancel, 1 = Sign out).
+    ConfirmHover(usize),
+    ConfirmPick(usize),
 }
 
 /// Everything the shell shows, read from the app.
@@ -49,6 +53,8 @@ pub struct View<'a> {
     pub crumbs: &'a [Vec<String>],
     /// Keyboard focus in the sidebar: an index into `entries` (None = focus is in the screen).
     pub focus: Option<usize>,
+    /// UX D30: the "Sign out?" confirmation is open, this button focused (0 = Cancel, 1 = Sign out).
+    pub confirm: Option<usize>,
 }
 
 /// The sidebar rows in keyboard order: Home, Search, the libraries, Collections, Playlists, Favourites, Server admin
@@ -75,23 +81,59 @@ pub fn crumbs_of(s: &dyn Screen) -> Vec<String> {
     if !c.is_empty() {
         return c;
     }
-    let label = match s.name() {
+    title_of(s.name()).map(|l| vec![l.to_string()]).unwrap_or_default()
+}
+
+/// UX D31: the human title of each screen without its own `crumbs()`. An unknown name gives no crumb at all —
+/// the breadcrumb never shows a raw screen id.
+pub fn title_of(name: &str) -> Option<&'static str> {
+    Some(match name {
         "home" => "Home",
         "search" => "Search",
         "favourites" => "Favourites",
         "playlists" => "Playlists",
+        "playlist" => "Playlist",
+        "new-playlist" => "New playlist",
         "collections" => "Collections",
+        "collection" => "Collection",
+        "new-collection" => "New collection",
         "settings" => "Settings",
         "admin" => "Server admin",
-        "gallery" => "Gallery",
-        other => return vec![capitalise(other)],
-    };
-    vec![label.to_string()]
-}
-
-fn capitalise(s: &str) -> String {
-    let mut c = s.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+        "dashboard" => "Dashboard",
+        "activity" => "Activity",
+        "devices" => "Devices",
+        "users" => "Users",
+        "user" => "User",
+        "useradd" => "Add user",
+        "libraries" => "Libraries",
+        "adminlibrary" => "Library",
+        "libraryadd" => "Add library",
+        "library" => "Library",
+        "browse" => "Browse",
+        "logs" => "Logs",
+        "logview" => "Log",
+        "tasks" => "Scheduled tasks",
+        "taskdetail" => "Task",
+        "keys" => "API keys",
+        "plugins" => "Plugins",
+        "catalogue" => "Catalogue",
+        "repositories" => "Repositories",
+        "metadata-edit" => "Edit metadata",
+        "movie" => "Film",
+        "series" | "show" => "Show",
+        "season" => "Season",
+        "episode" => "Episode",
+        "item" => "Item",
+        "person" => "Person",
+        "posterflow" => "Poster Flow",
+        "player" | "more" => "Now playing",
+        "gallery" | "gallery-details" => "Gallery",
+        "quickconnect" => "Quick Connect",
+        "signin" => "Sign in",
+        "forgot" => "Forgot password",
+        "connect" => "Connect",
+        _ => return None,
+    })
 }
 
 /// The sidebar place for the screen just above Home (`(name, crumbs)`); anything opened from Home's rows stays
@@ -156,6 +198,18 @@ pub fn draw(ctx: &egui::Context, t: &Theme, v: &View) -> Option<Action> {
                 out = Some(a);
             }
         });
+    if let Some(f) = v.confirm {
+        let buttons = vec!["Cancel".to_string(), "Sign out".to_string()];
+        let body = "You will need to sign in again on this device.";
+        egui::Area::new(egui::Id::new("nav-signout-confirm")).order(egui::Order::Foreground).show(ctx, |ui| {
+            let d = super::widgets::dialog(ui, t, "Sign out?", body, &buttons, Some(f));
+            if let Some(i) = d.clicked {
+                out = Some(Action::ConfirmPick(i));
+            } else if let Some(i) = d.hovered {
+                out = Some(Action::ConfirmHover(i));
+            }
+        });
+    }
     out
 }
 
@@ -348,7 +402,8 @@ fn user_row(ui: &mut Ui, t: &Theme, rect: Rect, v: &View, focused: bool) -> Opti
         const ITEMS: [&str; 3] = ["Settings", "Switch user", "Sign out"];
         let w = t.sidebar_menu_w;
         let h = ITEMS.len() as f32 * t.sidebar_item_h + t.sidebar_pad;
-        let menu = Rect::from_min_size(pos2(rect.left(), rect.top() - h - t.sidebar_gap), vec2(w, h));
+        // UX D29: the menu opens beside the sidebar (bottom-aligned with the user row), never over another row.
+        let menu = Rect::from_min_size(pos2(rect.right() + t.sidebar_pad * 2.0, rect.bottom() - h), vec2(w, h));
         let mut clicked = None;
         egui::Area::new(menu_id.with("area")).order(egui::Order::Foreground).fixed_pos(menu.min).show(ui.ctx(), |ui| {
             ui.painter().rect_filled(menu, t.radius * 1.5, t.surface_hi);
@@ -536,5 +591,72 @@ fn glyph(ui: &Ui, t: &Theme, g: Glyph, c: egui::Pos2, ink: Color32) {
         }
         Glyph::Back => poly(&[(0.35, -0.8), (-0.45, 0.0), (0.35, 0.8)], false),
         Glyph::Forward => poly(&[(-0.35, -0.8), (0.45, 0.0), (-0.35, 0.8)], false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// UX D31: every screen name in the app has a human title (screens with their own `crumbs()` too, as a
+    /// fallback). Add new screens here.
+    #[test]
+    fn every_screen_has_a_human_title() {
+        let names = [
+            "activity",
+            "admin",
+            "adminlibrary",
+            "browse",
+            "catalogue",
+            "collection",
+            "collections",
+            "connect",
+            "dashboard",
+            "devices",
+            "episode",
+            "favourites",
+            "forgot",
+            "gallery",
+            "gallery-details",
+            "home",
+            "item",
+            "keys",
+            "libraries",
+            "library",
+            "libraryadd",
+            "logs",
+            "logview",
+            "metadata-edit",
+            "more",
+            "movie",
+            "new-collection",
+            "new-playlist",
+            "person",
+            "player",
+            "playlist",
+            "playlists",
+            "plugins",
+            "posterflow",
+            "quickconnect",
+            "repositories",
+            "search",
+            "season",
+            "series",
+            "settings",
+            "show",
+            "signin",
+            "taskdetail",
+            "tasks",
+            "user",
+            "useradd",
+            "users",
+        ];
+        for n in names {
+            let t = title_of(n).unwrap_or_else(|| panic!("no title for {n}"));
+            assert!(t.starts_with(|c: char| c.is_uppercase()) && !t.contains('-'), "{n} → {t}");
+            assert!(!["Useradd", "Adminlibrary", "Libraryadd", "Taskdetail", "Logview"].contains(&t), "{n} → {t}");
+        }
+        assert_eq!(title_of("useradd"), Some("Add user"));
+        assert_eq!(title_of("some-new-screen"), None);
     }
 }

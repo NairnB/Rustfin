@@ -158,6 +158,8 @@ pub struct Theme {
     pub search_icon: f32,
     /// Height of the band an empty screen's message is centred in.
     pub empty_h: f32,
+    /// Library control row: the Sort and View dropdowns' width (narrower than the general `dropdown_w`).
+    pub lib_dropdown_w: f32,
     // ---- Apple TV look (D1) ----
     /// Translucent white over dark: resting secondary pills, chips, fields.
     pub glass: Color32,
@@ -340,6 +342,7 @@ impl Theme {
             search_h: 64.0,
             search_icon: 24.0,
             empty_h: 480.0,
+            lib_dropdown_w: 230.0,
             glass: white(0x1f),
             glass_hi: white(0x3d),
             focus_fill: Color32::from_rgb(0xf5, 0xf5, 0xf7),

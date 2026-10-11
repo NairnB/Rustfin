@@ -47,7 +47,6 @@ key enter
 wait-screen library
 idle
 shot f3-card
-key down 4
 key enter
 wait-screen movie
 idle

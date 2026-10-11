@@ -16,7 +16,7 @@ wait-screen home
 idle
 click 130 1038
 idle
-click 130 879
+click 380 939
 wait-screen settings
 idle
 key right 4

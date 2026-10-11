@@ -155,9 +155,7 @@ key down
 key enter
 wait-screen home
 idle
-key up
-key right
-key enter
+key search
 wait-screen search
 idle
 shot tvkb-search-open

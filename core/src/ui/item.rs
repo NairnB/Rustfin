@@ -18,17 +18,18 @@ use crate::platform::Key;
 const G_MORE: usize = 0;
 const G_BTN: usize = 1;
 const G_LIST: usize = 2;
-const G_CHIPS: usize = 3;
-const G_CHAPTERS: usize = 4;
-const G_PARTS: usize = 5;
-const G_PEOPLE: usize = 6;
+// D7: cast first under the hero (focus order follows the page); Information takes no focus.
+const G_PEOPLE: usize = 3;
+const G_CHIPS: usize = 4;
+const G_CHAPTERS: usize = 5;
+const G_PARTS: usize = 6;
 const G_SPECIALS: usize = 7;
 const G_SIMILAR: usize = 8;
-const G_INFO: usize = 9;
-const G_LINKS: usize = 10;
-const G_RETRY: usize = 11;
-const G_POS: usize = 12;
-const G_STORY: usize = 13;
+const G_LINKS: usize = 9;
+const G_RETRY: usize = 10;
+const G_POS: usize = 11;
+const G_STORY: usize = 12;
+const N_GROUPS: usize = 13;
 /// P-ITEM-2: an overview longer than this many lines is cut with a More / Less button.
 const OVERVIEW_LINES: usize = 6;
 
@@ -74,6 +75,9 @@ enum Action {
     OpenAddTo,
     AddPick(AddAct),
 }
+
+/// D6: an open list picker — its rows, a note for when it has none, and the button that opened it.
+type Picker = (Vec<(String, Action)>, Option<&'static str>, Action);
 
 /// G8 / P-ITEM-8: where the Trailer button goes.
 #[derive(Debug, Clone, PartialEq)]
@@ -146,6 +150,8 @@ pub struct ItemScreen {
     add_note: Option<String>,
     // RR5 (P-ITEM-2): the overview is showing in full.
     overview_open: bool,
+    // D6: where each hero button is this frame (pickers float next to the one that opened them)
+    btn_rects: Vec<egui::Rect>,
     focus: Focus,
     groups: Vec<Group>,
     started: bool,
@@ -201,6 +207,7 @@ pub fn screen_in(item: Item, place: Option<String>) -> Box<dyn Screen> {
                 in_collections: vec![],
                 add_note: None,
                 overview_open: false,
+                btn_rects: vec![],
                 focus: Focus { group: G_BTN, index: 0 },
                 groups: vec![],
                 started: false,
@@ -268,18 +275,16 @@ impl ItemScreen {
         self.tracks_init = true;
     }
 
-    fn stream_label_for(&self, s: &MediaStream) -> String {
-        let mut l =
-            s.display_title.clone().or_else(|| s.language.clone()).unwrap_or_else(|| format!("Track {}", s.index));
-        if s.is_external && !l.to_lowercase().contains("external") {
-            l.push_str(" · External");
-        }
-        l
+    /// UXP2 (D14): the chosen version's tracks of one kind as `(stream index, name a person reads)` —
+    /// "German", "English (embedded)", never the server's "Ger - SUBRIP - External".
+    fn track_names(&self, kind: StreamKind) -> Vec<(i32, String)> {
+        let Some(ms) = self.source() else { return vec![] };
+        let streams: Vec<MediaStream> = ms.media_streams.iter().filter(|s| s.kind == kind).cloned().collect();
+        streams.iter().map(|s| s.index).zip(player::track_labels(&streams)).collect()
     }
 
     fn stream_label(&self, kind: StreamKind, index: i32) -> Option<String> {
-        let ms = self.source()?;
-        ms.media_streams.iter().find(|s| s.kind == kind && s.index == index).map(|s| self.stream_label_for(s))
+        self.track_names(kind).into_iter().find(|(i, _)| *i == index).map(|(_, l)| l)
     }
 
     fn audio_label(&self) -> String {
@@ -298,22 +303,12 @@ impl ItemScreen {
     }
 
     fn audio_entries(&self) -> Vec<(String, i32)> {
-        let mut v = vec![];
-        if let Some(ms) = self.source() {
-            for s in ms.media_streams.iter().filter(|s| s.kind == StreamKind::Audio) {
-                v.push((self.stream_label_for(s), s.index));
-            }
-        }
-        v
+        self.track_names(StreamKind::Audio).into_iter().map(|(i, l)| (l, i)).collect()
     }
 
     fn subtitle_entries(&self) -> Vec<(String, Option<i32>)> {
         let mut v = vec![("Off".to_string(), None)];
-        if let Some(ms) = self.source() {
-            for s in ms.media_streams.iter().filter(|s| s.kind == StreamKind::Subtitle) {
-                v.push((self.stream_label_for(s), Some(s.index)));
-            }
-        }
+        v.extend(self.track_names(StreamKind::Subtitle).into_iter().map(|(i, l)| (l, Some(i))));
         v
     }
 
@@ -941,9 +936,6 @@ impl ItemScreen {
             }
             return true;
         }
-        if self.focus.group == G_INFO {
-            return true;
-        }
         if self.focus.group == G_PEOPLE {
             if let Some(p) = ordered_people(self.current()).get(self.focus.index).cloned() {
                 cx.push(super::person::screen(p.id, p.name));
@@ -1120,84 +1112,56 @@ impl ItemScreen {
     ) -> Option<Action> {
         let t = cx.theme;
         let mut act = None;
-        // D2: the button row itself is drawn inside the hero (`page`); the pickers it opens stay here, below it.
-        if self.audio_open {
-            let entries = self.audio_entries();
-            ui.add_space(t.gap / 2.0);
-            for (i, (label, index)) in entries.iter().enumerate() {
-                let focused = self.focus.group == G_LIST && self.focus.index == i;
-                let r = parts::button(ui, t, label, focused, false);
-                list_xs.push(r.rect.center().x);
-                if r.hovered() {
-                    self.focus = Focus { group: G_LIST, index: i };
-                }
-                if r.clicked() {
-                    act = Some(Action::AudioPick(*index));
-                }
-            }
+        // D2: the button row itself is drawn inside the hero (`page`). D6: the list pickers it opens float next to
+        // their button (anchored popover) instead of pushing the page down.
+        let list: Option<Picker> = if self.audio_open {
+            Some((
+                self.audio_entries().into_iter().map(|(l, i)| (l, Action::AudioPick(i))).collect(),
+                None,
+                Action::OpenAudio,
+            ))
         } else if self.subtitle_open {
-            let entries = self.subtitle_entries();
-            ui.add_space(t.gap / 2.0);
-            for (i, (label, val)) in entries.iter().enumerate() {
-                let focused = self.focus.group == G_LIST && self.focus.index == i;
-                let r = parts::button(ui, t, label, focused, false);
-                list_xs.push(r.rect.center().x);
-                if r.hovered() {
-                    self.focus = Focus { group: G_LIST, index: i };
-                }
-                if r.clicked() {
-                    act = Some(Action::SubtitlePick(*val));
-                }
-            }
+            let v = self.subtitle_entries().into_iter().map(|(l, i)| (l, Action::SubtitlePick(i))).collect();
+            Some((v, None, Action::OpenSubtitles))
         } else if self.add_open {
-            ui.add_space(t.gap / 2.0);
             let loading = match self.add_mode {
                 AddMode::Playlists => self.playlists.is_none(),
                 AddMode::Collections => self.collections.is_none(),
                 AddMode::Root => false,
             };
-            let entries = self.add_entries();
-            if loading {
-                parts::muted(ui, t, "Loading…");
-            } else if entries.is_empty() {
-                parts::muted(ui, t, "Nothing here yet.");
-            }
-            for (i, (label, act_i)) in entries.iter().enumerate() {
-                let focused = self.focus.group == G_LIST && self.focus.index == i;
-                let r = parts::button(ui, t, label, focused, false);
-                list_xs.push(r.rect.center().x);
-                if r.hovered() {
-                    self.focus = Focus { group: G_LIST, index: i };
-                }
-                if r.clicked() {
-                    act = Some(Action::AddPick(*act_i));
-                }
-            }
+            let v = self.add_entries().into_iter().map(|(l, a)| (l, Action::AddPick(a))).collect();
+            Some((v, Some(if loading { "Loading…" } else { "Nothing here yet." }), Action::OpenAddTo))
         } else if self.version_open {
-            let entries = self.version_entries();
-            ui.add_space(t.gap / 2.0);
-            for (i, (label, index)) in entries.iter().enumerate() {
-                let focused = self.focus.group == G_LIST && self.focus.index == i;
-                let r = parts::button(ui, t, label, focused, false);
-                list_xs.push(r.rect.center().x);
-                if r.hovered() {
-                    self.focus = Focus { group: G_LIST, index: i };
-                }
-                if r.clicked() {
-                    act = Some(Action::VersionPick(*index));
-                }
-            }
+            Some((
+                self.version_entries().into_iter().map(|(l, i)| (l, Action::VersionPick(i))).collect(),
+                None,
+                Action::OpenVersion,
+            ))
         } else if self.section.open {
-            ui.add_space(t.gap / 2.0);
-            for (i, (label, _)) in admin_actions::CHOICES.iter().enumerate() {
-                let focused = self.focus.group == G_LIST && self.focus.index == i;
-                let r = parts::button(ui, t, label, focused, false);
+            let v = admin_actions::CHOICES
+                .iter()
+                .enumerate()
+                .map(|(i, (l, _))| (l.to_string(), Action::SectionPick(i)))
+                .collect();
+            Some((v, None, Action::OpenSection))
+        } else {
+            None
+        };
+        if let Some((entries, note, opener)) = list {
+            let at_btn = self
+                .movie_buttons()
+                .iter()
+                .position(|(_, a)| std::mem::discriminant(a) == std::mem::discriminant(&opener));
+            let anchor = at_btn.and_then(|i| self.btn_rects.get(i).copied()).unwrap_or(ui.cursor());
+            let labels: Vec<String> = entries.iter().map(|(l, _)| l.clone()).collect();
+            let focus = (self.focus.group == G_LIST).then_some(self.focus.index);
+            for (i, r) in at::popover(ui, t, "item-picker", anchor, &labels, focus, note).iter().enumerate() {
                 list_xs.push(r.rect.center().x);
                 if r.hovered() {
                     self.focus = Focus { group: G_LIST, index: i };
                 }
                 if r.clicked() {
-                    act = Some(Action::SectionPick(i));
+                    act = Some(entries[i].1);
                 }
             }
         } else if self.story.open {
@@ -1313,38 +1277,48 @@ impl ItemScreen {
     }
 
     // G8 (P-ITEM-18): the technical facts of the chosen version. Path only for admins.
-    fn draw_media_info(&mut self, ui: &mut egui::Ui, cx: &mut Cx, xs: &mut Vec<f32>) {
+    // D2: Apple's "Information" section — facts, people, then Audio / Subtitles / Format of the chosen version.
+    // D7: read-only, so it takes no presses; `bring_in` (focus on the last row above it) scrolls it into view.
+    fn draw_media_info(&mut self, ui: &mut egui::Ui, cx: &mut Cx, bring_in: bool) {
         let id = self.source().map(|m| m.id.clone());
         let info = self.media_info.iter().find(|m| Some(&m.id) == id.as_ref()).or_else(|| self.media_info.first());
-        // D2: Apple's "Information" section — facts, people, then Audio / Subtitles / Format of the chosen version
-        // (path only for admins). Each column is a focus stop, so the remote can scroll down to it.
-        let cols = at::info_columns(self.current(), info, cx.admin);
+        let mut cols = at::info_columns(self.current(), info, cx.admin);
+        // UXP2 (D14): the same readable track names as the Audio / Subtitles pickers
+        for c in cols.iter_mut() {
+            let kind = match c.heading.as_str() {
+                "Audio" => StreamKind::Audio,
+                "Subtitles" => StreamKind::Subtitle,
+                _ => continue,
+            };
+            let names: Vec<String> = self.track_names(kind).into_iter().map(|(_, l)| l).collect();
+            if !names.is_empty() {
+                c.lines = names;
+            }
+        }
         if cols.is_empty() {
             return;
         }
         let t = cx.theme;
-        let pointer_moved = ui.input(|i| i.pointer.is_moving());
+        let top = ui.cursor().top();
         at::section_title(ui, t, "Information");
-        let focus = (self.focus.group == G_INFO).then_some(self.focus.index);
-        for (i, r) in at::info_section(ui, t, &cols, focus).iter().enumerate() {
-            xs.push(r.rect.center().x);
-            if pointer_moved && r.hovered() {
-                self.focus = Focus { group: G_INFO, index: i };
-            }
+        at::info_section(ui, t, &cols, None);
+        if at::focus_moved(ui, egui::Id::new("item-info"), bring_in.then_some(0)) {
+            ui.scroll_to_rect(
+                egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), top), ui.cursor().left_top()),
+                None,
+            );
         }
     }
 
     // G4 / RR6 (P-ITEM-17): a "Chapters" row on movie/episode pages: a 16:9 still per chapter (the server's chapter
-    // image) with time + name under it; Enter plays from the chapter. Always drawn so the "No chapters" state is
-    // visible in the render shots.
+    // image) with time + name under it; Enter plays from the chapter. D7: no section at all when there are none.
     fn draw_chapters(&mut self, ui: &mut egui::Ui, cx: &mut Cx, chapter_xs: &mut Vec<f32>) -> Option<Action> {
         let t = cx.theme;
         let rows = super::player::chapter_rows(&self.current().chapters);
-        at::section_title(ui, t, "Chapters");
         if rows.is_empty() {
-            parts::muted(ui, t, "No chapters");
             return None;
         }
+        at::section_title(ui, t, "Chapters");
         // same order as `chapter_rows` (stable sort by start); the original index is what the image URL wants
         let mut order: Vec<(usize, crate::api::Chapter)> =
             self.current().chapters.iter().cloned().enumerate().collect();
@@ -1706,7 +1680,7 @@ impl ItemScreen {
                 None
             };
             let art = HeroArt { backdrop, logo: at::logo(cx, ui, &item) };
-            let rect = at::hero(ui, t, art, t.backdrop_h);
+            let rect = at::hero(ui, t, art, at::hero_fit_h(ui, t, "item-hero"));
             let hero_focus = matches!(self.focus.group, G_BTN | G_MORE).then_some(0);
             if at::focus_moved(ui, egui::Id::new("item-hero"), hero_focus) {
                 ui.scroll_to_rect(rect.with_max_y(rect.top() + t.gap), None);
@@ -1772,7 +1746,9 @@ impl ItemScreen {
                     col.add_space(t.gap);
                     let shown: Vec<ActionBtn> = btns.iter().map(|(b, _)| b.clone()).collect();
                     let focus = (self.focus.group == G_BTN).then_some(self.focus.index);
-                    for (i, r) in at::action_row(col, t, &shown, focus).iter().enumerate() {
+                    let rs = at::action_row(col, t, &shown, focus);
+                    self.btn_rects = rs.iter().map(|r| r.rect).collect();
+                    for (i, r) in rs.iter().enumerate() {
                         hero_xs.push(r.rect.center().x);
                         if r.hovered() && moving {
                             self.focus = Focus { group: G_BTN, index: i };
@@ -1807,7 +1783,6 @@ impl ItemScreen {
         let mut chapter_xs: Vec<f32> = vec![];
         let mut special_xs: Vec<f32> = vec![];
         let mut similar_xs: Vec<f32> = vec![];
-        let mut info_xs: Vec<f32> = vec![];
         let mut play_special: Option<Item> = None;
         let mut play_part: Option<usize> = None;
         let mut part_xs: Vec<f32> = vec![];
@@ -1819,6 +1794,8 @@ impl ItemScreen {
                 if let Some(a) = self.draw_movie_episode(ui, cx, &mut list_xs, &mut pos_xs, &mut story_xs) {
                     act = Some(a);
                 }
+                // D7: cast & crew first, above the fold
+                push_person = self.draw_people(ui, cx, &mut people_xs);
                 if !self.picker_open() {
                     open_chip_target = self.draw_chips(ui, cx, &mut chip_xs);
                 }
@@ -1833,7 +1810,6 @@ impl ItemScreen {
                 if !self.picker_open() {
                     play_part = self.draw_parts_row(ui, cx, &mut part_xs);
                 }
-                push_person = self.draw_people(ui, cx, &mut people_xs);
                 // G8: extras, more like this, media info.
                 if let Some(i) = self.draw_card_row(ui, cx, G_SPECIALS, "Special features", &mut special_xs) {
                     play_special = self.specials.get(i).cloned();
@@ -1843,8 +1819,19 @@ impl ItemScreen {
                         push_item = self.similar.get(i).cloned();
                     }
                 }
-                self.draw_media_info(ui, cx, &mut info_xs);
                 open_url = self.draw_links(ui, cx, &mut link_xs);
+                // D7: the read-only Information comes into view when focus reaches the last row above it.
+                let rows = [
+                    (G_LINKS, link_xs.len()),
+                    (G_SIMILAR, similar_xs.len()),
+                    (G_SPECIALS, special_xs.len()),
+                    (G_PARTS, part_xs.len()),
+                    (G_CHAPTERS, chapter_xs.len()),
+                    (G_CHIPS, chip_xs.len()),
+                    (G_PEOPLE, people_xs.len()),
+                ];
+                let last = rows.iter().find(|(_, n)| *n > 0).map(|(g, _)| *g);
+                self.draw_media_info(ui, cx, Some(self.focus.group) == last);
             }
             ItemKind::Series => {
                 let (a, pushed) = self.draw_series(ui, cx, &mut btn_xs, &mut row_xs);
@@ -1873,7 +1860,7 @@ impl ItemScreen {
             }
         }
 
-        let mut groups = vec![Group::default(); 14];
+        let mut groups = vec![Group::default(); N_GROUPS];
         match self.kind {
             ItemKind::Movie | ItemKind::Episode => {
                 let n = btn_xs.len();
@@ -1893,7 +1880,6 @@ impl ItemScreen {
                 groups[G_PEOPLE] = Group { len: people_xs.len(), cols: people_xs.len(), xs: people_xs };
                 groups[G_SPECIALS] = Group { len: special_xs.len(), cols: special_xs.len(), xs: special_xs };
                 groups[G_SIMILAR] = Group { len: similar_xs.len(), cols: similar_xs.len(), xs: similar_xs };
-                groups[G_INFO] = Group { len: info_xs.len(), cols: info_xs.len(), xs: info_xs };
                 groups[G_LINKS] = Group { len: link_xs.len(), cols: link_xs.len(), xs: link_xs };
             }
             ItemKind::Series => {
@@ -1998,7 +1984,17 @@ impl Screen for ItemScreen {
                 }
             }
             Key::Up | Key::Down | Key::Left | Key::Right => {
-                self.focus = move_focus(&self.groups, self.focus, key);
+                // An open picker is a fresh menu: Down from the buttons always lands on its first entry (the focus
+                // memory is keyed by layout, so another film's menu would otherwise decide where it lands).
+                let into_list = key == Key::Down
+                    && self.focus.group == G_BTN
+                    && self.picker_open()
+                    && self.groups.get(G_LIST).is_some_and(|g| g.len > 0);
+                self.focus = if into_list {
+                    Focus { group: G_LIST, index: 0 }
+                } else {
+                    move_focus(&self.groups, self.focus, key)
+                };
                 true
             }
             _ => false,

@@ -19,6 +19,8 @@ key left 20
 key enter
 wait-screen library
 idle
+# UX R2: the library opens on its first poster; Up twice reaches Sort in the control row.
+key up 2
 key enter
 key down 5
 key enter

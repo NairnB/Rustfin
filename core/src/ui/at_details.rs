@@ -498,6 +498,13 @@ pub fn hero_title(ui: &mut Ui, t: &Theme, name: &str, logo: Option<TextureId>) {
     ui.painter().galley(rect.min, g, t.text);
 }
 
+/// D7: a content-sized hero height for `hero_column(id)`: its measured column plus room above, between `hero_h` and
+/// `backdrop_h` (no tall empty band over short pages).
+pub fn hero_fit_h(ui: &Ui, t: &Theme, id: &str) -> f32 {
+    let last_h: f32 = ui.data_mut(|d| d.get_temp(Id::new(("at-hero-col", id)))).unwrap_or(t.hero_h);
+    (last_h + t.gap + 2.0 * t.row_gap).clamp(t.hero_h, t.backdrop_h)
+}
+
 /// The hero's text column, laid out top-down but sitting on the hero's bottom edge (its height is measured the
 /// frame before). When it is taller than the hero (an expanded overview) the page grows below the hero instead of
 /// the text running off the top.
@@ -761,6 +768,96 @@ pub fn menu_pill(ui: &mut Ui, t: &Theme, label: &str, focused: bool) -> Response
     resp
 }
 
+/// A translucent menu card (season picker, the ••• menu): pill rows `width` wide, focused = white plate. The card's
+/// left edge sits at `left` (clamped into the row). Returns one response per row.
+pub fn menu_card(
+    ui: &mut Ui,
+    t: &Theme,
+    labels: &[String],
+    focus: Option<usize>,
+    left: f32,
+    width: f32,
+) -> Vec<Response> {
+    let row_h = t.button_h + t.gap / 4.0;
+    let size = vec2(width + 2.0 * t.menu_pad, labels.len() as f32 * row_h + 2.0 * t.menu_pad);
+    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), size.y), Sense::hover());
+    let x = left.clamp(slot.left(), (slot.right() - size.x).max(slot.left()));
+    let rect = Rect::from_min_size(pos2(x, slot.top()), size);
+    ui.painter().add(t.shadow(1.0).as_shape(rect, t.menu_radius));
+    ui.painter().rect_filled(rect, t.menu_radius, t.menu_fill);
+    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(t.menu_pad)));
+    inner.spacing_mut().item_spacing.y = t.gap / 4.0;
+    labels
+        .iter()
+        .enumerate()
+        .map(|(i, l)| widgets::pill_button_width(&mut inner, t, l, focus == Some(i), false, width))
+        .collect()
+}
+
+/// D6: a menu card floating next to the control that opened it (no inline push): under `anchor`, or above it when
+/// there is no room; pill rows, focused = white plate, scrolls past `menu_max_h`. `note` is a muted line shown when
+/// there are no rows ("Loading…"). Returns one response per row.
+pub fn popover(
+    ui: &Ui,
+    t: &Theme,
+    id: &str,
+    anchor: Rect,
+    labels: &[String],
+    focus: Option<usize>,
+    note: Option<&str>,
+) -> Vec<Response> {
+    let font = t.font_w(t.body_size, Weight::SemiBold);
+    let widest = labels
+        .iter()
+        .map(|l| ui.fonts(|f| f.layout_no_wrap(l.clone(), font.clone(), t.text).size().x))
+        .fold(0.0_f32, f32::max);
+    let screen = ui.ctx().screen_rect();
+    let w = (widest + 2.0 * t.button_pad).max(t.dropdown_w).min(screen.width() / 2.0);
+    let row_h = t.button_h + t.gap / 4.0;
+    let rows_h = if labels.is_empty() { row_h } else { labels.len() as f32 * row_h };
+    let size = vec2(w + 2.0 * t.menu_pad, rows_h.min(t.menu_max_h) + 2.0 * t.menu_pad);
+    let x = (anchor.left() - t.menu_pad).clamp(screen.left(), (screen.right() - size.x).max(screen.left()));
+    let below = anchor.bottom() + t.gap / 4.0;
+    let y =
+        if below + size.y <= screen.bottom() { below } else { (anchor.top() - t.gap / 4.0 - size.y).max(screen.top()) };
+    let moved = focus_moved(ui, Id::new(("at-popover", id)), focus);
+    // egui hides a new area for its first (sizing) frame; ask for the next frame so it shows without waiting for input
+    ui.ctx().request_repaint();
+    let mut out = vec![];
+    egui::Area::new(Id::new(("at-popover-area", id))).order(egui::Order::Foreground).fixed_pos(pos2(x, y)).show(
+        ui.ctx(),
+        |ui| {
+            let rect = Rect::from_min_size(pos2(x, y), size);
+            ui.painter().add(t.shadow(1.0).as_shape(rect, t.menu_radius));
+            ui.painter().rect_filled(rect, t.menu_radius, t.menu_fill);
+            let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(t.menu_pad)));
+            inner.spacing_mut().item_spacing.y = t.gap / 4.0;
+            if labels.is_empty() {
+                if let Some(n) = note {
+                    let g = inner.fonts(|f| f.layout_no_wrap(n.to_string(), t.font(t.body_size), t.muted));
+                    let (r, _) = inner.allocate_exact_size(vec2(w, t.button_h), Sense::hover());
+                    inner.painter().galley(pos2(r.left() + t.button_pad, r.center().y - g.size().y / 2.0), g, t.muted);
+                }
+                return;
+            }
+            egui::ScrollArea::vertical()
+                .id_salt(("at-popover-scroll", id))
+                .max_height(t.menu_max_h)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut inner, |ui| {
+                    for (i, l) in labels.iter().enumerate() {
+                        let r = widgets::pill_button_width(ui, t, l, focus == Some(i), false, w);
+                        if moved && focus == Some(i) {
+                            r.scroll_to_me(None);
+                        }
+                        out.push(r);
+                    }
+                });
+        },
+    );
+    out
+}
+
 /// The action row: buttons left to right with `gap / 2` between. Returns one response per button.
 pub fn action_row(ui: &mut Ui, t: &Theme, btns: &[ActionBtn], focus: Option<usize>) -> Vec<Response> {
     let mut out = vec![];
@@ -889,49 +986,58 @@ pub fn episode_card(ui: &mut Ui, t: &Theme, c: &EpisodeCard, focused: bool) -> R
     resp
 }
 
-/// A wide 16:9 card (Up Next, special features, a collection's parts): art with the title in bold over a bottom
-/// shade (Apple puts the title logo there; we have the name), the subtitle under the card.
+/// Height of a wide card with `lines` caption lines.
+pub fn wide_card_h(t: &Theme, lines: usize) -> f32 {
+    t.wide_h + t.card_title_gap + line_h(t.body_size) * lines as f32
+}
+
+/// A wide 16:9 card (Up Next, a collection's parts): art (optionally a bold title over a bottom shade — Apple puts
+/// the title logo there) and caption lines under it: the first in medium weight, the rest muted.
 pub fn wide_card(
     ui: &mut Ui,
     t: &Theme,
     tex: Option<TextureId>,
     title: &str,
-    sub: &str,
+    caption: &[&str],
     progress: Option<f32>,
     focused: bool,
 ) -> Response {
-    let h = t.wide_h + t.card_title_gap + line_h(t.body_size);
-    let (rect, resp) = ui.allocate_exact_size(vec2(t.wide_w, h), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(t.wide_w, wide_card_h(t, caption.len())), Sense::click());
     if !ui.is_rect_visible(rect) {
         return resp;
     }
     let a = widgets::focus_amount(ui, t, resp.id, focused);
     let img = Rect::from_min_size(rect.min, vec2(t.wide_w, t.wide_h));
-    let r = art(ui, t, img, tex, "", a, None, false);
-    let shade = Rect::from_min_max(pos2(r.left(), r.center().y), r.max);
+    let r = art(ui, t, img, tex, "", a, progress.filter(|_| title.is_empty()), false);
     let p = ui.painter();
-    let mut mesh_rect = shade;
-    mesh_rect.set_bottom(r.bottom());
-    gradient(p, mesh_rect, &fade_stops(Color32::BLACK, 0.0, 0.75), true);
     let pad = t.gap / 2.0;
-    let font = t.font_w(t.heading_size, Weight::Bold);
-    let job = text_job(title, font, t.text, r.width() - 2.0 * pad, 2);
-    let g = ui.fonts(|f| f.layout_job(job));
-    let bottom = if progress.is_some() { r.bottom() - pad - t.progress_h - pad / 2.0 } else { r.bottom() - pad };
-    p.galley(pos2(r.left() + pad, bottom - g.size().y), g, t.text);
-    if let Some(f) = progress {
-        let bar = Rect::from_min_size(
-            pos2(r.left() + pad, r.bottom() - pad - t.progress_h),
-            vec2(r.width() - 2.0 * pad, t.progress_h),
-        );
-        p.rect_filled(bar, t.progress_h / 2.0, t.progress_track);
-        let mut done = bar;
-        done.set_right(bar.left() + bar.width() * f.clamp(0.0, 1.0));
-        p.rect_filled(done, t.progress_h / 2.0, t.progress);
+    if !title.is_empty() {
+        let shade = Rect::from_min_max(pos2(r.left(), r.center().y), r.max);
+        gradient(p, shade, &fade_stops(Color32::BLACK, 0.0, 0.75), true);
+        let job = text_job(title, t.font_w(t.heading_size, Weight::Bold), t.text, r.width() - 2.0 * pad, 2);
+        let g = ui.fonts(|f| f.layout_job(job));
+        let bottom = if progress.is_some() { r.bottom() - pad - t.progress_h - pad / 2.0 } else { r.bottom() - pad };
+        p.galley(pos2(r.left() + pad, bottom - g.size().y), g, t.text);
+        if let Some(f) = progress {
+            let bar = Rect::from_min_size(
+                pos2(r.left() + pad, r.bottom() - pad - t.progress_h),
+                vec2(r.width() - 2.0 * pad, t.progress_h),
+            );
+            p.rect_filled(bar, t.progress_h / 2.0, t.progress_track);
+            let mut done = bar;
+            done.set_right(bar.left() + bar.width() * f.clamp(0.0, 1.0));
+            p.rect_filled(done, t.progress_h / 2.0, t.progress);
+        }
     }
-    let y = img.bottom() + t.card_title_gap + (t.focus_scale - 1.0) * t.wide_h / 2.0 * a;
-    let c = t.muted.lerp_to_gamma(t.text, a);
-    text_at(ui, pos2(rect.left(), y), text_job(sub, t.font_w(t.body_size, Weight::Medium), c, t.wide_w, 1));
+    let mut y = img.bottom() + t.card_title_gap + (t.focus_scale - 1.0) * t.wide_h / 2.0 * a;
+    for (i, line) in caption.iter().enumerate() {
+        let (font, c) = if i == 0 {
+            (t.font_w(t.body_size, Weight::Medium), t.muted.lerp_to_gamma(t.text, 0.6 + 0.4 * a))
+        } else {
+            (t.font(t.body_size), t.muted)
+        };
+        y += text_at(ui, pos2(rect.left(), y), text_job(line, font, c, t.wide_w, 1)).y;
+    }
     resp
 }
 

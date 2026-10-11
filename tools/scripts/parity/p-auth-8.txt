@@ -16,7 +16,7 @@ wait-screen home
 idle
 click 130 1038
 idle
-click 130 927
+click 380 987
 wait-screen signin
 idle
 wait 1500

@@ -67,26 +67,48 @@ pub struct Person {
     started: bool,
 }
 
-/// RR6 / P-PPL-1: the dates line under a person's name. Born and died → "1950 – 2020 · aged 70"; born only →
-/// "Born 1950"; died only → "Died 2020". Dates are the server's ISO strings; only the leading `YYYY-MM-DD` is read.
+/// RR6 / P-PPL-1: the dates line under a person's name. D15: dates read "2 March 1950". Born and died →
+/// "2 March 1950 – 1 July 2020 · aged 70"; born only → "Born 5 January 1981"; died only → "Died 5 May 2001". Dates
+/// are the server's ISO strings; only the leading `YYYY-MM-DD` is read (a bare year stays a year).
 pub fn life_line(born: Option<&str>, died: Option<&str>) -> Option<String> {
-    fn ymd(s: &str) -> Option<(i32, u32, u32)> {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    fn ymd(s: &str) -> Option<(i32, Option<(u32, u32)>)> {
         let s = s.trim().get(..10).unwrap_or(s.trim());
         let mut it = s.split('-');
         let y = it.next()?.parse().ok()?;
-        let m = it.next().and_then(|m| m.parse().ok()).unwrap_or(1);
-        let d = it.next().and_then(|d| d.parse().ok()).unwrap_or(1);
-        Some((y, m, d))
+        let md = match (it.next().and_then(|m| m.parse().ok()), it.next().and_then(|d| d.parse().ok())) {
+            (Some(m), Some(d)) if (1..=12).contains(&m) && d >= 1 => Some((m, d)),
+            _ => None,
+        };
+        Some((y, md))
     }
+    let long = |(y, md): (i32, Option<(u32, u32)>)| match md {
+        Some((m, d)) => format!("{d} {} {y}", MONTHS[m as usize - 1]),
+        None => y.to_string(),
+    };
     let b = born.and_then(ymd);
     let d = died.and_then(ymd);
     match (b, d) {
         (Some(b), Some(d)) => {
-            let age = d.0 - b.0 - i32::from((d.1, d.2) < (b.1, b.2));
-            Some(format!("{} \u{2013} {} \u{b7} aged {age}", b.0, d.0))
+            let (bm, dm) = (b.1.unwrap_or((1, 1)), d.1.unwrap_or((1, 1)));
+            let age = d.0 - b.0 - i32::from(dm < bm);
+            Some(format!("{} \u{2013} {} \u{b7} aged {age}", long(b), long(d)))
         }
-        (Some(b), None) => Some(format!("Born {}", b.0)),
-        (None, Some(d)) => Some(format!("Died {}", d.0)),
+        (Some(b), None) => Some(format!("Born {}", long(b))),
+        (None, Some(d)) => Some(format!("Died {}", long(d))),
         (None, None) => None,
     }
 }

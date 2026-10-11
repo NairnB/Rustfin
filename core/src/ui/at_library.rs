@@ -36,6 +36,10 @@ pub fn search_field(ui: &mut Ui, t: &Theme, text: &mut String, hint: &str, focus
     } else if !focused && r.has_focus() {
         r.surrender_focus();
     }
+    if focused {
+        // UXP5: tell the TV keyboard which field has focus (see `parts::text_field`).
+        super::keyboard::register(ui.ctx(), text, false, hint);
+    }
     r
 }
 

@@ -258,7 +258,7 @@ impl GalleryDetails {
                     (Some(s), Some(e)) => format!("S{s}, E{e} · {}", n.name),
                     _ => n.name.clone(),
                 };
-                at::wide_card(ui, t, tx, &item.name, &sub, crate::ui::parts::resume_fraction(&n), focus == Some(0))
+                at::wide_card(ui, t, tx, &item.name, &[&sub], crate::ui::parts::resume_fraction(&n), focus == Some(0))
             });
             self.track(&rs, G_NEXT, groups);
         }

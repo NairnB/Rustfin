@@ -1,0 +1,42 @@
+# D15 (D2): person page — dates read "2 March 1950", one focus at a time (tabs, then the poster row).
+# Viewer, Ember Rising → cast & crew → Rowan Pike (born 2 March 1950).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+idle
+type Ember Rising
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+key down
+key right
+idle
+key enter
+wait-screen person
+wait 1500
+idle
+shot ux-person
+key down
+idle
+wait 400
+shot ux-person-focus
+quit

@@ -1,5 +1,6 @@
 # args: --tv
-# P-HOME-7 parity tour (RR7): the user menu at the right of the Home top bar — open it, then Settings.
+# P-HOME-7 parity tour (RR7): the user menu at the right of the Home top bar (TV) — open it, then Settings
+# (third entry: Favourites, Playlists, Settings, Switch user, Sign out).
 wait-screen connect
 wait 2500
 idle
@@ -16,12 +17,13 @@ key enter
 wait-screen home
 idle
 key up 20
-key right 4
+key right 10
 idle
 shot p-home-7-chip
 key enter
 idle
 shot p-home-7
+key down 2
 key enter
 wait-screen settings
 idle

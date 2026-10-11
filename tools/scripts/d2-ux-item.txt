@@ -1,0 +1,39 @@
+# D7 (D2): film page — content-sized hero, cast & crew (named round photos) right under it, no empty Chapters
+# section, read-only Information comes into view without taking a press. Viewer, Star Drift - Ember Rising.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+idle
+type Ember Rising
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+shot ux-item-top
+key down
+idle
+wait 400
+shot ux-item-cast
+key down 6
+idle
+wait 600
+shot ux-item-info
+quit

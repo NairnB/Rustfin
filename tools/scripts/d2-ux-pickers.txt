@@ -1,0 +1,43 @@
+# D6 (D2): the film page's Audio / Subtitles choices open as a menu next to their button (no inline push).
+# Viewer, Amber Tide: Play, Watched, Audio, Subtitles, …
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Amber Tide
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+key right 2
+key enter
+idle
+wait 300
+shot ux-picker-audio
+key back
+idle
+key right
+key enter
+idle
+key down
+wait 300
+shot ux-picker-subtitles
+key back
+quit

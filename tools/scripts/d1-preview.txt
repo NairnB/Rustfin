@@ -25,7 +25,7 @@ shot preview-library
 click 130 393
 wait-screen library
 idle
-click 484 820
+click 484 520
 wait-screen show
 idle
 wait 300

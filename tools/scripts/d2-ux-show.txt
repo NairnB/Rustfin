@@ -1,0 +1,44 @@
+# UX #5 / D8 (D2): show page — focus starts on Play; Mark series + Missing episodes live in the ••• menu;
+# marking the whole series asks first (Cancel focused). Viewer, Drift Rebels; never marks anything.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key search
+wait-screen search
+idle
+type Drift Rebels
+wait 600
+idle
+key down
+key enter
+wait-screen show
+wait 2500
+idle
+shot ux-show-start
+key right 5
+key enter
+idle
+wait 300
+shot ux-show-more
+key enter
+idle
+wait 300
+shot ux-show-confirm
+# Enter on the default (Cancel) changes nothing
+key enter
+idle
+wait 300
+shot ux-show-cancelled
+quit
