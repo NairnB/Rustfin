@@ -162,6 +162,11 @@ impl RequestBuilder {
         for (k, v) in &self.headers {
             x.set_request_header(k, v).map_err(js)?;
         }
+        // The page's HTTP cache would answer API GETs with stale data (watch state, resume points); only image
+        // URLs (they carry a tag) may come from it.
+        if !self.url.contains("/Images/") {
+            x.set_request_header("Cache-Control", "no-cache").map_err(js)?;
+        }
         match &body {
             Some(b) => x.send_with_opt_str(Some(b)).map_err(js)?,
             None => x.send().map_err(js)?,

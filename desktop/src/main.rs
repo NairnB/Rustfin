@@ -1,5 +1,5 @@
 //! Desktop shell: winit window + glutin GL context, the core app drawn with egui, libmpv video underneath.
-//!   rustfin [--server URL] [--data-dir DIR] [--size WxH] [--gles2] [--tv] [--script FILE --shots DIR]
+//!   rustfin [--server URL] [--data-dir DIR] [--size WxH] [--gles2] [--tv] [--script FILE --shots DIR | --drive DIR]
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod mpv;
 mod player;
@@ -39,6 +39,8 @@ struct Args {
     gles2: bool,
     script: Option<PathBuf>,
     shots: PathBuf,
+    /// `--drive DIR`: take commands one at a time from `DIR/in`, answer in `DIR/out` + `DIR/shots` (tools/ux/rf-drive).
+    drive: Option<PathBuf>,
     playtest: bool,
     user: Option<String>,
     pass: Option<String>,
@@ -58,6 +60,7 @@ fn args() -> Args {
         gles2: false,
         script: None,
         shots: PathBuf::from("."),
+        drive: None,
         playtest: false,
         user: None,
         pass: None,
@@ -81,6 +84,10 @@ fn args() -> Args {
             }
             "--script" => {
                 a.script = Some(next.into());
+                i += 1
+            }
+            "--drive" => {
+                a.drive = Some(next.into());
                 i += 1
             }
             "--shots" => {
@@ -318,7 +325,9 @@ impl Shell {
         }
         // Scripted mouse: pixels → points (ppp as below), fed to egui like real winit pointer events.
         if let Some(m) = step.mouse {
-            let ppp = (size.height as f32 / 1080.0).max(0.75);
+            // Drive testers see 1280-px-wide shots: their coordinates are in that picture.
+            let k = if self.a.drive.is_some() && size.width > 1280 { size.width as f32 / 1280.0 } else { 1.0 };
+            let ppp = (size.height as f32 / 1080.0).max(0.75) / k;
             let input = g.egui.egui_winit.egui_input_mut();
             let pos = self.pointer;
             match m {
@@ -408,6 +417,15 @@ impl Shell {
             let path = self.a.shots.join(format!("{name}.png"));
             shoot_png(&g.gl, size.width, size.height, &path);
         }
+        if let (Some((n, at, err)), Some(dir)) = (step.drive_shot.take(), &self.a.drive) {
+            // Desk shots show where the pointer is; the TV has none.
+            let cursor = (!self.a.tv && self.pointer != egui::Pos2::ZERO).then(|| self.pointer * ppp);
+            let msg = err.map_or_else(
+                || format!("ok {} {}", self.app.screen_name(), at.elapsed().as_millis()),
+                |e| format!("error {}", e.replace('\n', " ")),
+            );
+            drive_shot(&g.gl, size.width, size.height, dir, n, &msg, cursor);
+        }
         if let Some((dir, n)) = self.recording.as_mut() {
             *n += 1;
             shoot_png_quiet(&g.gl, size.width, size.height, &dir.join(format!("{n:05}.png")));
@@ -489,6 +507,86 @@ fn shoot_png(gl: &glow::Context, w: u32, h: u32, path: &std::path::Path) {
     match img.save(path) {
         Ok(_) => println!("SHOT {}", path.display()),
         Err(e) => eprintln!("SHOT FAILED {}: {e}", path.display()),
+    }
+}
+
+/// rf-drive step `n`: `<dir>/shots/NNN.jpg` (1280 px wide, quality 85, the pointer drawn in), then the line
+/// `NNN <msg>` appended to `<dir>/out` — the wrapper waits for that line, so the picture is finished before it.
+fn drive_shot(
+    gl: &glow::Context,
+    w: u32,
+    h: u32,
+    dir: &std::path::Path,
+    n: u32,
+    msg: &str,
+    cursor: Option<egui::Pos2>,
+) {
+    use std::io::Write;
+    if let Some(mut img) = capture(gl, w, h) {
+        let scale = if w > 1280 { 1280.0 / w as f32 } else { 1.0 };
+        if scale < 1.0 {
+            img = image::imageops::resize(&img, 1280, (h as f32 * scale).round() as u32, image::imageops::Lanczos3);
+        }
+        if let Some(c) = cursor {
+            draw_cursor(&mut img, c.x * scale, c.y * scale);
+        }
+        let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
+        let path = dir.join("shots").join(format!("{n:03}.jpg"));
+        let saved = std::fs::File::create(&path).map_err(|e| e.to_string()).and_then(|f| {
+            let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(f), 85);
+            rgb.write_with_encoder(enc).map_err(|e| e.to_string())
+        });
+        if let Err(e) = saved {
+            eprintln!("DRIVE SHOT FAILED {}: {e}", path.display());
+        }
+    }
+    let out = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("out"));
+    if let Ok(mut f) = out {
+        let _ = writeln!(f, "{n:03} {msg}");
+    }
+}
+
+/// A small white arrow with a dark outline, tip at (x, y) in picture pixels.
+fn draw_cursor(img: &mut image::RgbaImage, x: f32, y: f32) {
+    const ARROW: [(f32, f32); 7] = [(0., 0.), (0., 16.), (4., 12.), (7., 19.), (9., 18.), (6., 11.), (11., 11.)];
+    let k = 1.4;
+    let poly: Vec<(f32, f32)> = ARROW.iter().map(|&(px, py)| (x + px * k, y + py * k)).collect();
+    let inside = |p: (f32, f32)| {
+        let mut c = false;
+        for i in 0..poly.len() {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0 {
+                c = !c;
+            }
+        }
+        c
+    };
+    let edge = |p: (f32, f32)| {
+        (0..poly.len())
+            .map(|i| {
+                let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
+            })
+            .fold(f32::MAX, f32::min)
+    };
+    let (x0, y0) = (x.floor() as i32 - 3, y.floor() as i32 - 3);
+    for py in y0..y0 + 36 {
+        for px in x0..x0 + 24 {
+            if px < 0 || py < 0 || px >= img.width() as i32 || py >= img.height() as i32 {
+                continue;
+            }
+            let p = (px as f32 + 0.5, py as f32 + 0.5);
+            let c = if inside(p) && edge(p) > 1.0 {
+                [255, 255, 255, 255]
+            } else if inside(p) || edge(p) <= 1.8 {
+                [20, 20, 20, 255]
+            } else {
+                continue;
+            };
+            img.put_pixel(px as u32, py as u32, image::Rgba(c));
+        }
     }
 }
 
@@ -653,10 +751,13 @@ fn main() {
             desktop: !a.tv,
         },
     );
-    let runner = a.script.as_ref().map(|p| {
-        let src = std::fs::read_to_string(p).expect("script");
-        script::Runner::new(script::parse(&src).unwrap_or_else(|e| panic!("{e}")), started)
-    });
+    let runner = match (&a.drive, &a.script) {
+        (Some(dir), _) => Some(script::Runner::drive(dir, a.tv, started)),
+        (None, p) => p.as_ref().map(|p| {
+            let src = std::fs::read_to_string(p).expect("script");
+            script::Runner::new(script::parse(&src).unwrap_or_else(|e| panic!("{e}")), started)
+        }),
+    };
     let el = EventLoop::new().expect("event loop");
     el.set_control_flow(ControlFlow::Poll);
     let playtest = if a.playtest {

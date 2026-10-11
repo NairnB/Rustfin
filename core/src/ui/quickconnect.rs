@@ -5,7 +5,6 @@ use crate::app::{Cx, Screen};
 use crate::nav::{Focus, Group};
 use crate::platform::Key;
 use crate::settings::ServerEntry;
-use std::time::Duration;
 
 const G_RETRY: usize = 0;
 
@@ -17,6 +16,8 @@ pub struct QuickConnect {
     error: Option<String>,
     busy: bool,
     polling: bool,
+    /// `cx.now` before which no new poll starts (2 s apart; a sleeping job would panic on the TV web route).
+    next_poll: f64,
     started: bool,
     focus: Focus,
     groups: Vec<Group>,
@@ -33,6 +34,7 @@ pub fn screen(client: Client, remember: bool) -> Box<dyn Screen> {
         error: None,
         busy: false,
         polling: false,
+        next_poll: 0.0,
         started: false,
         focus: Focus { group: G_RETRY, index: 0 },
         groups: vec![],
@@ -42,16 +44,14 @@ pub fn screen(client: Client, remember: bool) -> Box<dyn Screen> {
 
 impl QuickConnect {
     fn start_poll(&mut self, cx: &mut Cx) {
-        if self.polling || self.busy || self.secret.is_empty() || self.error.is_some() {
+        if self.polling || self.busy || self.secret.is_empty() || self.error.is_some() || cx.now < self.next_poll {
             return;
         }
         self.polling = true;
+        self.next_poll = cx.now + 2.0;
         let client = self.client.clone();
         let secret = self.secret.clone();
-        cx.spawn("poll", move || {
-            std::thread::sleep(Duration::from_secs(2));
-            client.quick_connect_poll(&secret)
-        });
+        cx.spawn("poll", move || client.quick_connect_poll(&secret));
     }
 
     fn finish(&mut self, cx: &mut Cx) {

@@ -23,7 +23,11 @@
 //!   record <name> [fps]    from now on every frame is exactly 1/fps s of app time (default 30) and is saved as
 //!                          <shots dir>/<name>/00001.png …; `wait` and `drag` count app time while recording
 //!   record-stop
+//! `--drive <dir>` (rf-drive): the same commands, one line at a time from the FIFO `<dir>/in`; see `Drive`.
 use jf_core::platform::Key;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -48,6 +52,10 @@ pub enum Cmd {
     },
     Record(String, u32),
     RecordStop,
+    /// Drive mode: like `Idle` but gives up after 10 s, silently.
+    DriveSettle,
+    /// Drive mode end of a command: shoot step <n> (an error message makes it an error line); started at.
+    DriveShot(u32, Instant, Option<String>),
 }
 
 /// A pointer action for one frame (`click` expands to Move, Press, Release).
@@ -130,6 +138,44 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
     Ok(v)
 }
 
+/// The only keys a TV remote has (drive mode, `--tv`).
+const TV_KEYS: [&str; 8] = ["up", "down", "left", "right", "enter", "back", "info", "playpause"];
+
+/// One drive-mode line from the tester. Desk: click/move/scroll/drag/mouse/key/type/wait/shot; TV (`tv_only`): `key` with
+/// a remote key, and `wait`. Anything else is an error (never a crash). Key names are case-blind; `playpause` = `space`.
+pub fn parse_drive(line: &str, tv_only: bool) -> Result<Vec<Cmd>, String> {
+    let line = line.trim();
+    let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
+    let (lc, rest) = (cmd.to_lowercase(), rest.trim());
+    match lc.as_str() {
+        "wait" => match rest.parse::<u64>() {
+            Ok(ms) if ms <= 10_000 => Ok(vec![Cmd::Wait(ms)]),
+            _ => Err("wait takes milliseconds, at most 10000".into()),
+        },
+        "key" => {
+            let name = rest.split_whitespace().next().unwrap_or("").to_lowercase();
+            if tv_only && !TV_KEYS.contains(&name.as_str()) {
+                return Err("not available on a TV remote".into());
+            }
+            let name = if name == "playpause" { "space" } else { &name };
+            let n = rest.split_whitespace().nth(1).unwrap_or("");
+            parse(&format!("key {name} {n}")).map_err(|_| format!("unknown key: {rest}"))
+        }
+        _ if tv_only && matches!(lc.as_str(), "click" | "move" | "scroll" | "drag" | "mouse" | "type" | "shot") => {
+            Err("not available on a TV remote".into())
+        }
+        // Typed text is taken as-is (the tour parser would cut it at a `#`).
+        "type" => Ok(vec![Cmd::Type(rest.into())]),
+        // Every step ends with a shot anyway.
+        "shot" => Ok(vec![]),
+        "click" | "move" | "scroll" | "drag" | "mouse" => {
+            parse(&format!("{lc} {rest}")).map_err(|_| format!("bad arguments: {line}"))
+        }
+        _ if tv_only => Err("not available on a TV remote".into()),
+        _ => Err(format!("unknown command: {cmd}")),
+    }
+}
+
 fn key(s: &str) -> Option<Key> {
     Some(match s {
         "up" => Key::Up,
@@ -170,6 +216,22 @@ pub struct Step {
     /// Start (`Some(Some((name, fps)))`) or stop (`Some(None)`) recording.
     pub record: Option<Option<(String, u32)>>,
     pub quit: bool,
+    /// Drive mode: take the step's screenshot now (step number, when it started, error to report).
+    pub drive_shot: Option<(u32, Instant, Option<String>)>,
+}
+
+/// `--drive <dir>`: commands arrive one per line on the FIFO `<dir>/in` (the wrapper makes it; a reader thread reopens
+/// it at EOF). Every line becomes its commands + a settle + a screenshot, numbered 1, 2, … (`main` writes the shot and
+/// the `out` line). Control lines: `!ready` restarts the numbering and, with `--tv`, locks to remote keys (the
+/// wrapper's sign-in prelude runs before it); `!quit` ends the app. Testers can't send `!` lines (unknown command).
+struct Drive {
+    rx: mpsc::Receiver<String>,
+    /// Tests queue lines through this instead of the FIFO.
+    #[cfg(test)]
+    tx: mpsc::Sender<String>,
+    tv: bool,
+    restricted: bool,
+    n: u32,
 }
 
 pub struct Runner {
@@ -183,6 +245,7 @@ pub struct Runner {
     pub started: Instant,
     /// App clock (s) when the current command started; `wait` and `drag` measure on it.
     since_clock: f64,
+    drive: Option<Drive>,
 }
 
 impl Runner {
@@ -196,6 +259,57 @@ impl Runner {
             burst: false,
             started,
             since_clock: 0.0,
+            drive: None,
+        }
+    }
+
+    /// Drive mode: no script; wait for lines on `<dir>/in`. Shots go to `<dir>/shots`.
+    pub fn drive(dir: &Path, tv: bool, started: Instant) -> Runner {
+        let _ = std::fs::create_dir_all(dir.join("shots"));
+        let (tx, rx) = mpsc::channel();
+        let fifo = dir.join("in");
+        #[cfg(test)]
+        let t2 = tx.clone();
+        #[cfg(not(test))]
+        let t2 = tx;
+        std::thread::spawn(move || read_fifo(&fifo, t2));
+        let mut r = Runner::new(vec![], started);
+        r.drive = Some(Drive {
+            rx,
+            #[cfg(test)]
+            tx,
+            tv,
+            restricted: false,
+            n: 0,
+        });
+        r
+    }
+
+    /// Queue one drive line as if it had arrived on the FIFO (tests).
+    #[cfg(test)]
+    fn feed(&self, line: &str) {
+        let _ = self.drive.as_ref().unwrap().tx.send(line.into());
+    }
+
+    /// Drive mode with nothing queued: take the next line, if one has arrived.
+    fn pull(&mut self, quit: &mut bool) {
+        let Some(d) = self.drive.as_mut() else { return };
+        let Ok(line) = d.rx.try_recv() else { return };
+        self.cmds.clear();
+        self.pc = 0;
+        match line.trim() {
+            "!ready" => (d.n, d.restricted) = (0, d.tv),
+            "!quit" => *quit = true,
+            l => {
+                d.n += 1;
+                let (cmds, err) = match parse_drive(l, d.restricted) {
+                    Ok(c) => (c, None),
+                    Err(e) => (vec![], Some(e)),
+                };
+                self.cmds = cmds;
+                // 200 ms of app time lets a screen change finish its slide before the shot.
+                self.cmds.extend([Cmd::DriveSettle, Cmd::Wait(200), Cmd::DriveShot(d.n, Instant::now(), err)]);
+            }
         }
     }
 
@@ -203,8 +317,9 @@ impl Runner {
     /// only waits can sleep between frames.
     pub fn acts_now(&self, app_idle: bool) -> bool {
         match self.cmds.get(self.pc) {
-            Some(Cmd::Idle) => app_idle,
+            Some(Cmd::Idle | Cmd::DriveSettle) => app_idle,
             Some(Cmd::WaitScreen(_) | Cmd::Wait(_)) => false,
+            None => self.drive.is_none(),
             _ => true,
         }
     }
@@ -212,8 +327,11 @@ impl Runner {
     /// Called once per frame with the app's state and clock (seconds); returns what to do this frame.
     pub fn step(&mut self, screen: &str, idle: bool, frame_ms: f32, clock: f64) -> Step {
         let mut s = Step::default();
+        if self.pc >= self.cmds.len() {
+            self.pull(&mut s.quit);
+        }
         let Some(cmd) = self.cmds.get(self.pc).cloned() else {
-            s.quit = true;
+            s.quit |= self.drive.is_none();
             return s;
         };
         let elapsed = self.since.elapsed();
@@ -235,6 +353,11 @@ impl Runner {
                     eprintln!("SCRIPT WARN: not idle after 30 s on {screen}");
                 }
             }
+            Cmd::DriveSettle => {
+                self.idle_frames = if idle { self.idle_frames + 1 } else { 0 };
+                next = self.idle_frames >= 3 || elapsed > Duration::from_secs(10);
+            }
+            Cmd::DriveShot(n, at, err) => s.drive_shot = Some((n, at, err)),
             Cmd::Key(k, n) => {
                 s.keys = vec![k];
                 self.burst |= n > 1;
@@ -296,6 +419,18 @@ impl Runner {
     }
 }
 
+/// Feed the FIFO's lines to the runner; at EOF (the writer closed) open it again.
+fn read_fifo(path: &PathBuf, tx: mpsc::Sender<String>) {
+    loop {
+        if let Ok(f) = std::fs::File::open(path) {
+            for line in std::io::BufReader::new(f).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 pub fn rss_mb() -> f64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -348,5 +483,55 @@ mod tests {
         let s = r.step("x", true, 16.0, 0.1);
         assert_eq!(s.mouse, Some(Mouse::Move(100.0, 0.0)));
         assert_eq!(r.step("x", true, 16.0, 0.1).mouse, Some(Mouse::Release));
+    }
+
+    #[test]
+    fn drive_commands_parse_and_validate() {
+        let d = |l: &str, tv| parse_drive(l, tv);
+        // Desk takes every tour command a tester needs; key names are case-blind, playpause = space.
+        assert_eq!(format!("{:?}", d("click 10 20", false).unwrap()[2]), "Mouse(Release)");
+        assert_eq!(format!("{:?}", d("Key Enter", false).unwrap()), "[Key(Enter, 1)]");
+        assert_eq!(format!("{:?}", d("key PlayPause", false).unwrap()), "[Key(PlayPause, 1)]");
+        assert_eq!(format!("{:?}", d("type Hello #1", false).unwrap()), "[Type(\"Hello #1\")]");
+        assert!(d("shot", false).unwrap().is_empty());
+        assert!(d("wait 500", false).is_ok());
+        assert!(d("wait 99999", false).is_err());
+        // Unknown commands and tour-only ones are errors, not crashes.
+        for bad in ["dance", "quit", "!quit", "record x", "fast-forward 5", "wait-screen home", "key nope", "click 1"] {
+            assert!(d(bad, false).is_err(), "{bad}");
+        }
+        // TV remote: only the eight keys and wait.
+        for k in ["Up", "Down", "Left", "Right", "Enter", "Back", "Info", "PlayPause"] {
+            assert!(d(&format!("key {k}"), true).is_ok(), "{k}");
+        }
+        assert!(d("wait 300", true).is_ok());
+        for bad in ["click 1 2", "move 1 2", "scroll 0 5", "type hi", "key esc", "key backspace", "key search", "shot"]
+        {
+            assert_eq!(d(bad, true).unwrap_err(), "not available on a TV remote", "{bad}");
+        }
+    }
+
+    #[test]
+    fn drive_runner_numbers_steps_and_locks_tv_after_ready() {
+        let dir = std::env::temp_dir().join(format!("rfd-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut r = Runner::drive(&dir, true, Instant::now());
+        r.feed("click 5 5"); // prelude: unrestricted, still numbered
+        r.feed("!ready");
+        r.feed("click 1 1");
+        r.feed("key Down");
+        let mut shots = vec![];
+        for i in 0..200 {
+            let s = r.step("home", true, 16.0, i as f64);
+            assert!(!s.quit);
+            shots.extend(s.drive_shot);
+        }
+        let got: Vec<(u32, Option<String>)> = shots.into_iter().map(|(n, _, e)| (n, e)).collect();
+        assert_eq!(got[0], (1, None));
+        assert_eq!(got[1].0, 1);
+        assert_eq!(got[1].1.as_deref(), Some("not available on a TV remote"));
+        assert_eq!(got[2], (2, None));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
