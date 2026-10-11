@@ -5,7 +5,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$1 REF=${2:-HEAD}
-ALLOW=(core desktop tools/bench tools/package tools/scripts tools/testserver tools/render-shots.sh tools/public-export.sh
+ALLOW=(core desktop tools/bench tools/package tools/scripts tools/testserver tools/ux tools/render-shots.sh tools/public-export.sh
        tv/README.md Cargo.toml Cargo.lock rustfmt.toml .gitignore LICENSE README.md BUILDING.md AGENTS.md docs-public)
 mkdir -p "$OUT"
 if [ -n "$(find "$OUT" -mindepth 1 -maxdepth 1 -print -quit)" ]; then echo "out dir must be empty: $OUT" >&2; exit 2; fi
@@ -16,7 +16,7 @@ for p in "${ALLOW[@]}"; do
 done
 git archive --format=tar "$REF" -- "${present[@]}" | tar -x -C "$OUT"
 # Private test infrastructure inside allowed folders: jf-real names public-domain titles whose TMDB art may not be free.
-DENY=(tools/testserver/real tools/scripts/real)
+DENY=(tools/testserver/real tools/scripts/real tools/ux/tasks.yaml)   # tasks.yaml names jf-real's public-domain titles
 for p in "${DENY[@]}"; do rm -rf "${OUT:?}/${p:?}"; done
 echo "exported $(find "$OUT" -type f | wc -l) files from $(git rev-parse --short "$REF")"
 "$ROOT/tools/package/leak-gate.sh" "$OUT" public

@@ -138,15 +138,27 @@ tools/ux/rf-drive stop try1
 - **desk** mode (1440×900): `click`, `move`, `scroll`, `drag`, `key <name> [n]`, `type <text>`, `wait <ms>`.
 - **tv** mode (1920×1080, the TV layout): remote keys only — Up, Down, Left, Right, Enter, Back, Info, PlayPause —
   and `wait`.
-- Sessions live in a folder per name (input pipe, one output line per step, `shots/NNN.jpg`, app log). The script
-  starts the app through a container wrapper (a variable at the top of the script) — adapt that line to your machine.
+- Sessions live in a folder per name (input pipe, one output line per step, `shots/NNN.jpg`, app log).
+- Settings are environment variables, which `rf-drive`, `fleet-run`, `fleet-user.sh`, `dry-run.sh` and
+  `rf-drive-smoke.sh` also read from an optional private file, `${RF_ENV:-$HOME/.config/rf-fleet.env}` (plain
+  `KEY=VALUE` lines; a variable already set in the environment wins):
+  - `RF_RUNNER` — **required to start a session**: the command that runs a command inside your build container (a
+    headless box with Xvfb). It is called as `$RF_RUNNER -n <container-name> -- <command>`; a thin `docker run` wrapper
+    does it.
+  - `RF_FLEET_HOME` — where session folders live (default `$HOME/rf-fleet`).
+  - `RF_LOCKS` — folder for the eight session-slot locks and the user-creation lock (default `$RF_FLEET_HOME/locks`).
+  - `RF_PLAN_CMD` — optional; a command whose output is checked before each run so the fleet stops when a plan is
+    nearly spent. Unset means no check.
+  - `RF_CLAUDE_CONFIG` — optional; sets `CLAUDE_CONFIG_DIR` for the AI testers only when present.
 
 ### The fleet kit (first-time-user testing)
 
 `tools/ux/` also holds a kit that lets an AI model try everyday tasks through rf-drive and checks the result on the
 server, not by what the tester says:
 
-- `tools/ux/tasks.yaml` — the tasks (plain-words goal, the server check, the shortest route for desk and TV).
+- `tools/ux/tasks.yaml` — the tasks (plain-words goal, the server check, the shortest route for desk and TV). Ours names
+  the titles on our own test server, so it isn't published: write your own for your server, in the same format
+  (`tools/ux/tests/test_tasks.py` shows it).
 - `tools/ux/fleet-run --round N [--tasks id,id] [--modes desk,tv]` — validates every route, runs one tester per task
   and mode with a fresh throwaway user, runs the server check (`tools/ux/check.py`), then writes `results.jsonl` and
   `summary.md`. `tools/ux/dry-run.sh` runs the whole loop with a fake driver and no model.
