@@ -119,6 +119,41 @@ tools/bench/run.sh                           # cold start, first poster, Home re
 The render scripts reach the server at `http://jf-test:8096`, so run them from a container on the test network, or
 add `127.0.0.1 jf-test` to `/etc/hosts` when the server is published.
 
+Docs screenshots come from the same tours: `tools/render-shots.sh target/docs tools/scripts/docs/docs-shots.txt`
+(add more tours as `tools/scripts/docs/*.txt`).
+
+### Driving the app step by step (rf-drive)
+
+`tools/ux/rf-drive` runs the real app under Xvfb and takes one command at a time, answering each with a JPEG
+screenshot (1280 px wide) — the way a first-time user would see it. Build the release binary first
+(`cargo build --release -p jf-desktop`; `RFD_BIN` points it at another binary).
+
+```sh
+tools/ux/rf-drive start --mode desk --session try1 --user tester --pass test-pass-1 --server http://jf-test:8096
+tools/ux/rf-drive try1 key Down 2        # one step: prints "step N: ok — screenshot: <path>"
+tools/ux/rf-drive try1 click 640 360     # x y are pixels in the 1280-wide screenshot
+tools/ux/rf-drive stop try1
+```
+
+- **desk** mode (1440×900): `click`, `move`, `scroll`, `drag`, `key <name> [n]`, `type <text>`, `wait <ms>`.
+- **tv** mode (1920×1080, the TV layout): remote keys only — Up, Down, Left, Right, Enter, Back, Info, PlayPause —
+  and `wait`.
+- Sessions live in a folder per name (input pipe, one output line per step, `shots/NNN.jpg`, app log). The script
+  starts the app through a container wrapper (a variable at the top of the script) — adapt that line to your machine.
+
+### The fleet kit (first-time-user testing)
+
+`tools/ux/` also holds a kit that lets an AI model try everyday tasks through rf-drive and checks the result on the
+server, not by what the tester says:
+
+- `tools/ux/tasks.yaml` — the tasks (plain-words goal, the server check, the shortest route for desk and TV).
+- `tools/ux/fleet-run --round N [--tasks id,id] [--modes desk,tv]` — validates every route, runs one tester per task
+  and mode with a fresh throwaway user, runs the server check (`tools/ux/check.py`), then writes `results.jsonl` and
+  `summary.md`. `tools/ux/dry-run.sh` runs the whole loop with a fake driver and no model.
+- It creates and deletes users and plays and marks things watched, so it needs a **throwaway Jellyfin server** with
+  its own admin login (`JF_REAL_URL` points at it; see `tools/ux/jfapi.py`). Never aim it at a server you use.
+- Its unit tests: `python3 -I -m unittest discover tools/ux/tests`.
+
 ## 6. Leak gate (before sharing any package)
 
 ```sh
@@ -129,3 +164,49 @@ PRESET_SERVER=http://10.0.0.20:8096 tools/package/leak-gate.sh dir preset
 The packaging scripts call it automatically. It fails on personal names, home-directory paths, private network
 addresses and secret-looking strings. Release builds also strip build-machine paths
 (`--remap-path-prefix`, set inside the packaging scripts).
+
+## 7. Samsung TV (Tizen)
+
+Two packages share the Rust core; both install **next to** the stock Jellyfin app under their own ids and never
+replace it. The native one is the main route; the web one is the fallback (`tv/README.md` has the comparison).
+
+**You need:** Docker; the Rust targets in `tv/native` and `tv/web`; **Tizen Studio 5.6** CLI (6.1's packager is
+broken); a Samsung TV (Tizen 6.5 or newer) in developer mode.
+
+**Native `.tpk`** (C# EFL shell + `librustfin.so`):
+
+```sh
+tv/native/build.sh                          # x86_64 librustfin.so, for the TV emulator
+tv/native/build.sh armv7-unknown-linux-gnueabi   # the TV itself; links inside tv/native/arm.Dockerfile (glibc 2.28)
+tv/native/dotnet.sh                         # .NET 8 SDK container → tv/native/shell/bin/Release/tizen90/*.tpk
+```
+
+**Web `.wgt`** (the core as WebAssembly):
+
+```sh
+rustup target add wasm32-unknown-unknown    # and install wasm-bindgen-cli at the version in Cargo.lock
+tv/web/build.sh
+tv/web/package.sh <out dir>                 # needs `tizen` on PATH and an active security profile
+```
+
+**Signing.** A real TV only installs packages signed with a Samsung author **and** distributor certificate, and
+the distributor certificate must list your TV's device ID. Make both with Tizen Studio's Certificate Manager and
+your own Samsung account; keep them and their passwords outside the repository. Then register them and sign:
+
+```sh
+tizen security-profiles add -n myprofile -a <author.p12> -p <password> -d <distributor.p12> -dp <password>
+tizen package -t tpk -s myprofile -- <path to the .tpk>        # re-signs in place
+```
+
+**Install.** On the TV, turn on developer mode (Apps → type 12345 → Developer mode on) and enter your computer's
+address as the host PC, then restart the TV:
+
+```sh
+sdb connect <tv-address>:26101
+tizen install -n <package>.tpk -t <tv-serial>     # `sdb devices` lists the serial
+tizen run -p local.rustfin.native -t <tv-serial>
+```
+
+For the web build use the `.wgt` and `tizen run -p RustfinTv1.rustfin`. Signing in on the TV needs no typing: pick
+**Use Quick Connect** and enter the 6-digit code under Settings → Quick Connect on a signed-in device (Quick
+Connect must be enabled on the server).

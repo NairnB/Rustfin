@@ -1,0 +1,80 @@
+# Docs screenshots (README): Home, library, film, show, sidebar, Poster Flow front + back, player.
+# jf-test only (generated titles). Coordinates are 1920x1080 pixels (see nav-shell.txt for the sidebar rows).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 600
+shot docs-home
+
+# Movies library, then the first film.
+click 130 341
+wait-screen library
+idle
+wait 400
+shot docs-library
+click 484 520
+wait-screen movie
+idle
+wait 400
+shot docs-movie
+key back
+wait-screen library
+
+# Shows library, then the first show.
+click 130 393
+wait-screen library
+idle
+click 484 520
+wait-screen show
+idle
+wait 400
+shot docs-show
+
+# Sidebar collapsed to icons.
+click 38 36
+idle
+wait 400
+shot docs-sidebar
+click 38 36
+idle
+
+# Poster Flow: Mixed library (third row), Info opens it; flick, settle, flip a film, play it.
+click 130 289
+wait-screen library
+idle
+key info
+wait-screen posterflow
+idle
+wait 600
+drag 1400 500 600 500 140
+wait 1500
+idle
+key left 20
+wait 900
+idle
+key right 3
+wait 800
+idle
+shot docs-posterflow-front
+key enter
+wait 900
+idle
+shot docs-posterflow-back
+key enter
+wait-screen player
+wait 3000
+key down
+shot docs-player
+quit

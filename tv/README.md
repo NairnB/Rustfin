@@ -1,7 +1,13 @@
 # TV port (Samsung Tizen) — trial builds
 
+**State:** a working trial. The **native** route is chosen; the web build is the fallback. Proven on the Samsung TV
+emulator against the stock Jellyfin app: a faster cold start (Home with posters in about 1.9 s vs 2.4 s), about a
+third of the memory (roughly 83–100 MB vs 270–310 MB) and faster seeks. Being worked on: key response when
+scrolling (about 20 ms for the stock app vs about 130 ms for ours). To build, sign and install on a TV, see the
+**Samsung TV** section of [`BUILDING.md`](../BUILDING.md#7-samsung-tv-tizen).
+
 Two ways to put the shared core on a Samsung TV. Both were built and measured on the Samsung TV emulator; the
-numbers and the choice live in the job's trial notes, not here. Both install **alongside** the stock Jellyfin app
+numbers above come from those runs. Both install **alongside** the stock Jellyfin app
 under their own ids — never replace or uninstall it.
 
 | | `tv/native` (chosen) | `tv/web` (fallback) |
