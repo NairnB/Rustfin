@@ -49,6 +49,10 @@ pub struct Home {
     user_menu: Option<usize>,
     /// Set while the server sign-out runs; the next sign-in screen opens on the public user tiles when true.
     switching: bool,
+    /// D10: Sign out / Switch user is waiting on the server — say so.
+    leaving: bool,
+    /// Who is signed in, noted when leaving so Sign out can drop their saved session.
+    user_id: Option<String>,
 }
 
 const USER_MENU: [&str; 3] = ["Settings", "Switch user", "Sign out"];
@@ -71,6 +75,8 @@ pub fn screen(verify_session: bool) -> Box<dyn Screen> {
         auto: true,
         user_menu: None,
         switching: false,
+        leaving: false,
+        user_id: None,
     })
 }
 
@@ -225,14 +231,23 @@ impl Home {
         match i {
             0 => cx.push(super::settings_screen::screen()),
             _ => {
-                if self.switching {
+                if self.leaving {
                     return;
                 }
-                // Switch user and Sign out both end this server session (server side too) and keep the server.
+                // Switch user and Sign out both end this session and keep the server; only Sign out also logs
+                // out server side and forgets the saved user.
                 self.switching = i == 1;
+                self.leaving = true;
+                self.user_id = cx.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_id.clone());
                 let mut client = cx.api();
+                let switching = self.switching;
                 cx.spawn("signout", move || {
-                    let _ = client.sign_out();
+                    if switching {
+                        // Switch user keeps their token on this device so they can come straight back (D10).
+                        client.session = None;
+                    } else {
+                        let _ = client.sign_out();
+                    }
                     client
                 });
             }
@@ -418,6 +433,11 @@ impl Screen for Home {
                 }
                 if let Some(id) = cx.settings.last_server.clone() {
                     cx.settings.forget_session(&id);
+                    if !self.switching {
+                        if let Some(uid) = self.user_id.take() {
+                            cx.settings.forget_saved_user(&id, &uid);
+                        }
+                    }
                 }
                 cx.save_settings();
                 if self.switching {
@@ -573,6 +593,18 @@ impl Screen for Home {
         }
         if let (Some(h), Some(chip)) = (self.user_menu, chip) {
             self.draw_user_menu(ui, cx, chip, h);
+        }
+
+        if self.leaving {
+            let label = if self.switching { "Switching user…" } else { "Signing out…" };
+            let at = ui.max_rect().center_top() + egui::vec2(0.0, t.margin);
+            let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), t.font(t.body_size), t.text));
+            let pill = egui::Rect::from_center_size(
+                at + egui::vec2(0.0, g.size().y / 2.0),
+                g.size() + egui::vec2(t.gap * 2.0, t.gap),
+            );
+            ui.painter().rect_filled(pill, t.radius, t.surface_hi);
+            ui.painter().text(pill.center(), egui::Align2::CENTER_CENTER, label, t.font(t.body_size), t.text);
         }
 
         // Offline banner (R-SET-2).

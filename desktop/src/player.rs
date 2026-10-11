@@ -54,6 +54,11 @@ impl MpvPlayer {
         self.mpv.as_ref()
     }
 
+    /// Free mpv now (render context, then core). Call with the GL context still current, before it is dropped.
+    pub fn release(&mut self) {
+        self.mpv = None;
+    }
+
     /// Poll mpv events; call once per frame.
     pub fn pump(&mut self) {
         let events = match &self.mpv {

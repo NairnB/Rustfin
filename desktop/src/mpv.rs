@@ -71,7 +71,7 @@ struct Fns {
 }
 
 pub struct Mpv {
-    _lib: Library,
+    _lib: std::mem::ManuallyDrop<Library>,
     f: Fns,
     handle: *mut c_void,
     rc: *mut c_void,
@@ -147,7 +147,7 @@ impl Mpv {
                 (f.terminate_destroy)(handle);
                 return Err(format!("mpv_render_context_create failed ({e})"));
             }
-            Ok(Mpv { _lib: lib, f, handle, rc, _get_proc: get_proc })
+            Ok(Mpv { _lib: std::mem::ManuallyDrop::new(lib), f, handle, rc, _get_proc: get_proc })
         }
     }
 
@@ -219,6 +219,9 @@ impl Mpv {
 impl Drop for Mpv {
     fn drop(&mut self) {
         unsafe {
+            // Order mpv requires: render context first (with the GL context still current), then the core.
+            // `_lib` is a ManuallyDrop on purpose: dlclose of libmpv (and the audio/ffmpeg libs it pulled in) runs
+            // their exit handlers against unmapped code and segfaults on quit — the OS frees it at exit.
             (self.f.rc_free)(self.rc);
             (self.f.terminate_destroy)(self.handle);
         }

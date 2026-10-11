@@ -7,16 +7,68 @@ use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
 
 const G_FIELD: usize = 0;
-const G_FILMS: usize = 1;
-const G_SHOWS: usize = 2;
-const G_EPS: usize = 3;
-const G_COLLS: usize = 4;
-const G_PEOPLE: usize = 5;
-const G_SUGGESTED: usize = 6;
+const G_TOP: usize = 1;
+const G_FILMS: usize = 2;
+const G_SHOWS: usize = 3;
+const G_EPS: usize = 4;
+const G_COLLS: usize = 5;
+const G_PEOPLE: usize = 6;
+const G_SUGGESTED: usize = 7;
+
+/// How many cards the Top results row holds.
+const TOP_MAX: usize = 12;
+
+/// D12: the best matches across films, shows, episodes, collections and people, by how well the name matches the
+/// query (whole name, then name start, then a word start, then anywhere). Ties keep film, show, person,
+/// collection, episode order. The bool is true for a person. Names that do not match at all are left out.
+pub fn top_results(query: &str, items: &[Item], people: &[Item]) -> Vec<(Item, bool)> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return vec![];
+    }
+    let words: Vec<&str> = q.split_whitespace().collect();
+    let score = |name: &str| -> Option<u8> {
+        let n = name.to_lowercase();
+        if n == q {
+            Some(0)
+        } else if n.starts_with(&q) {
+            Some(1)
+        } else if n.split_whitespace().any(|w| w.starts_with(&q)) {
+            Some(2)
+        } else if n.contains(&q) || words.iter().all(|w| n.contains(w)) {
+            Some(3)
+        } else {
+            None
+        }
+    };
+    let rank = |k: &ItemKind, person: bool| -> u8 {
+        if person {
+            return 2;
+        }
+        match k {
+            ItemKind::Movie => 0,
+            ItemKind::Series => 1,
+            ItemKind::BoxSet => 3,
+            _ => 4,
+        }
+    };
+    let mut hits: Vec<(u8, u8, Item, bool)> = items
+        .iter()
+        .map(|i| (i, false))
+        .chain(people.iter().map(|p| (p, true)))
+        .filter_map(|(i, person)| score(&i.name).map(|sc| (sc, rank(&i.kind, person), i.clone(), person)))
+        .collect();
+    hits.sort_by_key(|h| (h.0, h.1));
+    hits.truncate(TOP_MAX);
+    hits.into_iter().map(|h| (h.2, h.3)).collect()
+}
 
 pub struct Search {
     query: String,
     last_query: String,
+    top: Vec<Item>,
+    /// Ids in `top` that are people (they open a person page).
+    top_people: Vec<String>,
     films: Vec<Item>,
     shows: Vec<Item>,
     episodes: Vec<Item>,
@@ -36,6 +88,8 @@ pub fn screen() -> Box<dyn Screen> {
     Box::new(Search {
         query: String::new(),
         last_query: String::new(),
+        top: vec![],
+        top_people: vec![],
         films: vec![],
         shows: vec![],
         episodes: vec![],
@@ -54,7 +108,8 @@ pub fn screen() -> Box<dyn Screen> {
 
 impl Search {
     fn any_results(&self) -> bool {
-        !self.films.is_empty()
+        !self.top.is_empty()
+            || !self.films.is_empty()
             || !self.shows.is_empty()
             || !self.episodes.is_empty()
             || !self.collections.is_empty()
@@ -62,6 +117,9 @@ impl Search {
     }
 
     fn set_results(&mut self, items: Vec<Item>, people: Vec<Item>) {
+        let top = top_results(&self.last_query, &items, &people);
+        self.top_people = top.iter().filter(|(_, p)| *p).map(|(i, _)| i.id.clone()).collect();
+        self.top = top.into_iter().map(|(i, _)| i).collect();
         self.collections = items.iter().filter(|i| i.kind == ItemKind::BoxSet).cloned().collect();
         self.people = people;
         self.films = items.iter().filter(|i| i.kind == ItemKind::Movie).cloned().collect();
@@ -71,6 +129,7 @@ impl Search {
 
     fn result_at(&self, f: Focus) -> Option<Item> {
         match f.group {
+            G_TOP => self.top.get(f.index).cloned(),
             G_FILMS => self.films.get(f.index).cloned(),
             G_SHOWS => self.shows.get(f.index).cloned(),
             G_EPS => self.episodes.get(f.index).cloned(),
@@ -94,6 +153,7 @@ impl Search {
         self.deadline = None;
         let term = self.query.trim().to_string();
         if term.is_empty() {
+            self.top.clear();
             self.films.clear();
             self.shows.clear();
             self.episodes.clear();
@@ -128,13 +188,22 @@ impl Screen for Search {
             Key::Enter => {
                 if self.focus.group != G_FIELD {
                     if let Some(it) = self.result_at(self.focus) {
-                        open(cx, it, self.focus.group == G_PEOPLE);
+                        let person = self.focus.group == G_PEOPLE
+                            || (self.focus.group == G_TOP && self.top_people.contains(&it.id));
+                        open(cx, it, person);
                     }
                 }
                 true
             }
             Key::Up | Key::Down | Key::Left | Key::Right => {
                 if self.focus.group == G_FIELD && matches!(key, Key::Left | Key::Right) {
+                    return true;
+                }
+                if self.focus.group == G_FIELD && key == Key::Down {
+                    // Straight onto the first result, not the card nearest the field's middle.
+                    if let Some(gi) = self.groups.iter().skip(1).position(|g| g.len > 0) {
+                        self.focus = Focus { group: gi + 1, index: 0 };
+                    }
                     return true;
                 }
                 self.focus = move_focus(&self.groups, self.focus, key);
@@ -195,6 +264,7 @@ impl Screen for Search {
             self.focus = Focus { group: G_FIELD, index: 0 };
         }
 
+        let mut top_xs: Vec<f32> = vec![];
         let mut films_xs: Vec<f32> = vec![];
         let mut shows_xs: Vec<f32> = vec![];
         let mut eps_xs: Vec<f32> = vec![];
@@ -204,6 +274,23 @@ impl Screen for Search {
         let mut clicked: Option<Item> = None;
         let mut clicked_person = false;
 
+        if (self.loading || self.deadline.is_some()) && !self.query.trim().is_empty() {
+            ui.add_space(t.gap / 2.0);
+            parts::muted(ui, t, "Searching…");
+        }
+
+        if !self.top.is_empty() {
+            let focus = (self.focus.group == G_TOP).then_some(self.focus.index);
+            let out = parts::row(ui, cx, "search-top", "Top results", &self.top, CardKind::Poster, focus);
+            top_xs = out.xs;
+            if let Some(i) = out.hovered {
+                self.focus = Focus { group: G_TOP, index: i };
+            }
+            if let Some(i) = out.clicked {
+                clicked = self.top.get(i).cloned();
+                clicked_person = clicked.as_ref().is_some_and(|c| self.top_people.contains(&c.id));
+            }
+        }
         if !self.films.is_empty() {
             let focus = (self.focus.group == G_FILMS).then_some(self.focus.index);
             let out = parts::row(ui, cx, "search-films", "Films", &self.films, CardKind::Poster, focus);
@@ -282,6 +369,7 @@ impl Screen for Search {
         }
 
         let mut groups = vec![Group { len: 1, cols: 1, xs: field_xs }];
+        groups.push(Group { len: self.top.len(), cols: self.top.len(), xs: top_xs });
         groups.push(Group { len: self.films.len(), cols: self.films.len(), xs: films_xs });
         groups.push(Group { len: self.shows.len(), cols: self.shows.len(), xs: shows_xs });
         groups.push(Group { len: self.episodes.len(), cols: self.episodes.len(), xs: eps_xs });
@@ -304,5 +392,45 @@ fn open(cx: &mut Cx, it: Item, person: bool) {
         cx.push(super::person::screen(it.id, it.name));
     } else {
         cx.push(super::item::screen(it));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(name: &str, kind: ItemKind) -> Item {
+        Item { id: name.into(), name: name.into(), kind, ..Default::default() }
+    }
+
+    fn names(v: &[(Item, bool)]) -> Vec<&str> {
+        v.iter().map(|(i, _)| i.name.as_str()).collect()
+    }
+
+    #[test]
+    fn better_name_matches_come_first_across_types() {
+        let items = [
+            item("The Last Drift", ItemKind::Movie),
+            item("Drift Episode", ItemKind::Episode),
+            item("Drifters", ItemKind::Series),
+            item("Drift", ItemKind::Movie),
+        ];
+        let people = [item("Drift Quill", ItemKind::Other)];
+        let top = top_results("drift", &items, &people);
+        assert_eq!(names(&top), ["Drift", "Drifters", "Drift Quill", "Drift Episode", "The Last Drift"]);
+        assert!(top[2].1 && !top[0].1);
+    }
+
+    #[test]
+    fn partial_words_match_and_non_matches_are_left_out() {
+        let items = [item("Star Drift", ItemKind::BoxSet), item("Unrelated", ItemKind::Movie)];
+        assert_eq!(names(&top_results("drif", &items, &[])), ["Star Drift"]);
+        assert!(top_results("  ", &items, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_row_is_capped() {
+        let items: Vec<Item> = (0..30).map(|i| item(&format!("Drift {i}"), ItemKind::Movie)).collect();
+        assert_eq!(top_results("drift", &items, &[]).len(), TOP_MAX);
     }
 }

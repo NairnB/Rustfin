@@ -126,6 +126,8 @@ pub struct SettingsScreen {
 
     // Server
     busy: bool,
+    /// D10: who is signing out, so their saved session goes too.
+    signing_out_user: String,
 
     // TMDB
     tmdb_draft: String,
@@ -164,6 +166,7 @@ pub fn screen() -> Box<dyn Screen> {
         qc_error: None,
         qc_ok: false,
         busy: false,
+        signing_out_user: String::new(),
         tmdb_draft: String::new(),
         tmdb_editing: false,
         admin: false,
@@ -608,6 +611,7 @@ impl SettingsScreen {
             return;
         }
         self.busy = true;
+        self.signing_out_user = Self::signed_in_user(cx).0;
         let mut client = cx.api();
         cx.spawn("signout", move || {
             let _ = client.sign_out();
@@ -1117,7 +1121,7 @@ impl SettingsScreen {
         let mut xs = vec![];
         let (server, user) = {
             let entry = cx.settings.last();
-            let server = entry.map(|e| format!("{}  ·  {}", e.name, e.address)).unwrap_or_default();
+            let server = entry.map(|e| parts::server_label(&e.name, &e.address)).unwrap_or_default();
             let user = entry
                 .and_then(|e| e.session.as_ref())
                 .map(|s| s.user_name.clone())
@@ -1335,6 +1339,7 @@ impl Screen for SettingsScreen {
                 let client = *c;
                 if let Some(id) = cx.settings.last_server.clone() {
                     cx.settings.forget_session(&id);
+                    cx.settings.forget_saved_user(&id, &self.signing_out_user);
                 }
                 cx.save_settings();
                 cx.reset(super::signin::screen(client, None));

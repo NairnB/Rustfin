@@ -803,3 +803,23 @@ pub fn thumb_card(ui: &mut Ui, cx: &mut Cx, item: &Item, focused: bool) -> Respo
     }
     resp
 }
+
+/// D20: how a server is shown — its name; the address only when it has no name.
+pub fn server_label(name: &str, address: &str) -> String {
+    if name.trim().is_empty() {
+        address.to_string()
+    } else {
+        name.trim().to_string()
+    }
+}
+
+#[cfg(test)]
+mod server_label_tests {
+    use super::server_label;
+
+    #[test]
+    fn name_wins_and_address_is_the_fallback() {
+        assert_eq!(server_label("Den", "http://10.0.0.20:8096"), "Den");
+        assert_eq!(server_label("  ", "http://x:8096"), "http://x:8096");
+    }
+}

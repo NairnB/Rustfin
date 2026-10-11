@@ -155,7 +155,7 @@ impl Screen for Connect {
                 ui.add_space(t.gap / 2.0);
                 for (i, s) in cx.settings.servers.iter().enumerate() {
                     let focused = self.focus == Focus { group: G_SAVED, index: i };
-                    let r = parts::button(ui, t, &format!("{}  ·  {}", s.name, s.address), focused, false);
+                    let r = parts::button(ui, t, &parts::server_label(&s.name, &s.address), focused, false);
                     saved_xs.push(r.rect.center().x);
                     if r.hovered() {
                         self.focus = Focus { group: G_SAVED, index: i };
@@ -177,7 +177,7 @@ impl Screen for Connect {
             ui.add_space(t.gap / 2.0);
             for (i, s) in self.found.iter().enumerate() {
                 let focused = self.focus == Focus { group: G_FOUND, index: i };
-                let r = parts::button(ui, t, &format!("{}  ·  {}", s.name, s.address), focused, false);
+                let r = parts::button(ui, t, &parts::server_label(&s.name, &s.address), focused, false);
                 found_xs.push(r.rect.center().x);
                 if r.hovered() {
                     self.focus = Focus { group: G_FOUND, index: i };

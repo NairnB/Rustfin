@@ -1,0 +1,28 @@
+# UXP3 (D12): partial search "drif" — Searching…, Top results first, Down from the field lands on the first result.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+type drif
+idle
+shot ux-search-searching
+wait 1500
+idle
+key down
+idle
+shot ux-search-top
+quit

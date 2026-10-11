@@ -1,12 +1,14 @@
 //! R-UI-2 / R-SET-1: sign in with a password, public-user tiles, and a Quick Connect entry point.
 use super::{parts, widgets};
 use crate::api::{
-    ApiError, Branding, Client, ForgotAction, ForgotPassword, PinRedeem, PublicInfo, PublicUser, Result, Session,
+    image_width_bucket, ApiError, Branding, Client, ForgotAction, ForgotPassword, PinRedeem, PublicInfo, PublicUser,
+    Result, Session,
 };
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
 use crate::settings::ServerEntry;
+use egui::{pos2, vec2, Align2, Rect, Sense};
 
 const G_USERS: usize = 0;
 const G_USERNAME: usize = 1;
@@ -14,10 +16,36 @@ const G_PASSWORD: usize = 2;
 const G_REMEMBER: usize = 3;
 const G_BUTTONS: usize = 4;
 
+/// One tile in the Switch user picker (D10 / R9): a user who signed in here before, or a public user of the server.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PickerEntry {
+    pub user_id: String,
+    pub name: String,
+    /// The saved session, when this device has one for them (picking signs straight in).
+    pub saved: Option<Session>,
+}
+
+/// The picker list: saved users first (newest first, as given), then the server's public users who are not saved.
+/// "Other user…" is added by the screen.
+pub fn picker_entries(saved: &[Session], public: &[PublicUser]) -> Vec<PickerEntry> {
+    let mut out: Vec<PickerEntry> = saved
+        .iter()
+        .map(|s| PickerEntry { user_id: s.user_id.clone(), name: s.user_name.clone(), saved: Some(s.clone()) })
+        .collect();
+    for u in public {
+        if !out.iter().any(|e| e.user_id == u.id) {
+            out.push(PickerEntry { user_id: u.id.clone(), name: u.name.clone(), saved: None });
+        }
+    }
+    out
+}
+
 pub struct SignIn {
     client: Client,
     info: Option<PublicInfo>,
     users: Vec<PublicUser>,
+    /// D10: sessions saved on this device for this server, newest first.
+    saved: Vec<Session>,
     username: String,
     password: String,
     error: Option<String>,
@@ -44,6 +72,7 @@ impl SignIn {
             client,
             info: None,
             users: vec![],
+            saved: vec![],
             username: String::new(),
             password: String::new(),
             error: message,
@@ -72,6 +101,11 @@ impl SignIn {
         self.quick_connect_known && self.quick_connect
     }
 
+    /// The saved server this client points at (its id keys the saved users).
+    fn server_id(&self, cx: &Cx) -> Option<String> {
+        cx.settings.servers.iter().find(|e| e.address == self.client.base).map(|e| e.id.clone())
+    }
+
     fn forgot_index(&self) -> usize {
         if self.qc_shown() {
             2
@@ -84,13 +118,49 @@ impl SignIn {
         cx.push(forgot_screen(self.client.clone(), self.username.clone()));
     }
 
+    fn entries(&self) -> Vec<PickerEntry> {
+        picker_entries(&self.saved, &self.users)
+    }
+
     fn pick_user(&mut self, name: String) {
         self.username = name;
         self.focus = Focus { group: G_PASSWORD, index: 0 };
     }
 
+    /// D10: a tile was chosen; the last one is "Other user…" (the blank form).
+    fn pick_entry(&mut self, cx: &mut Cx, i: usize) {
+        let entries = self.entries();
+        let Some(e) = entries.get(i) else {
+            self.username.clear();
+            self.password.clear();
+            self.focus = Focus { group: G_USERNAME, index: 0 };
+            return;
+        };
+        let Some(session) = e.saved.clone() else {
+            self.pick_user(e.name.clone());
+            return;
+        };
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        let mut client = self.client.clone();
+        let (id, name) = (session.user_id.clone(), session.user_name.clone());
+        cx.spawn("resume", move || {
+            client.session = Some(session.clone());
+            let r = client.verify_session().map(|_| (client, session));
+            (id, name, r)
+        });
+    }
+
     fn sign_in(&mut self, cx: &mut Cx) {
         if self.busy {
+            return;
+        }
+        if self.username.trim().is_empty() {
+            self.error = Some("Type your user name first.".into());
+            self.focus = Focus { group: G_USERNAME, index: 0 };
             return;
         }
         self.busy = true;
@@ -133,12 +203,7 @@ impl Screen for SignIn {
         match key {
             Key::Enter => {
                 match self.focus.group {
-                    G_USERS => {
-                        if let Some(u) = self.users.get(self.focus.index) {
-                            let name = u.name.clone();
-                            self.pick_user(name);
-                        }
-                    }
+                    G_USERS => self.pick_entry(cx, self.focus.index),
                     G_USERNAME => self.focus = Focus { group: G_PASSWORD, index: 0 },
                     G_PASSWORD => self.sign_in(cx),
                     G_REMEMBER => self.remember = !self.remember,
@@ -179,11 +244,30 @@ impl Screen for SignIn {
                 if let Ok(v) = payload.downcast::<Result<Vec<PublicUser>>>() {
                     if let Ok(users) = *v {
                         self.users = users;
-                        if self.prefer_users && !self.users.is_empty() {
+                        if self.prefer_users && !self.entries().is_empty() {
                             self.prefer_users = false;
                             self.focus = Focus { group: G_USERS, index: 0 };
                         }
                     }
+                }
+            }
+            "resume" => {
+                self.busy = false;
+                let Ok(r) = payload.downcast::<(String, String, Result<(Client, Session)>)>() else { return };
+                let (id, name, result) = *r;
+                match result {
+                    Ok((client, session)) => self.signed_in(cx, client, session),
+                    Err(ApiError::Unauthorized) => {
+                        // The saved token is dead: forget it and ask for the password.
+                        if let Some(sid) = self.server_id(cx) {
+                            cx.settings.forget_saved_user(&sid, &id);
+                            cx.save_settings();
+                        }
+                        self.saved.retain(|s| s.user_id != id);
+                        self.error = Some(format!("{name}'s sign-in has expired. Enter the password."));
+                        self.pick_user(name);
+                    }
+                    Err(e) => self.error = Some(e.to_string()),
                 }
             }
             "qc" => {
@@ -217,6 +301,13 @@ impl Screen for SignIn {
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
         if !self.started {
             self.started = true;
+            if let Some(id) = self.server_id(cx) {
+                self.saved = cx.settings.saved_for(&id);
+            }
+            if self.prefer_users && !self.entries().is_empty() {
+                self.prefer_users = false;
+                self.focus = Focus { group: G_USERS, index: 0 };
+            }
             let c = self.client.clone();
             cx.spawn("info", move || c.public_info());
             let c = self.client.clone();
@@ -228,9 +319,10 @@ impl Screen for SignIn {
         }
         let t = cx.theme;
         let server = match &self.info {
-            Some(i) => format!("{}  ·  {}", i.server_name, self.client.base),
-            None => self.client.base.clone(),
+            Some(i) if !i.server_name.trim().is_empty() => i.server_name.clone(),
+            _ => self.client.base.clone(),
         };
+        let entries = self.entries();
         let mut user_xs = vec![];
         let mut username_x = vec![];
         let mut password_x = vec![];
@@ -243,11 +335,13 @@ impl Screen for SignIn {
             ui.add_space(t.gap / 2.0);
             parts::muted(ui, t, &server);
             ui.add_space(t.gap);
-            if !self.users.is_empty() {
+            if !entries.is_empty() {
                 parts::centered_row(ui, "users", |ui| {
-                    for (i, u) in self.users.iter().enumerate() {
+                    for i in 0..=entries.len() {
                         let focused = self.focus == Focus { group: G_USERS, index: i };
-                        let r = parts::button(ui, t, &u.name, focused, false);
+                        let label = entries.get(i).map(|e| e.name.as_str()).unwrap_or("Other user…");
+                        let uid = entries.get(i).map(|e| e.user_id.as_str());
+                        let r = user_tile(ui, cx, &self.client, uid, label, focused);
                         user_xs.push(r.rect.center().x);
                         if r.hovered() {
                             self.focus = Focus { group: G_USERS, index: i };
@@ -339,10 +433,7 @@ impl Screen for SignIn {
             }
         });
         match act {
-            Some(Act::Pick(i)) => {
-                let name = self.users[i].name.clone();
-                self.pick_user(name);
-            }
+            Some(Act::Pick(i)) => self.pick_entry(cx, i),
             Some(Act::SignIn) => self.sign_in(cx),
             Some(Act::QuickConnect) => cx.push(super::quickconnect::screen(self.client.clone(), self.remember)),
             Some(Act::Remember) => self.remember = !self.remember,
@@ -352,13 +443,62 @@ impl Screen for SignIn {
         }
         let buttons = if self.qc_shown() { 4 } else { 3 };
         self.groups = vec![
-            Group { len: self.users.len(), cols: self.users.len().max(1), xs: user_xs },
+            Group { len: user_xs.len(), cols: user_xs.len().max(1), xs: user_xs },
             Group { len: 1, cols: 1, xs: username_x },
             Group { len: 1, cols: 1, xs: password_x },
             Group { len: 1, cols: 1, xs: remember_x },
             Group { len: buttons, cols: buttons, xs: button_xs },
         ];
     }
+}
+
+/// A picker tile: the user's picture (or their initial) over their name; `None` id = "Other user…".
+fn user_tile(
+    ui: &mut egui::Ui,
+    cx: &mut Cx,
+    client: &Client,
+    user_id: Option<&str>,
+    label: &str,
+    focused: bool,
+) -> egui::Response {
+    let t = cx.theme;
+    let d = t.avatar_size * 0.75;
+    let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), t.font(t.body_size), t.text));
+    let size = vec2(d.max(g.size().x) + t.gap, d + t.body_size + t.gap);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let circle = Rect::from_center_size(pos2(rect.center().x, rect.top() + t.gap / 2.0 + d / 2.0), vec2(d, d));
+    let painter = ui.painter();
+    painter.circle_filled(circle.center(), d / 2.0, t.surface_hi);
+    let mut drawn = false;
+    if let Some(id) = user_id {
+        let url = client.user_image_url(id, image_width_bucket(d, ui.ctx().pixels_per_point()));
+        if let Some(tex) = cx.images.get(&url) {
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            ui.painter().image(tex, circle, uv, egui::Color32::WHITE);
+            drawn = true;
+        }
+    }
+    if !drawn {
+        let initial = if user_id.is_some() { label.chars().next().map(|c| c.to_uppercase().to_string()) } else { None };
+        ui.painter().text(
+            circle.center(),
+            Align2::CENTER_CENTER,
+            initial.unwrap_or_else(|| "+".into()),
+            t.font(t.title_size),
+            t.text,
+        );
+    }
+    ui.painter().text(
+        pos2(rect.center().x, circle.bottom() + t.gap / 2.0),
+        Align2::CENTER_TOP,
+        label,
+        t.font(t.body_size),
+        t.text,
+    );
+    if focused {
+        parts::focus_ring(ui, t, rect);
+    }
+    resp
 }
 
 const F_USER: usize = 0;
@@ -565,5 +705,39 @@ impl Screen for Forgot {
             Group { len: pin_len, cols: 1, xs: pin_x },
             Group { len: n, cols: n.max(1), xs: button_xs },
         ];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: &str, name: &str) -> Session {
+        Session { user_id: id.into(), user_name: name.into(), token: "t".into() }
+    }
+
+    fn public(id: &str, name: &str) -> PublicUser {
+        PublicUser { id: id.into(), name: name.into(), has_password: true }
+    }
+
+    #[test]
+    fn saved_users_come_first_then_public_ones() {
+        let list = picker_entries(&[session("2", "tester"), session("1", "viewer")], &[public("3", "guest")]);
+        let names: Vec<_> = list.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["tester", "viewer", "guest"]);
+        assert!(list[0].saved.is_some() && list[1].saved.is_some() && list[2].saved.is_none());
+    }
+
+    #[test]
+    fn a_user_who_is_both_saved_and_public_shows_once() {
+        let list = picker_entries(&[session("1", "viewer")], &[public("1", "viewer"), public("2", "tester")]);
+        assert_eq!(list.len(), 2);
+        assert!(list[0].saved.is_some());
+        assert_eq!(list[1].name, "tester");
+    }
+
+    #[test]
+    fn nobody_known_means_an_empty_picker() {
+        assert!(picker_entries(&[], &[]).is_empty());
     }
 }

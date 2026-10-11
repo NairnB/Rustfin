@@ -145,12 +145,13 @@ fn os_data_dir(name: &str, lower: &str) -> PathBuf {
     }
 }
 
+// Fields drop in this order: GL users first, then the context, the surface, and the window last.
 struct Gfx {
-    window: Window,
-    surface: Surface<WindowSurface>,
-    ctx: PossiblyCurrentContext,
-    gl: Arc<glow::Context>,
     egui: egui_glow::EguiGlow,
+    gl: Arc<glow::Context>,
+    ctx: PossiblyCurrentContext,
+    surface: Surface<WindowSurface>,
+    window: Window,
 }
 
 struct Shell {
@@ -169,6 +170,17 @@ struct Shell {
     pointer: egui::Pos2,
     /// Tour mode: when the next frame is due (None = at once).
     wake: Option<Instant>,
+}
+
+/// Quit teardown: mpv frees its render context while the GL context is still current, then egui's GL objects, and
+/// only then do the fields drop (context, surface, window).
+impl Drop for Shell {
+    fn drop(&mut self) {
+        self.player.release();
+        if let Some(g) = self.gfx.as_mut() {
+            g.egui.destroy();
+        }
+    }
 }
 
 /// `--playtest`: drive the mpv player directly against a throwaway server (packet P1).

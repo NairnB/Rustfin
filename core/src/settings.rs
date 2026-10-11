@@ -128,6 +128,16 @@ pub struct ServerEntry {
     pub session: Option<Session>,
 }
 
+/// A user who signed in on this device before (D10 / R9): the session kept so the Switch user picker can sign
+/// them straight back in. Newest first in `Settings::saved_users`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct SavedUser {
+    /// Server id the session belongs to.
+    pub server_id: String,
+    pub session: Session,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -169,6 +179,8 @@ pub struct Settings {
     pub show_missing_episodes: bool,
     /// G10 / P-PLAY-11: segment kinds skipped automatically during playback (default none).
     pub auto_skip: Vec<SegmentKind>,
+    /// D10 / R9: users who signed in here before, newest first (all servers).
+    pub saved_users: Vec<SavedUser>,
 }
 
 /// When to show subtitles (P-USER-5). `Default` = the server's default for the item.
@@ -255,6 +267,7 @@ impl Default for Settings {
             home_hidden: vec![],
             show_missing_episodes: false,
             auto_skip: vec![],
+            saved_users: vec![],
         }
     }
 }
@@ -291,8 +304,23 @@ impl Settings {
     pub fn remember_signed_in(&mut self, mut entry: ServerEntry, keep: bool) {
         if !keep {
             entry.session = None;
+        } else if let Some(session) = entry.session.clone().filter(|_| !entry.id.is_empty()) {
+            self.save_user(&entry.id, session);
         }
         self.remember(entry);
+    }
+    /// D10: keep (or refresh) a user's session for the Switch user picker; they go to the front.
+    pub fn save_user(&mut self, server_id: &str, session: Session) {
+        self.saved_users.retain(|u| !(u.server_id == server_id && u.session.user_id == session.user_id));
+        self.saved_users.insert(0, SavedUser { server_id: server_id.to_string(), session });
+    }
+    /// D10: the sessions saved for one server, newest first.
+    pub fn saved_for(&self, server_id: &str) -> Vec<Session> {
+        self.saved_users.iter().filter(|u| u.server_id == server_id).map(|u| u.session.clone()).collect()
+    }
+    /// D10: drop one saved user (signed out for good, or their token no longer works).
+    pub fn forget_saved_user(&mut self, server_id: &str, user_id: &str) {
+        self.saved_users.retain(|u| !(u.server_id == server_id && u.session.user_id == user_id));
     }
     pub fn last(&self) -> Option<&ServerEntry> {
         let id = self.last_server.as_deref()?;
@@ -386,5 +414,52 @@ impl Storage for MemStorage {
     }
     fn cache_dir(&self) -> PathBuf {
         std::env::temp_dir().join("jf-memstorage-cache")
+    }
+}
+
+#[cfg(test)]
+mod saved_user_tests {
+    use super::*;
+
+    fn session(id: &str, name: &str) -> Session {
+        Session { user_id: id.into(), user_name: name.into(), token: format!("tok-{id}") }
+    }
+
+    fn entry(session: Option<Session>) -> ServerEntry {
+        ServerEntry { id: "srv".into(), name: "Den".into(), address: "http://x:8096".into(), session }
+    }
+
+    #[test]
+    fn sign_ins_are_saved_newest_first_without_duplicates() {
+        let mut s = Settings::default();
+        s.remember_signed_in(entry(Some(session("1", "viewer"))), true);
+        s.remember_signed_in(entry(Some(session("2", "tester"))), true);
+        s.remember_signed_in(entry(Some(session("1", "viewer"))), true);
+        let names: Vec<_> = s.saved_for("srv").into_iter().map(|u| u.user_name).collect();
+        assert_eq!(names, ["viewer", "tester"]);
+    }
+
+    #[test]
+    fn not_remembered_is_not_saved() {
+        let mut s = Settings::default();
+        s.remember_signed_in(entry(Some(session("1", "viewer"))), false);
+        assert!(s.saved_for("srv").is_empty());
+    }
+
+    #[test]
+    fn saved_users_are_per_server_and_can_be_forgotten() {
+        let mut s = Settings::default();
+        s.save_user("a", session("1", "viewer"));
+        s.save_user("b", session("2", "tester"));
+        assert_eq!(s.saved_for("a").len(), 1);
+        s.forget_saved_user("a", "1");
+        assert!(s.saved_for("a").is_empty());
+        assert_eq!(s.saved_for("b").len(), 1);
+    }
+
+    #[test]
+    fn old_settings_files_load_without_saved_users() {
+        let s: Settings = serde_json::from_str(r#"{"device_id":"x"}"#).unwrap();
+        assert!(s.saved_users.is_empty());
     }
 }
