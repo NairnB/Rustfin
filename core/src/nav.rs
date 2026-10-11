@@ -9,6 +9,14 @@ thread_local! {
     /// Last focused index of each group, per screen layout (the `(len, cols)` of every group). Screens rebuild their
     /// groups every frame, so the memory lives here, keyed by the layout rather than by an id they would have to keep.
     static MEMORY: RefCell<HashMap<Layout, Vec<Option<usize>>>> = RefCell::new(HashMap::new());
+    /// NAV: set when a Left could not move (focus at the screen's left edge); the desktop shell reads it to step into
+    /// the sidebar.
+    static LEFT_EDGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// NAV: true if a Left reached the left edge since the last call (and clears it).
+pub fn take_left_edge() -> bool {
+    LEFT_EDGE.with(|e| e.replace(false))
 }
 
 fn layout(groups: &[Group]) -> Layout {
@@ -98,6 +106,7 @@ pub fn move_focus(groups: &[Group], f: Focus, key: Key) -> Focus {
             if cur.index % cols > 0 || beside(g, cur.index, false) {
                 Focus { index: cur.index - 1, ..cur }
             } else {
+                LEFT_EDGE.with(|e| e.set(true));
                 cur
             }
         }

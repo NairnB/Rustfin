@@ -176,6 +176,8 @@ struct Shell {
     pointer: egui::Pos2,
     /// Held modifier keys (for the Back / Forward / Search shortcuts).
     mods: winit::keyboard::ModifiersState,
+    /// A key repeat (key held down) arrived since the last frame.
+    held: bool,
     /// Tour mode: when the next frame is due (None = at once).
     wake: Option<Instant>,
 }
@@ -340,6 +342,7 @@ impl Shell {
             }
         }
         let mut keys = std::mem::take(&mut self.keys);
+        self.app.keys_held = std::mem::take(&mut self.held) || step.held;
         // Scripted Backspace while typing edits the text field instead of going Back.
         for &k in &step.keys {
             if k == Key::Backspace {
@@ -604,6 +607,7 @@ impl ApplicationHandler for Shell {
                 );
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                self.held |= event.repeat;
                 if let Some(k) = nav_shortcut(&event.logical_key, self.mods) {
                     self.keys.push(k);
                 } else if self.mods.super_key() || self.mods.control_key() || self.mods.alt_key() {
@@ -678,6 +682,7 @@ fn main() {
         first_poster: false,
         pointer: egui::Pos2::ZERO,
         mods: Default::default(),
+        held: false,
         wake: None,
     };
     el.run_app(&mut shell).expect("run");

@@ -110,9 +110,21 @@ unsafe fn init(gl: &glow::Context) -> Option<Gl> {
     }
     let sampler = gl.get_uniform_location(program, "u_sampler");
     let buf = gl.create_buffer().ok()?;
-    // Core profiles need a bound VAO; GL 2 / GLES 2 have none (egui re-points its own attributes afterwards).
+    // Core profiles need a bound VAO. GLES 2 / WebGL 1 can have them too (OES_vertex_array_object), and then
+    // egui_glow keeps its own VAO bound while painting: without one of ours we would rewrite egui's attribute
+    // pointers and nothing egui draws after the flow would show (seen on the Samsung TV). Same test as egui_glow.
     let v = gl.version();
-    let vao = if v.major >= 3 { gl.create_vertex_array().ok() } else { None };
+    let ext = gl.supported_extensions();
+    let has_vao = v.major >= 3
+        || [
+            "OES_vertex_array_object",
+            "GL_OES_vertex_array_object",
+            "ARB_vertex_array_object",
+            "GL_ARB_vertex_array_object",
+        ]
+        .iter()
+        .any(|e| ext.contains(*e));
+    let vao = if has_vao { gl.create_vertex_array().ok() } else { None };
     Some(Gl { program, buf, vao, sampler })
 }
 

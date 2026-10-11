@@ -1069,7 +1069,7 @@ impl ItemScreen {
                         let focused = self.focus.group == G_CHIPS && self.focus.index == i;
                         let r = widgets::pill_button(ui, t, &c.label, focused, false);
                         chip_xs.push(r.rect.center().x);
-                        if focused {
+                        if focused && crate::ui::shell::keyboard_focus(&r.ctx) {
                             r.scroll_to_me(None);
                         }
                         if pointer_moved && r.hovered() {
@@ -1471,7 +1471,7 @@ impl ItemScreen {
                 if resp.hovered() {
                     self.focus = Focus { group: G_LIST, index: i };
                 }
-                if focused {
+                if focused && crate::ui::shell::keyboard_focus(&resp.ctx) {
                     resp.scroll_to_me(None);
                 }
                 if resp.clicked() {

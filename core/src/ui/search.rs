@@ -253,12 +253,10 @@ impl Screen for Search {
         }
         self.maybe_search(cx);
 
-        ui.add_space(t.margin);
-        parts::heading(ui, t, "Search");
-        ui.add_space(t.gap / 2.0);
-
+        // Apple TV look: the wide search field, centred at the top (the toolbar already says "Search").
+        ui.add_space(t.gap);
         let focused = self.focus.group == G_FIELD;
-        let r = parts::text_field(ui, t, &mut self.query, "Search films, shows, people and more", focused, false);
+        let r = super::at_library::search_field(ui, t, &mut self.query, "Films, shows, people and more", focused);
         let field_xs = vec![r.rect.center().x];
         if r.clicked() {
             self.focus = Focus { group: G_FIELD, index: 0 };
@@ -364,8 +362,11 @@ impl Screen for Search {
             parts::error_line(ui, t, e);
         }
         if !self.loading && self.deadline.is_none() && !self.query.trim().is_empty() && !self.any_results() {
-            ui.add_space(t.gap / 2.0);
-            parts::muted(ui, t, &format!("Nothing found for \u{201c}{}\u{201d}", self.query.trim()));
+            let body = format!(
+                "Nothing found for \u{201c}{}\u{201d}. Try a different spelling or fewer words.",
+                self.query.trim()
+            );
+            super::at_library::empty_state(ui, t, "No results", &body);
         }
 
         let mut groups = vec![Group { len: 1, cols: 1, xs: field_xs }];

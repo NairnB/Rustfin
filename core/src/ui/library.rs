@@ -3,7 +3,7 @@
 //! stack of bordered sections (R-F2-1), each a full grid of posters, thumbs or list rows. All pages load in the
 //! background (100 at a time); the first page is drawn at once. Story order and My order are client-side sorts over
 //! all loaded items (R-F3-2, R-F4-1).
-use super::{parts, widgets};
+use super::{at_library, parts, widgets};
 use crate::api::{ApiError, ExtraFilters, FilterOptions, Item, Page, Recommendation, Result, SortBy};
 use crate::app::{Cx, Screen};
 use crate::nav::{self, Focus, Group};
@@ -723,7 +723,8 @@ impl Library {
             .pivot(egui::Align2::CENTER_CENTER)
             .show(&ctx, |ui| {
                 let (panel, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                ui.painter().rect_filled(panel, t.radius, t.surface);
+                ui.painter().add(t.shadow(1.0).as_shape(panel, t.dialog_radius));
+                ui.painter().rect_filled(panel, t.dialog_radius, t.menu_fill);
                 let inner = panel.shrink(t.dialog_pad);
                 ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
                     parts::heading(ui, t, "Filters");
@@ -882,7 +883,10 @@ impl Library {
                                         w,
                                     );
                                     xs.push(r.rect.center().x);
-                                    if focus.group == G_SECTIONS && focus.index == i {
+                                    if focus.group == G_SECTIONS
+                                        && focus.index == i
+                                        && crate::ui::shell::keyboard_focus(&r.ctx)
+                                    {
                                         r.scroll_to_me(None);
                                     }
                                     if r.hovered() {
@@ -1149,11 +1153,8 @@ impl Library {
                 let mut off = 0usize;
                 for (si, (label, sec_items)) in sections.iter().enumerate() {
                     let gi = G_SECTIONS + si;
-                    let frame = egui::Frame::new()
-                        .fill(t.surface)
-                        .stroke(egui::Stroke::new(t.section_border_w, t.section_border))
-                        .corner_radius(t.section_radius)
-                        .inner_margin(t.section_pad);
+                    // Apple TV look: no box around a section; a little side room for the focus lift.
+                    let frame = egui::Frame::NONE.inner_margin(egui::Margin::symmetric((t.gap / 2.0) as i8, 0));
                     frame.show(ui, |ui| {
                         let (size, kind) = match mode {
                             ViewMode::Thumbs => (egui::vec2(t.thumb_w, t.thumb_h), parts::CardKind::Thumb),
@@ -1165,11 +1166,7 @@ impl Library {
                         } else {
                             nav::grid_cols(ui.available_width(), 0.0, size.x, t.gap)
                         };
-                        ui.horizontal(|ui| {
-                            parts::heading(ui, t, label);
-                            ui.add_space(t.gap / 3.0);
-                            parts::muted(ui, t, &format!("{}", sec_items.len()));
-                        });
+                        at_library::section_heading(ui, t, label, Some(sec_items.len()));
                         ui.add_space(t.gap / 3.0);
                         if mode == ViewMode::List {
                             list_header(ui, t);
@@ -1246,17 +1243,7 @@ impl Library {
                 let r = egui::Rect::from_min_size(egui::pos2(bar.left(), top + i as f32 * h), egui::vec2(t.az_w, h));
                 let resp = ui.interact(r, ui.id().with(("g11-az", i)), egui::Sense::click());
                 let focused = self.focus.group == G_AZ && self.focus.index == i;
-                let ink = if focused || resp.hovered() {
-                    t.text
-                } else if present[i] {
-                    t.muted
-                } else {
-                    t.muted.gamma_multiply(0.4)
-                };
-                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, ch, t.font(t.small_size), ink);
-                if focused {
-                    parts::focus_ring(ui, t, r);
-                }
+                at_library::az_letter(ui, t, r, ch, focused, resp.hovered(), present[i]);
                 if resp.hovered() {
                     *hovered = Some(Focus { group: G_AZ, index: i });
                 }
@@ -1721,15 +1708,15 @@ fn dlg_section(it: &DlgItem) -> Option<&'static str> {
 
 /// A toggle chip that wraps with its neighbours (W0's `chips` is a single row).
 fn dlg_chip(ui: &mut egui::Ui, t: &Theme, label: &str, on: bool, focused: bool) -> egui::Response {
-    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), t.font(t.body_size), t.text));
+    let font = t.font_w(t.body_size, crate::theme::Weight::Medium);
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), t.text));
     let size = egui::vec2(galley.size().x + 2.0 * t.chip_pad, t.chip_h);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let (fill, ink) = if on { (t.accent, t.accent_text) } else { (t.surface_hi, t.text) };
-    ui.painter().rect_filled(rect, t.chip_h / 2.0, fill);
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, t.font(t.body_size), ink);
-    if focused {
-        parts::focus_ring(ui, t, rect);
-    }
+    // Apple TV chips: glass, brighter when on; the focused chip is the white plate.
+    let a = widgets::focus_amount(ui, t, resp.id, focused);
+    let rest = if on { t.glass_hi } else { t.glass };
+    let ink = widgets::plate(ui, t, rect, t.chip_h / 2.0, rest, a, t.pill_focus_scale);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, font, ink);
     resp
 }
 
@@ -1737,11 +1724,9 @@ fn dlg_chip(ui: &mut egui::Ui, t: &Theme, label: &str, on: bool, focused: bool) 
 fn year_field(ui: &mut egui::Ui, t: &Theme, v: Option<u32>, focused: bool) -> egui::Response {
     let text = v.filter(|&y| y > 0).map(|y| y.to_string()).unwrap_or_else(|| "Any".to_string());
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(t.field_w / 3.0, t.chip_h), egui::Sense::click());
-    ui.painter().rect_filled(rect, t.radius, t.surface_hi);
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, t.font(t.body_size), t.text);
-    if focused {
-        parts::focus_ring(ui, t, rect);
-    }
+    let a = widgets::focus_amount(ui, t, resp.id, focused);
+    let ink = widgets::plate(ui, t, rect, t.field_radius, t.surface_hi, a, 1.0);
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, t.font(t.body_size), ink);
     resp
 }
 
@@ -1781,15 +1766,15 @@ fn list_rows(ui: &mut egui::Ui, cx: &mut Cx, items: &[Option<Item>], focus: Opti
             egui::vec2(w, t.list_row_h - t.gap / 4.0),
         );
         out.xs.push(rect.center().x);
-        if focus == Some(i) {
+        if focus == Some(i) && crate::ui::shell::keyboard_focus(ui.ctx()) {
             ui.scroll_to_rect(rect.expand(t.gap), None);
         }
         if !rect.intersects(clip) {
             continue;
         }
         let resp = ui.interact(rect, ui.id().with(("g11-row", i)), egui::Sense::click());
-        let fill = if resp.hovered() || focus == Some(i) { t.surface_hi } else { t.surface };
-        ui.painter().rect_filled(rect, t.radius, fill);
+        let ink = at_library::list_plate(ui, t, resp.id, rect, focus == Some(i), resp.hovered());
+        let sub_ink = if focus == Some(i) { ink } else { t.muted };
         let Some(it) = slot else { continue };
         let runtime = it.run_time_ticks.map(|x| parts::runtime(crate::api::ticks_to_secs(x))).unwrap_or_default();
         let year = it.production_year.map(|y| y.to_string()).unwrap_or_default();
@@ -1807,7 +1792,7 @@ fn list_rows(ui: &mut egui::Ui, cx: &mut Cx, items: &[Option<Item>], focus: Opti
             title_w,
             &it.name,
             t.body_size,
-            t.text,
+            ink,
         );
         for (k, text) in [(1usize, year), (2, runtime), (3, rating)] {
             ui.painter().text(
@@ -1815,11 +1800,8 @@ fn list_rows(ui: &mut egui::Ui, cx: &mut Cx, items: &[Option<Item>], focus: Opti
                 egui::Align2::LEFT_CENTER,
                 text,
                 t.font(t.body_size),
-                t.muted,
+                sub_ink,
             );
-        }
-        if focus == Some(i) {
-            parts::focus_ring(ui, t, rect);
         }
         if resp.hovered() {
             out.hovered = Some(i);

@@ -2,7 +2,8 @@
 //!   wait-screen <name>     wait until the top screen is <name> (60 s timeout → exit 4: slack for a busy build box)
 //!   idle                   wait until no loads are pending (then 3 more frames)
 //!   key <up|down|left|right|enter|back|esc|space|backspace|info|forward|search> [n]
-//!                          (esc = Back, like the real Esc key)
+//!                          (esc = Back, like the real Esc key; n > 1 = the key held down: a held Left never
+//!                          leaves the screen for the sidebar)
 //!   type <text>            text into the focused field
 //!   wait <ms>
 //!   fast-forward <secs>    move the app clock forward (idle timers: the screensaver)
@@ -164,6 +165,8 @@ pub struct Step {
     pub shot: Option<String>,
     pub fast_forward: Option<f64>,
     pub mouse: Option<Mouse>,
+    /// The keys are a held key's repeats (`key <k> <n>` with n > 1).
+    pub held: bool,
     /// Start (`Some(Some((name, fps)))`) or stop (`Some(None)`) recording.
     pub record: Option<Option<(String, u32)>>,
     pub quit: bool,
@@ -175,6 +178,8 @@ pub struct Runner {
     since: Instant,
     idle_frames: usize,
     bench: Vec<f32>,
+    /// Inside a `key <k> <n>` burst with n > 1.
+    burst: bool,
     pub started: Instant,
     /// App clock (s) when the current command started; `wait` and `drag` measure on it.
     since_clock: f64,
@@ -182,7 +187,16 @@ pub struct Runner {
 
 impl Runner {
     pub fn new(cmds: Vec<Cmd>, started: Instant) -> Runner {
-        Runner { cmds, pc: 0, since: Instant::now(), idle_frames: 0, bench: vec![], started, since_clock: 0.0 }
+        Runner {
+            cmds,
+            pc: 0,
+            since: Instant::now(),
+            idle_frames: 0,
+            bench: vec![],
+            burst: false,
+            started,
+            since_clock: 0.0,
+        }
     }
 
     /// The current step acts on the next frame (keys, text, shots, bench…, or `idle` once nothing is loading);
@@ -223,6 +237,8 @@ impl Runner {
             }
             Cmd::Key(k, n) => {
                 s.keys = vec![k];
+                self.burst |= n > 1;
+                s.held = self.burst;
                 if n > 1 {
                     self.cmds[self.pc] = Cmd::Key(k, n - 1);
                     next = false;
@@ -268,6 +284,9 @@ impl Runner {
             Cmd::Quit => s.quit = true,
         }
         if next {
+            if !matches!(self.cmds.get(self.pc), Some(Cmd::Key(_, n)) if *n > 1) {
+                self.burst = false;
+            }
             self.pc += 1;
             self.since = Instant::now();
             self.since_clock = clock;

@@ -2,6 +2,8 @@
 wait-screen connect
 wait 2500
 idle
+key down
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin

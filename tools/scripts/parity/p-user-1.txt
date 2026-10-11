@@ -9,9 +9,9 @@ type http://jf-test:8096
 key enter
 wait-screen signin
 idle
-type viewer
+type picture
 key down
-type view-pass-1
+type pic-pass-1
 key enter
 wait-screen home
 idle

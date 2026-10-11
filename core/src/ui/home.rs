@@ -689,7 +689,7 @@ impl Screen for Home {
                         let focus = (focus_group == hero_gi).then_some(focus_index);
                         let top = ui.cursor().top();
                         let out = parts::hero(ui, cx, h, focus);
-                        if focus.is_some() {
+                        if focus.is_some() && crate::ui::shell::keyboard_focus(ui.ctx()) {
                             ui.scroll_to_rect(
                                 egui::Rect::from_min_size(egui::pos2(page.left(), top), egui::vec2(1.0, 1.0)),
                                 None,
@@ -707,7 +707,7 @@ impl Screen for Home {
                         let top = ui.cursor().top();
                         let out = Self::draw_row(ui, cx, heading, st, *kind, focus_idx, *id == RowId::Favourites);
                         let bottom = ui.cursor().top();
-                        if focus_idx.is_some() {
+                        if focus_idx.is_some() && crate::ui::shell::keyboard_focus(ui.ctx()) {
                             let rect = egui::Rect::from_min_max(
                                 egui::pos2(ui.min_rect().left(), top),
                                 egui::pos2(ui.max_rect().right(), bottom),

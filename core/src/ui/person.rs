@@ -385,7 +385,7 @@ impl Person {
                         if resp.hovered() {
                             self.focus = Focus { group: G_LIST, index: i };
                         }
-                        if focused {
+                        if focused && crate::ui::shell::keyboard_focus(&resp.ctx) {
                             resp.scroll_to_me(None);
                         }
                         if resp.clicked() {

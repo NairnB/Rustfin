@@ -103,16 +103,18 @@ fn person_card(ui: &mut egui::Ui, cx: &mut Cx, person: &Item, focused: bool) -> 
     let size = vec2(t.person_size, t.person_size);
     let (rect, resp) = ui.allocate_exact_size(vec2(size.x, size.y + t.card_label_h), Sense::click());
     if ui.is_rect_visible(rect) {
-        let img_rect = Rect::from_min_size(rect.min, size);
+        // Apple TV look: a round photo that lifts with a shadow when focused (no ring).
+        let a = super::widgets::focus_amount(ui, t, resp.id, focused);
+        let img_rect = super::widgets::lift(Rect::from_min_size(rect.min, size), t.focus_scale, a);
+        if a > 0.01 {
+            ui.painter().add(t.shadow(a).as_shape(img_rect, size.x / 2.0));
+        }
         let w = image_width_bucket(size.x, ui.ctx().pixels_per_point());
         let url = cx.client.as_ref().and_then(|c| c.image_url(person, ImageKind::Primary, w));
         match url.as_deref().and_then(|u| cx.images.get(u)) {
-            Some(tex) => {
-                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                ui.painter().image(tex, img_rect, uv, egui::Color32::WHITE);
-            }
+            Some(tex) => super::at_library::paint_round(ui, tex, img_rect),
             None => {
-                ui.painter().rect_filled(img_rect, t.radius, t.skeleton);
+                ui.painter().circle_filled(img_rect.center(), img_rect.width() / 2.0, t.skeleton);
                 if url.is_none() {
                     ui.painter().text(
                         img_rect.center(),
@@ -124,10 +126,14 @@ fn person_card(ui: &mut egui::Ui, cx: &mut Cx, person: &Item, focused: bool) -> 
                 }
             }
         }
-        if focused {
-            parts::focus_ring(ui, t, img_rect);
+        let ink = if focused { t.text } else { t.muted };
+        let name_y = rect.top() + size.y + t.card_title_gap;
+        let g = ui.fonts(|f| f.layout_no_wrap(person.name.clone(), t.font(t.body_size), ink));
+        if g.size().x <= size.x {
+            ui.painter().galley(pos2(rect.center().x - g.size().x / 2.0, name_y), g, ink);
+        } else {
+            parts::label_line(ui, t, pos2(rect.left(), name_y), size.x, &person.name, t.body_size, ink);
         }
-        parts::label_line(ui, t, pos2(rect.left(), img_rect.bottom() + 6.0), size.x, &person.name, t.body_size, t.text);
     }
     resp
 }
@@ -147,7 +153,7 @@ pub(super) fn people_row(ui: &mut egui::Ui, cx: &mut Cx, people: &[Item], focus:
                 for (i, p) in people.iter().enumerate() {
                     let r = person_card(ui, cx, p, focus == Some(i));
                     out.xs.push(r.rect.center().x);
-                    if focus == Some(i) {
+                    if focus == Some(i) && crate::ui::shell::keyboard_focus(&r.ctx) {
                         r.scroll_to_me(None);
                     }
                     if r.hovered() {
@@ -323,7 +329,12 @@ impl Screen for Favourites {
             }
             if !self.any_results() {
                 ui.add_space(t.gap);
-                parts::muted(ui, t, "No favourites yet. Mark an item with the heart on its page.");
+                super::at_library::empty_state(
+                    ui,
+                    t,
+                    "No favourites yet",
+                    "Mark a film, show or person with the heart on its page and it will appear here.",
+                );
             }
         });
 

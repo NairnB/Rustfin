@@ -2,6 +2,7 @@
 pub mod admin;
 pub mod admin_actions;
 pub mod at_details;
+pub mod at_library;
 pub mod browse;
 pub mod collection;
 pub mod connect;
@@ -11,6 +12,7 @@ pub mod gallery_details;
 pub mod home;
 pub mod imageload;
 pub mod item;
+pub mod keyboard;
 pub mod library;
 pub mod parts;
 pub mod person;

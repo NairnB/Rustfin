@@ -2,12 +2,19 @@
 //! the profile back as it was (no picture), even when it fails.
 use jf_core::api::*;
 
-fn viewer() -> Option<Client> {
+fn signed(user: &str, pass: &str) -> Option<Client> {
     let u = std::env::var("JF_TEST_URL").ok()?;
     let dev = DeviceInfo { name: "live-rr8".into(), id: "live-rr8-device".into(), version: "0.1.0".into() };
     let (mut c, _) = Client::connect(&u, dev).unwrap();
-    c.sign_in("viewer", "view-pass-1").unwrap();
+    c.sign_in(user, pass).unwrap();
     Some(c)
+}
+fn viewer() -> Option<Client> {
+    signed("viewer", "view-pass-1")
+}
+/// Picture tests change the user's picture: their own user (tools/testserver/up.sh), never viewer.
+fn picture_user() -> Option<Client> {
+    signed("picture", "pic-pass-1")
 }
 
 /// A 64x64 PNG made on the spot.
@@ -27,7 +34,7 @@ impl Drop for RemovePicture {
 
 #[test]
 fn picture_uploads_shows_and_goes() {
-    let Some(c) = viewer() else {
+    let Some(c) = picture_user() else {
         eprintln!("JF_TEST_URL unset: live test skipped");
         return;
     };
@@ -46,7 +53,7 @@ fn picture_uploads_shows_and_goes() {
 
 #[test]
 fn a_non_picture_is_refused_before_it_is_sent() {
-    let Some(c) = viewer() else { return };
+    let Some(c) = picture_user() else { return };
     let uid = c.session.as_ref().unwrap().user_id.clone();
     assert!(c.set_user_image(&uid, b"hello").is_err());
 }

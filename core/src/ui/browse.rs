@@ -219,7 +219,7 @@ impl Screen for Browse {
         };
 
         if items.is_empty() {
-            parts::muted(ui, t, "Nothing in your libraries matches.");
+            super::at_library::empty_state(ui, t, "Nothing here", "Nothing in your libraries matches.");
             self.groups = vec![];
             return;
         }
@@ -236,6 +236,8 @@ impl Screen for Browse {
         let cells: Vec<Option<Item>> = items.iter().cloned().map(Some).collect();
         let mut out = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
+            // Room for the focused card's lift and shadow at the top edge of the scroll area.
+            ui.add_space(t.poster_h * (t.focus_scale - 1.0) / 2.0 + t.shadow_blur / 4.0);
             out = Some(parts::grid(
                 ui,
                 cx,

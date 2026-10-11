@@ -175,12 +175,12 @@ fn small_button(
     focused: bool,
 ) -> egui::Response {
     let resp = ui.interact(rect, id, Sense::click());
-    let fill = if resp.hovered() { t.surface_hi.gamma_multiply(1.3) } else { t.surface_hi };
-    ui.painter().rect_filled(rect, t.radius, fill);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, t.font(t.small_size), t.text);
-    if focused {
-        parts::focus_ring(ui, t, rect);
-    }
+    // Apple TV look: a glass pill, the white plate when focused.
+    let a = super::widgets::focus_amount(ui, t, id, focused);
+    let rest = if resp.hovered() { t.glass_hi } else { t.glass };
+    let ink = super::widgets::plate(ui, t, rect, rect.height() / 2.0, rest, a, t.pill_focus_scale);
+    let font = t.font_w(t.small_size, crate::theme::Weight::SemiBold);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, font, ink);
     resp
 }
 
@@ -346,7 +346,12 @@ impl Screen for Playlist {
         ui.add_space(t.gap / 2.0);
 
         if rows.is_empty() {
-            parts::muted(ui, t, "This playlist is empty. Open a film and choose Add to… to put something in it.");
+            super::at_library::empty_state(
+                ui,
+                t,
+                "This playlist is empty",
+                "Open a film and choose Add to… to put something in it.",
+            );
         }
 
         let row_h = t.ep_thumb_h + t.gap / 2.0;
@@ -372,20 +377,16 @@ impl Screen for Playlist {
                 let focus_here = |c: usize| self.focus == Focus { group: G_ROWS, index: n * COLS + c };
 
                 let open = ui.interact(open_rect, ui.id().with(("pl-open", n)), Sense::click());
+                let ink = super::at_library::list_plate(ui, t, open.id, open_rect, focus_here(0), open.hovered());
+                let sub_ink = if focus_here(0) { ink } else { t.muted };
                 let img_w = t.ep_thumb_h * 2.0 / 3.0;
                 let img = Rect::from_min_size(area.min, vec2(img_w, t.ep_thumb_h));
                 let url = parts::card_image_url(cx, &e.item, CardKind::Poster, ui.ctx().pixels_per_point());
                 match url.as_deref().and_then(|u| cx.images.get(u)) {
-                    Some(tex) => {
-                        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                        ui.painter().image(tex, img, uv, egui::Color32::WHITE);
-                    }
+                    Some(tex) => parts::paint_image(ui, tex, img, t.radius),
                     None => {
                         ui.painter().rect_filled(img, t.radius, t.skeleton);
                     }
-                }
-                if focus_here(0) {
-                    parts::focus_ring(ui, t, open_rect);
                 }
                 let (title, sub) = parts::card_labels(&e.item);
                 let tx = img.right() + t.gap / 2.0;
@@ -397,7 +398,7 @@ impl Screen for Playlist {
                     tw,
                     &format!("{}. {title}", n + 1),
                     t.body_size,
-                    t.text,
+                    ink,
                 );
                 if !sub.is_empty() {
                     parts::label_line(
@@ -407,7 +408,7 @@ impl Screen for Playlist {
                         tw,
                         &sub,
                         t.small_size,
-                        t.muted,
+                        sub_ink,
                     );
                 }
                 xs.push(open_rect.center().x);
@@ -427,7 +428,10 @@ impl Screen for Playlist {
                         clicked = Some(Focus { group: G_ROWS, index: n * COLS + c + 1 });
                     }
                 }
-                if self.focus.group == G_ROWS && self.focus.index / COLS == n {
+                if self.focus.group == G_ROWS
+                    && self.focus.index / COLS == n
+                    && crate::ui::shell::keyboard_focus(ui.ctx())
+                {
                     ui.scroll_to_rect(rect.expand(t.gap), None);
                 }
             }

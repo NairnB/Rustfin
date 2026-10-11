@@ -47,6 +47,21 @@ pub struct View<'a> {
     pub can_forward: bool,
     /// Breadcrumb parts per screen above Home.
     pub crumbs: &'a [Vec<String>],
+    /// Keyboard focus in the sidebar: an index into `entries` (None = focus is in the screen).
+    pub focus: Option<usize>,
+}
+
+/// The sidebar rows in keyboard order: Home, Search, the libraries, Collections, Playlists, Favourites, Server admin
+/// (admins), then the user (Enter opens Settings).
+pub fn entries(views: &[Item], admin: bool) -> Vec<Place> {
+    let mut v = vec![Place::Home, Place::Search];
+    v.extend(sidebar_views(views).map(|l| Place::View(l.id.clone())));
+    v.extend([Place::Collections, Place::Playlists, Place::Favourites]);
+    if admin {
+        v.push(Place::Admin);
+    }
+    v.push(Place::Settings);
+    v
 }
 
 /// Libraries the sidebar lists: everything but collections and playlists (they have their own rows).
@@ -199,11 +214,13 @@ fn sidebar(ui: &mut Ui, t: &Theme, v: &View) -> Option<Action> {
         );
     }
     y = full.top() + t.toolbar_h + pad / 2.0;
+    let focused = v.focus.and_then(|i| entries(v.views, v.admin).get(i).cloned());
 
     let mut item = |ui: &mut Ui, y: &mut f32, g: Glyph, label: &str, place: Place, id: &str| {
         let rect = Rect::from_min_size(pos2(full.left() + pad, *y), vec2(row_w, t.sidebar_item_h));
         *y += t.sidebar_item_h + t.sidebar_gap;
-        if row(ui, t, rect, g, label, v.place.as_ref() == Some(&place), v.collapsed, id) {
+        let selected = v.place.as_ref() == Some(&place);
+        if row(ui, t, rect, g, label, selected, focused.as_ref() == Some(&place), v.collapsed, id) {
             out = Some(Action::Open(place));
         }
     };
@@ -236,11 +253,12 @@ fn sidebar(ui: &mut Ui, t: &Theme, v: &View) -> Option<Action> {
     if v.admin {
         yb -= t.sidebar_item_h + t.sidebar_gap;
         let rect = Rect::from_min_size(pos2(full.left() + pad, yb), vec2(row_w, t.sidebar_item_h));
-        if row(ui, t, rect, Glyph::Server, "Server admin", v.place == Some(Place::Admin), v.collapsed, "admin") {
+        let (sel, foc) = (v.place == Some(Place::Admin), focused == Some(Place::Admin));
+        if row(ui, t, rect, Glyph::Server, "Server admin", sel, foc, v.collapsed, "admin") {
             out = Some(Action::Open(Place::Admin));
         }
     }
-    if let Some(a) = user_row(ui, t, user_rect, v) {
+    if let Some(a) = user_row(ui, t, user_rect, v, focused == Some(Place::Settings)) {
         out = Some(a);
     }
     out
@@ -248,9 +266,21 @@ fn sidebar(ui: &mut Ui, t: &Theme, v: &View) -> Option<Action> {
 
 /// One sidebar row: icon, label (hidden when collapsed), hover and selected fills. Returns clicked.
 #[allow(clippy::too_many_arguments)]
-fn row(ui: &mut Ui, t: &Theme, rect: Rect, g: Glyph, label: &str, selected: bool, collapsed: bool, id: &str) -> bool {
+fn row(
+    ui: &mut Ui,
+    t: &Theme,
+    rect: Rect,
+    g: Glyph,
+    label: &str,
+    selected: bool,
+    focused: bool,
+    collapsed: bool,
+    id: &str,
+) -> bool {
     let r = ui.interact(rect, ui.id().with(("nav-row", id)), Sense::click());
-    let fill = if selected {
+    let fill = if focused {
+        t.focus_fill
+    } else if selected {
         t.sidebar_selected
     } else if r.hovered() {
         t.sidebar_hover
@@ -258,7 +288,13 @@ fn row(ui: &mut Ui, t: &Theme, rect: Rect, g: Glyph, label: &str, selected: bool
         Color32::TRANSPARENT
     };
     ui.painter().rect_filled(rect, t.radius, fill);
-    let ink = if selected || r.hovered() { t.text } else { t.sidebar_ink };
+    let ink = if focused {
+        t.focus_ink
+    } else if selected || r.hovered() {
+        t.text
+    } else {
+        t.sidebar_ink
+    };
     let icon_c = pos2(rect.left() + t.sidebar_item_h / 2.0, rect.center().y);
     glyph(ui, t, g, icon_c, ink);
     if !collapsed {
@@ -277,11 +313,17 @@ fn row(ui: &mut Ui, t: &Theme, rect: Rect, g: Glyph, label: &str, selected: bool
 
 /// The user at the bottom: initials avatar + name. Click opens a small menu above it (Settings, Switch user,
 /// Sign out).
-fn user_row(ui: &mut Ui, t: &Theme, rect: Rect, v: &View) -> Option<Action> {
+fn user_row(ui: &mut Ui, t: &Theme, rect: Rect, v: &View, focused: bool) -> Option<Action> {
     let menu_id = ui.id().with("nav-user-menu");
     let mut open: bool = ui.ctx().data(|d| d.get_temp(menu_id)).unwrap_or(false);
     let r = ui.interact(rect, ui.id().with("nav-user"), Sense::click());
-    let fill = if open || r.hovered() { t.sidebar_hover } else { Color32::TRANSPARENT };
+    let fill = if focused {
+        t.focus_fill
+    } else if open || r.hovered() {
+        t.sidebar_hover
+    } else {
+        Color32::TRANSPARENT
+    };
     ui.painter().rect_filled(rect, t.radius, fill);
     let d = t.sidebar_avatar;
     let c = pos2(rect.left() + t.sidebar_item_h / 2.0, rect.center().y);
@@ -295,7 +337,7 @@ fn user_row(ui: &mut Ui, t: &Theme, rect: Rect, v: &View) -> Option<Action> {
             Align2::LEFT_CENTER,
             v.user,
             t.font(t.body_size),
-            t.text,
+            if focused { t.focus_ink } else { t.text },
         );
     }
     if r.clicked() {

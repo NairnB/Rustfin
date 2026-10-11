@@ -69,6 +69,10 @@ if [ -n "$PID" ] && ! J "http://$NAME:8096/Items/$PID" -H "$A" | grep -q '"EndDa
   BODY=$(J "http://$NAME:8096/Items/$PID" -H "$A" | sed 's/^{/{"Overview":"A made-up director who spent forty years making quiet films about harbours and the people who leave them.","PremiereDate":"1950-03-02T00:00:00.0000000Z","EndDate":"2020-07-01T00:00:00.0000000Z",/; s/"LockData":false/"LockData":true/')
   J -X POST "http://$NAME:8096/Items/$PID" -H "$A" -d "$BODY" >/dev/null || true
 fi
+# P-USER-1: the profile-picture tests change a user's picture, so they use their own user, never viewer (parallel
+# picture writes on one user broke every sign-in of that user until a restart, 11 Oct 2026).
+J "http://$NAME:8096/Users" -H "$A" | grep -q '"Name":"picture"' ||
+  J -X POST "http://$NAME:8096/Users/New" -H "$A" -d '{"Name":"picture","Password":"pic-pass-1"}' >/dev/null
 # The playlists folder must never be empty: a library scan drops an empty /config/data/playlists from the server,
 # and every later "create playlist" fails with 400 "parentFolder" until a restart (seen twice on 11 Oct 2026).
 docker exec "$NAME" sh -c 'mkdir -p /config/data/playlists && touch /config/data/playlists/.keep'

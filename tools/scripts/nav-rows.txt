@@ -1,0 +1,38 @@
+# NAV rows (BRIEF-desktop-nav §4): the wheel scrolls Home and stays there (focus no longer pulls it back in mouse
+# mode); round arrows appear at the ends of a long row under the mouse and page it; a sideways wheel/swipe scrolls
+# the row. Coordinates are 1920×1080 pixels.
+wait-screen connect
+wait 2500
+idle
+key down
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+move 1000 600
+scroll 0 -1500
+wait 600
+scroll 0 -500
+wait 600
+idle
+shot nav-rows-wheel
+# Pointer over the Latest Movies row (top of the screen now): the right arrow shows.
+move 1000 220
+wait 400
+shot nav-rows-arrows
+click 1880 191
+wait 800
+idle
+shot nav-rows-paged
+scroll 900 0
+wait 800
+idle
+shot nav-rows-sideways
+quit

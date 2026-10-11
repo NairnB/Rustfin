@@ -1,0 +1,36 @@
+# NAV keyboard (UXP1 follow-up): one Left at a screen's left edge steps into the sidebar on the CURRENT section;
+# Up/Down move there, Enter opens, Right goes back to the exact item. A held Left (`key left <n>`) stays in the screen.
+wait-screen connect
+wait 2500
+idle
+key down
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+# Held Left: stays on Home's Play pill.
+key left 5
+idle
+key left
+wait 300
+shot nav-keys-home
+# Home, Search, Archive, Mixed, Movies → Enter opens Movies.
+key down 4
+key enter
+wait-screen library
+idle
+key left
+wait 300
+shot nav-keys-movies
+key right
+key down
+wait 300
+shot nav-keys-back-in
+quit

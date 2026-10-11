@@ -313,6 +313,8 @@ pub fn text_field(ui: &mut Ui, t: &Theme, text: &mut String, hint: &str, focused
         r.surrender_focus();
     }
     if focused {
+        // UXP5: tell the TV keyboard which field has focus (the app reads it next frame; desktop ignores it).
+        super::keyboard::register(ui.ctx(), text, password, hint);
         focus_ring(ui, t, r.rect);
     }
     r
@@ -351,6 +353,22 @@ pub fn row(
     row_impl(ui, cx, id, heading_text, items, kind, focus, false)
 }
 
+/// NAV: a round paging arrow over a row's end (glass at rest, white plate with dark ink on hover). Returns clicked.
+fn row_arrow(ui: &mut Ui, t: &Theme, c: egui::Pos2, right: bool, id: egui::Id) -> bool {
+    let rect = Rect::from_center_size(c, vec2(t.round_button, t.round_button));
+    let resp = ui.interact(rect, id, Sense::click());
+    let a = super::widgets::focus_amount(ui, t, id, resp.hovered());
+    let ink = super::widgets::plate(ui, t, rect, t.round_button / 2.0, t.bar_fill, a, t.pill_focus_scale);
+    let h = t.round_button * 0.14;
+    let dx = if right { h * 0.5 } else { -h * 0.5 };
+    let tip = pos2(c.x + dx, c.y);
+    let back = pos2(c.x - dx, c.y);
+    let st = egui::Stroke::new(t.icon_stroke, ink);
+    ui.painter().line_segment([pos2(back.x, c.y - h), tip], st);
+    ui.painter().line_segment([tip, pos2(back.x, c.y + h)], st);
+    resp.clicked()
+}
+
 /// Heading + a sideways-scrolling row of cards. Full-bleed: the row runs under the side margins and the first
 /// card lines up with the heading; padding above and below leaves room for the focus lift and its shadow.
 #[allow(clippy::too_many_arguments)]
@@ -381,12 +399,21 @@ fn row_impl(
         ui.new_child(egui::UiBuilder::new().max_rect(full).layout(egui::Layout::top_down(egui::Align::Min)));
     {
         let ui = &mut child;
-        let clip = ui.clip_rect().union(full).intersect(ui.ctx().screen_rect());
+        // Widen the clip sideways only: vertically the page's clip still holds (rows scrolled up must not draw over
+        // the desktop toolbar).
+        let wide = ui.clip_rect().union(full).intersect(ui.ctx().screen_rect());
+        let clip = Rect::from_x_y_ranges(wide.x_range(), ui.clip_rect().y_range());
         ui.set_clip_rect(clip);
-        egui::ScrollArea::horizontal()
+        // NAV: a click on a hover arrow last frame scrolls the row by about a screenful (eased by egui).
+        let page_id = ui.id().with((id, "row-page"));
+        let page: f32 = ui.ctx().data_mut(|d| d.remove_temp(page_id)).unwrap_or(0.0);
+        let scrolled = egui::ScrollArea::horizontal()
             .id_salt(id)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
+                if page != 0.0 {
+                    ui.scroll_with_delta(vec2(page, 0.0));
+                }
                 ui.add_space(pad_y);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = t.gap;
@@ -399,7 +426,9 @@ fn row_impl(
                         };
                         out.xs.push(r.rect.center().x);
                         if focus == Some(i) {
-                            ui.scroll_to_rect(r.rect.expand2(vec2(t.margin, 0.0)), None);
+                            if crate::ui::shell::keyboard_focus(ui.ctx()) {
+                                ui.scroll_to_rect(r.rect.expand2(vec2(t.margin, 0.0)), None);
+                            }
                             // prefetch the next two cards (R-IMG-2)
                             for next in items.iter().skip(i + 1).take(2) {
                                 if let Some(u) = card_image_url(cx, next, kind, ui.ctx().pixels_per_point()) {
@@ -418,6 +447,24 @@ fn row_impl(
                 });
                 ui.add_space(pad_y - t.card_title_gap);
             });
+        // NAV (BRIEF-desktop-nav §4): with the mouse over a row that runs off screen, round arrows at its ends
+        // page it sideways. Hidden while the keyboard drives focus (the remote/arrow keys scroll rows already).
+        let over = ui.rect_contains_pointer(full);
+        if over && !super::shell::keyboard_focus(ui.ctx()) {
+            let off = scrolled.state.offset.x;
+            let room = scrolled.content_size.x - scrolled.inner_rect.width();
+            let step = (scrolled.inner_rect.width() - 2.0 * t.margin).max(size.x);
+            let cy = reserved.top() + pad_y + size.y / 2.0;
+            let ends = [
+                (off > 1.0, full.left() + t.margin / 2.0, step),
+                (off < room - 1.0, full.right() - t.margin / 2.0, -step),
+            ];
+            for (k, (show, x, delta)) in ends.into_iter().enumerate() {
+                if show && row_arrow(ui, t, pos2(x, cy), k == 1, ui.id().with((id, "row-arrow", k))) {
+                    ui.ctx().data_mut(|d| d.insert_temp(page_id, delta));
+                }
+            }
+        }
     }
     out
 }
@@ -466,7 +513,7 @@ pub fn grid(
         let visible = rect.intersects(clip);
         let near =
             rect.translate(vec2(0.0, -cell.y)).intersects(clip) || rect.translate(vec2(0.0, cell.y)).intersects(clip);
-        if focus == Some(i) {
+        if focus == Some(i) && crate::ui::shell::keyboard_focus(ui.ctx()) {
             ui.scroll_to_rect(rect.expand(t.gap), None);
         }
         match items.get(i).and_then(|x| x.as_ref()) {
@@ -820,7 +867,7 @@ pub fn grid_kind(
         out.xs.push(min.x + size.x / 2.0);
         let rect = Rect::from_min_size(min, vec2(size.x, size.y + t.card_label_h));
         let visible = rect.intersects(clip);
-        if focus == Some(i) {
+        if focus == Some(i) && crate::ui::shell::keyboard_focus(ui.ctx()) {
             ui.scroll_to_rect(rect.expand(t.gap), None);
         }
         match items.get(i).and_then(|x| x.as_ref()) {

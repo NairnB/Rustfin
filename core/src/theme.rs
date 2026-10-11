@@ -151,6 +151,13 @@ pub struct Theme {
     pub sidebar_ink: Color32,
     pub toolbar_h: f32,
     pub toolbar_button: f32,
+    // ---- D3: library / search ----
+    /// Search field: width (centred) and height; the magnifier's size.
+    pub search_w: f32,
+    pub search_h: f32,
+    pub search_icon: f32,
+    /// Height of the band an empty screen's message is centred in.
+    pub empty_h: f32,
     // ---- Apple TV look (D1) ----
     /// Translucent white over dark: resting secondary pills, chips, fields.
     pub glass: Color32,
@@ -329,6 +336,10 @@ impl Theme {
             sidebar_ink: Color32::from_rgb(0xc8, 0xc8, 0xcc),
             toolbar_h: 72.0,
             toolbar_button: 40.0,
+            search_w: 880.0,
+            search_h: 64.0,
+            search_icon: 24.0,
+            empty_h: 480.0,
             glass: white(0x1f),
             glass_hi: white(0x3d),
             focus_fill: Color32::from_rgb(0xf5, 0xf5, 0xf7),

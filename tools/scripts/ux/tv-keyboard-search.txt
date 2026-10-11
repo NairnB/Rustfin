@@ -1,0 +1,186 @@
+# args: --tv
+# UXP5: TV keyboard — search opens it on arrival; type "drif" with arrows+Enter, results update live under it, Down from the last row → results, open the show.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+key enter
+idle
+key right 4
+wait 250
+key right 3
+key enter
+key down
+key right 2
+key enter 2
+key left 4
+key enter
+key down 2
+key right 2
+key enter
+key up 2
+key left 4
+wait 250
+key left 3
+key enter
+key right
+key enter 2
+key down 2
+key right 4
+key enter
+key up 3
+key right 2
+key enter
+key left 4
+key enter
+key down 2
+key right 2
+key enter
+key up
+key right 2
+key enter
+key up
+key left 4
+wait 250
+key left
+key enter
+key down
+key right 4
+key enter
+key right
+key enter
+key down 2
+key left
+key enter
+key up 2
+key left 4
+wait 250
+key left 3
+key enter
+key up
+key right 4
+wait 250
+key right 3
+key enter
+key right 2
+key enter
+key left
+key enter
+key left 3
+key enter
+key down 3
+key right 3
+key enter
+idle
+key down
+key enter
+wait-screen signin
+idle
+key enter
+idle
+key down 2
+key right
+key enter
+key up 2
+key right 4
+wait 250
+key right 3
+key enter
+key left 4
+key enter
+key down 2
+key left 2
+key enter
+key up 2
+key right 2
+key enter
+key down
+key right 3
+key enter
+key down 2
+key right
+key enter
+key down
+key enter
+idle
+key down 2
+key right
+key enter
+key up 2
+key right 4
+wait 250
+key right 3
+key enter
+key left 4
+key enter
+key down 2
+key left 2
+key enter
+key right 4
+wait 250
+key right
+key enter
+key up
+key left 2
+key enter
+key up
+key left 4
+wait 250
+key left
+key enter
+key down
+key right 4
+wait 250
+key right 4
+key enter 2
+key down
+key left
+key enter
+key down
+key enter
+key up 3
+key left 4
+wait 250
+key left 3
+key enter
+key down 3
+key right 4
+wait 250
+key right
+key enter
+idle
+key down
+key down
+key enter
+wait-screen home
+idle
+key up
+key right
+key enter
+wait-screen search
+idle
+shot tvkb-search-open
+key right 3
+key enter
+key down
+key right 4
+key enter
+key up
+key right
+key enter
+key left 3
+key enter
+idle
+wait 1500
+idle
+shot tvkb-search-live
+key down 3
+key down
+idle
+shot tvkb-search-results
+key enter
+wait-screen show
+idle
+shot tvkb-search-opened
+quit
