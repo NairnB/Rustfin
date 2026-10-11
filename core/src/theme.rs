@@ -38,6 +38,9 @@ pub struct Theme {
     pub poster_h: f32,
     pub thumb_w: f32,
     pub thumb_h: f32,
+    /// P-LIB-14: banner-view strip (wide, ~1000×185 ratio).
+    pub banner_w: f32,
+    pub banner_h: f32,
     pub card_label_h: f32,
     pub button_h: f32,
     pub button_pad: f32,
@@ -132,6 +135,8 @@ impl Theme {
             poster_h: 270.0,
             thumb_w: 320.0,
             thumb_h: 180.0,
+            banner_w: 800.0,
+            banner_h: 148.0,
             card_label_h: 44.0,
             button_h: 44.0,
             button_pad: 20.0,

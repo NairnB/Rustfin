@@ -1,0 +1,26 @@
+# P-HOME-7 parity tour (RR7): the user menu at the right of the Home top bar — open it, then Settings.
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up 20
+key right 5
+idle
+shot p-home-7-chip
+key enter
+idle
+shot p-home-7
+key enter
+wait-screen settings
+idle
+shot p-home-7-settings
+quit

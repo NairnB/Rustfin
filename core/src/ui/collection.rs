@@ -1,7 +1,7 @@
 //! G7 collections: the BoxSet page (P-COLL-1) and the grid of collections (P-LIB-17). `grid_screen` is the
 //! shared "title + poster grid of items loaded in one call" screen (the playlists list uses it too).
 use super::player::{self, PlayOptions};
-use super::{parts, widgets};
+use super::{browse, parts, widgets};
 use crate::api::{ApiError, Client, Item, ItemKind, Result};
 use crate::app::{Cx, Screen};
 use crate::nav::{self, move_focus, Focus, Group};
@@ -204,6 +204,7 @@ pub struct Collection {
     sort: Sort,
     dropdown: widgets::DropdownState,
     started: bool,
+    busy: bool,
     focus: Focus,
     groups: Vec<Group>,
 }
@@ -217,6 +218,7 @@ pub fn screen(item: Item) -> Box<dyn Screen> {
         sort: Sort::Server,
         dropdown: widgets::DropdownState::default(),
         started: false,
+        busy: false,
         focus: Focus { group: G_PLAY, index: 0 },
         groups: vec![],
     })
@@ -259,10 +261,23 @@ impl Collection {
         }
     }
 
+    fn has_direct_play(&self) -> bool {
+        self.shown().iter().any(|i| matches!(i.kind, ItemKind::Movie | ItemKind::Episode))
+    }
+
     fn play_all(&self, cx: &mut Cx) {
         let first = self.shown().into_iter().find(|i| matches!(i.kind, ItemKind::Movie | ItemKind::Episode));
         if let Some(it) = first {
             cx.push(player::screen(it, PlayOptions { from_start: true, ..Default::default() }));
+        }
+    }
+
+    /// P-ITEM-21: the collection's playable children (series → episodes) in random order.
+    fn shuffle(&mut self, cx: &mut Cx) {
+        let shown = self.shown();
+        if !self.busy && !shown.is_empty() {
+            self.busy = true;
+            browse::start_shuffle(cx, shown);
         }
     }
 
@@ -290,6 +305,7 @@ impl Screen for Collection {
         match key {
             Key::Enter => {
                 match self.focus.group {
+                    G_PLAY if self.focus.index == 1 || !self.has_direct_play() => self.shuffle(cx),
                     G_PLAY => self.play_all(cx),
                     G_SORT => {
                         let (state, _) = widgets::dropdown_key(self.dropdown, key, SORTS.len());
@@ -321,6 +337,10 @@ impl Screen for Collection {
                     _ => self.items = Some(*r),
                 }
             }
+            "shuffle" => {
+                self.busy = false;
+                browse::finish_shuffle(cx, payload);
+            }
             "item" => {
                 let Ok(r) = payload.downcast::<Result<Item>>() else { return };
                 match *r {
@@ -346,6 +366,10 @@ impl Screen for Collection {
         let pointer_moved = ui.input(|i| i.pointer.is_moving());
         let shown = self.shown();
         let can_play = shown.iter().any(|i| matches!(i.kind, ItemKind::Movie | ItemKind::Episode));
+        let can_shuffle = shown
+            .iter()
+            .any(|i| matches!(i.kind, ItemKind::Movie | ItemKind::Episode | ItemKind::Series | ItemKind::Season));
+        let mut shuffle_clicked = false;
 
         let mut play_clicked = false;
         let mut hovered: Option<Focus> = None;
@@ -390,13 +414,36 @@ impl Screen for Collection {
                 return;
             }
 
-            if can_play {
-                let r = parts::button(ui, t, "Play all", self.focus.group == G_PLAY, true);
-                if r.hovered() {
-                    hovered = Some(Focus { group: G_PLAY, index: 0 });
-                }
-                play_clicked = r.clicked();
-                groups[G_PLAY] = Group { len: 1, cols: 1, xs: vec![r.rect.center().x] };
+            if can_play || can_shuffle {
+                let mut xs = vec![];
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                    if can_play {
+                        let r =
+                            parts::button(ui, t, "Play all", self.focus.group == G_PLAY && self.focus.index == 0, true);
+                        if r.hovered() {
+                            hovered = Some(Focus { group: G_PLAY, index: 0 });
+                        }
+                        play_clicked = r.clicked();
+                        xs.push(r.rect.center().x);
+                    }
+                    if can_shuffle {
+                        let idx = xs.len();
+                        let r = parts::button(
+                            ui,
+                            t,
+                            "Shuffle",
+                            self.focus.group == G_PLAY && self.focus.index == idx,
+                            !can_play,
+                        );
+                        if r.hovered() {
+                            hovered = Some(Focus { group: G_PLAY, index: idx });
+                        }
+                        shuffle_clicked = r.clicked();
+                        xs.push(r.rect.center().x);
+                    }
+                });
+                groups[G_PLAY] = Group { len: xs.len(), cols: xs.len(), xs };
                 ui.add_space(t.gap / 2.0);
             }
 
@@ -447,6 +494,9 @@ impl Screen for Collection {
         }
         if play_clicked {
             self.play_all(cx);
+        }
+        if shuffle_clicked {
+            self.shuffle(cx);
         }
         if retry_clicked {
             self.start(cx);

@@ -1,6 +1,5 @@
-# P-ITEM-3 parity tour (G2): genres, studios, directors, writers as short labelled lines.
-# Signs in as viewer, opens "Star Drift - Ember Rising" (director Rowan Pike, no genres/studios/writers).
-# The shot shows "Director  Rowan Pike"; the other lines render when the film has those fields.
+# P-ITEM-3 parity tour (RR5): genre / studio / director / writer chips on the film page; a genre chip opens the
+# filtered grid (screen "browse"). Signs in as viewer, opens "Making Star Drift" (the one film with a genre).
 wait-screen connect
 wait 2500
 idle
@@ -19,12 +18,22 @@ key right
 key enter
 wait-screen search
 idle
-type Ember Rising
+type Making Star Drift
 wait 600
 idle
 key down
 key enter
 wait-screen movie
+wait 1500
+idle
+key down
+idle
+shot p-item-3-chips
+key enter
+wait-screen browse
+wait 1500
 idle
 shot p-item-3
+key back
+wait-screen movie
 quit

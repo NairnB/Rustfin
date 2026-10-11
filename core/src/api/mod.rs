@@ -365,6 +365,8 @@ pub enum SortBy {
     PlayCount,
     Runtime,
     Random,
+    /// P-LIB-7: server `OfficialRating`.
+    ParentalRating,
     StoryOrder,
     MyOrder,
 }
@@ -382,6 +384,7 @@ impl SortBy {
             SortBy::PlayCount => Some("PlayCount"),
             SortBy::Runtime => Some("Runtime"),
             SortBy::Random => Some("Random"),
+            SortBy::ParentalRating => Some("OfficialRating"),
             SortBy::StoryOrder | SortBy::MyOrder => None,
         }
     }
@@ -397,6 +400,7 @@ impl SortBy {
             SortBy::PlayCount => "Play count",
             SortBy::Runtime => "Runtime",
             SortBy::Random => "Random",
+            SortBy::ParentalRating => "Parental rating",
             SortBy::StoryOrder => "Story order",
             SortBy::MyOrder => "My order",
         }
@@ -911,6 +915,19 @@ impl Client {
         };
         Some(format!("{}/Items/{id}/Images/{name}?maxWidth={width_px}&quality=90&tag={tag}", self.base))
     }
+    /// P-LIB-14: the banner-view image — the item's Banner, else Thumb, else Backdrop (own or parent's).
+    pub fn banner_image_url(&self, item: &Item, width_px: u32) -> Option<String> {
+        let (id, tag, name) = if let Some(t) = item.image_tags.get("Banner") {
+            (item.id.clone(), t.clone(), "Banner")
+        } else if let Some(t) = item.image_tags.get("Thumb") {
+            (item.id.clone(), t.clone(), "Thumb")
+        } else if let Some(t) = item.backdrop_image_tags.first() {
+            (item.id.clone(), t.clone(), "Backdrop")
+        } else {
+            (item.parent_backdrop_item_id.clone()?, item.parent_backdrop_image_tags.first()?.clone(), "Backdrop")
+        };
+        Some(format!("{}/Items/{id}/Images/{name}?maxWidth={width_px}&quality=90&tag={tag}", self.base))
+    }
     /// GET raw bytes (images), IMAGE_TIMEOUT, 20 MB cap.
     pub fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
         let mut resp = self
@@ -1064,7 +1081,7 @@ impl Client {
     /// placeholder episodes come too, otherwise they are filtered out (`isMissing=false`).
     pub fn episodes_opts(&self, series_id: &str, include_missing: bool) -> Result<Vec<Item>> {
         let uid = self.user_id()?;
-        let mut path = format!("/Shows/{series_id}/Episodes?userId={uid}&Fields=Overview");
+        let mut path = format!("/Shows/{series_id}/Episodes?userId={uid}&Fields=Overview,PremiereDate");
         if !include_missing {
             path.push_str("&isMissing=false");
         }
@@ -1397,6 +1414,55 @@ impl Client {
         let uid = self.user_id()?;
         let path = format!("/Items/Filters?userId={uid}&parentId={parent_id}&includeItemTypes={types}");
         self.get_json(&path)
+    }
+
+    /// RR5 / P-ITEM-3: every film and show of a genre, library-wide, by name (`/Items?Genres=`).
+    pub fn items_by_genre(&self, genre: &str) -> Result<Vec<Item>> {
+        let uid = self.user_id()?;
+        let path = format!(
+            "/Items?userId={uid}&Genres={}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=SortName&SortOrder=Ascending&Fields={CARD_FIELDS}",
+            url_encode(genre)
+        );
+        let page: Page = self.get_json(&path)?;
+        Ok(page.items)
+    }
+
+    /// RR5 / P-ITEM-3: every film and show of a studio, library-wide, by name (`/Items?StudioIds=`).
+    pub fn items_by_studio(&self, studio_id: &str) -> Result<Vec<Item>> {
+        let uid = self.user_id()?;
+        let path = format!(
+            "/Items?userId={uid}&StudioIds={studio_id}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=SortName&SortOrder=Ascending&Fields={CARD_FIELDS}"
+        );
+        let page: Page = self.get_json(&path)?;
+        Ok(page.items)
+    }
+
+    /// RR5 / P-ITEM-21: the playable items (films, episodes) under `items`: a film or episode stands for itself,
+    /// anything else (series, season, collection, folder) is replaced by the films / episodes below it.
+    pub fn playable_under(&self, items: &[Item]) -> Result<Vec<Item>> {
+        let uid = self.user_id()?;
+        let mut out = vec![];
+        for it in items {
+            if matches!(it.kind, ItemKind::Movie | ItemKind::Episode) {
+                out.push(it.clone());
+            } else if matches!(it.kind, ItemKind::Series | ItemKind::Season | ItemKind::BoxSet | ItemKind::Folder) {
+                let path = format!(
+                    "/Items?userId={uid}&ParentId={}&Recursive=true&IncludeItemTypes=Movie,Episode&SortBy=SeriesSortName,ParentIndexNumber,IndexNumber,SortName&Fields={CARD_FIELDS}",
+                    it.id
+                );
+                let page: Page = self.get_json(&path)?;
+                out.extend(page.items);
+            }
+        }
+        Ok(out)
+    }
+
+    /// RR5 / P-TV-2: the server's next-up episode of one series (`/Shows/NextUp?seriesId=`); `None` when it has none.
+    pub fn series_next_up(&self, series_id: &str) -> Result<Option<Item>> {
+        let uid = self.user_id()?;
+        let path = format!("/Shows/NextUp?userId={uid}&seriesId={series_id}&Limit=1&Fields={CARD_FIELDS}");
+        let page: Page = self.get_json(&path)?;
+        Ok(page.items.into_iter().next())
     }
 }
 

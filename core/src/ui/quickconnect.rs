@@ -20,9 +20,11 @@ pub struct QuickConnect {
     started: bool,
     focus: Focus,
     groups: Vec<Group>,
+    /// P-AUTH-5: follows the sign-in screen's Remember me toggle.
+    remember: bool,
 }
 
-pub fn screen(client: Client) -> Box<dyn Screen> {
+pub fn screen(client: Client, remember: bool) -> Box<dyn Screen> {
     Box::new(QuickConnect {
         client,
         info: None,
@@ -34,6 +36,7 @@ pub fn screen(client: Client) -> Box<dyn Screen> {
         started: false,
         focus: Focus { group: G_RETRY, index: 0 },
         groups: vec![],
+        remember,
     })
 }
 
@@ -76,7 +79,8 @@ impl QuickConnect {
     fn signed_in(&mut self, cx: &mut Cx, client: Client, session: Session) {
         let id = self.info.as_ref().map(|i| i.id.clone()).unwrap_or_default();
         let name = self.info.as_ref().map(|i| i.server_name.clone()).unwrap_or_default();
-        cx.settings.remember(ServerEntry { id, name, address: client.base.clone(), session: Some(session) });
+        let entry = ServerEntry { id, name, address: client.base.clone(), session: Some(session) };
+        cx.settings.remember_signed_in(entry, self.remember);
         cx.save_settings();
         *cx.client = Some(client);
         cx.reset(super::home::screen(false));

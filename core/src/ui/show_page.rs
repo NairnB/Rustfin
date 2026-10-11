@@ -6,7 +6,7 @@ use crate::api::{image_width_bucket, ticks_to_secs, ApiError, Item, Result};
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
-use crate::show::{self, ShowPlan};
+use crate::show::{self, PlayPick, ShowPlan};
 
 const G_HERO: usize = 0;
 const G_LIST: usize = 1;
@@ -17,6 +17,10 @@ pub struct ShowPage {
     series: Item,
     requested_season: Option<i32>,
     episodes: Vec<Item>,
+    // RR5 (P-TV-7): episodes the server lists that have not aired yet (shown only with the missing-episodes option).
+    unaired: Vec<Item>,
+    // RR5 (P-TV-2): the server's next-up episode, when it answered with one.
+    next_up: Option<Item>,
     loading: bool,
     error: Option<String>,
     initialized: bool,
@@ -32,6 +36,8 @@ pub fn screen(series: Item, season: Option<i32>) -> Box<dyn Screen> {
         series,
         requested_season: season,
         episodes: vec![],
+        unaired: vec![],
+        next_up: None,
         loading: true,
         error: None,
         initialized: false,
@@ -115,6 +121,7 @@ impl ShowPage {
         let client = cx.api();
         let missing = cx.settings.show_missing_episodes;
         cx.spawn("episodes", move || client.episodes_opts(&sid, missing));
+        self.load_next_up(cx);
         // Card copies of a series carry no overview/rating/user data: fetch the full record in the background
         // (the page is drawn from the episode list meanwhile; the heart reads `user_data.is_favorite`).
         if self.series.user_data.is_none() || self.series.overview.is_none() {
@@ -129,6 +136,32 @@ impl ShowPage {
         let client = cx.api();
         let missing = cx.settings.show_missing_episodes;
         cx.spawn("episodes", move || client.episodes_opts(&sid, missing));
+        self.load_next_up(cx);
+    }
+
+    /// P-TV-2: ask the server which episode is next up for this series.
+    fn load_next_up(&self, cx: &Cx) {
+        let sid = self.series.id.clone();
+        let client = cx.api();
+        cx.spawn("next-up", move || client.series_next_up(&sid));
+    }
+
+    /// The show plan from the aired episodes; the server's next-up episode (when it answered) is the Play button,
+    /// and seasons that so far hold only unaired episodes still get a drop-down entry.
+    fn plan(&self) -> ShowPlan {
+        let mut plan = show::plan(&self.episodes);
+        for u in &self.unaired {
+            if let Some(s) = u.parent_index_number {
+                if !plan.seasons.contains(&s) {
+                    plan.seasons.push(s);
+                }
+            }
+        }
+        plan.seasons.sort_by_key(|&s| if s == 0 { i32::MAX } else { s });
+        if let Some(pick) = self.next_up.as_ref().and_then(server_pick) {
+            plan.play = Some(pick);
+        }
+        plan
     }
 
     fn season_label(&self, s: i32) -> String {
@@ -140,15 +173,16 @@ impl ShowPage {
     }
 
     /// Indices into `self.episodes` for the open season, in episode order.
-    fn season_episode_indices(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self
+    /// The rows of the open season in episode order: aired episodes and (with the option on) unaired ones.
+    fn season_rows(&self) -> Vec<Item> {
+        let mut v: Vec<Item> = self
             .episodes
             .iter()
-            .enumerate()
-            .filter(|(_, e)| e.parent_index_number == Some(self.open_season) && e.index_number.is_some())
-            .map(|(i, _)| i)
+            .chain(self.unaired.iter())
+            .filter(|e| e.parent_index_number == Some(self.open_season) && e.index_number.is_some())
+            .cloned()
             .collect();
-        v.sort_by_key(|&i| self.episodes[i].index_number.unwrap());
+        v.sort_by_key(|e| e.index_number.unwrap());
         v
     }
 
@@ -250,7 +284,8 @@ impl ShowPage {
     }
 
     fn play_pick(&mut self, cx: &mut Cx, pick: &crate::show::PlayPick) {
-        if let Some(ep) = self.episodes.iter().find(|e| e.id == pick.episode_id).cloned() {
+        let found = self.episodes.iter().chain(self.next_up.iter()).find(|e| e.id == pick.episode_id).cloned();
+        if let Some(ep) = found {
             cx.push(super::player::screen(ep, PlayOptions { from_start: !pick.resume, ..Default::default() }));
         }
     }
@@ -286,6 +321,18 @@ impl ShowPage {
                 col.add(egui::Label::new(egui::RichText::new(ov).size(t.body_size).color(t.muted)).wrap());
             }
         }
+        // P-TV-2: the server's next-up episode, as a card on the right of the hero.
+        if let Some(next) = self.next_up.clone() {
+            let w = t.thumb_w;
+            let area = egui::Rect::from_min_max(
+                egui::pos2(rect.right() - t.margin - w, rect.top() + t.margin),
+                egui::pos2(rect.right() - t.margin, rect.bottom()),
+            );
+            let mut side = ui.new_child(egui::UiBuilder::new().max_rect(area));
+            side.label(egui::RichText::new("Next up").size(t.small_size).color(t.text));
+            side.add_space(t.gap / 4.0);
+            parts::thumb_card(&mut side, cx, &next, false);
+        }
     }
 
     fn draw_episode_list(
@@ -296,8 +343,9 @@ impl ShowPage {
         clicked: &mut Option<Item>,
     ) {
         let t = cx.theme;
-        let idxs = self.season_episode_indices();
-        if idxs.is_empty() {
+        let rows = self.season_rows();
+        let today = today();
+        if rows.is_empty() {
             parts::muted(ui, t, "No episodes in this season.");
             return;
         }
@@ -307,8 +355,8 @@ impl ShowPage {
         let row_h = thumb_h + t.gap / 2.0;
         let ppp = ui.ctx().pixels_per_point();
         egui::ScrollArea::vertical().id_salt("show-episodes").auto_shrink([false, false]).show(ui, |ui| {
-            for (i, &idx) in idxs.iter().enumerate() {
-                let ep = &self.episodes[idx];
+            for (i, ep) in rows.iter().enumerate() {
+                let unaired = is_unaired(ep, today);
                 let focused = self.focus.group == G_LIST && self.focus.index == i;
                 let (rect, resp) =
                     ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::click());
@@ -325,6 +373,9 @@ impl ShowPage {
                             ui.painter().rect_filled(thumb_rect, t.radius, t.skeleton);
                         }
                     }
+                    if unaired {
+                        ui.painter().rect_filled(thumb_rect, t.radius, t.scrim);
+                    }
                     if let Some(f) = parts::resume_fraction(ep) {
                         parts::progress_bar(ui, t, thumb_rect, f);
                     }
@@ -337,7 +388,10 @@ impl ShowPage {
                     let title = format!("E{} · {}", ep.index_number.unwrap_or(0), ep.name);
                     parts::label_line(ui, t, egui::pos2(x, ty), w_text, &title, t.body_size, t.text);
                     let ry = ty + t.body_size + 4.0;
-                    let runtime = ep.run_time_ticks.map(|rt| parts::runtime(ticks_to_secs(rt))).unwrap_or_default();
+                    let runtime = match (unaired, airs_label(ep)) {
+                        (true, Some(l)) => l,
+                        _ => ep.run_time_ticks.map(|rt| parts::runtime(ticks_to_secs(rt))).unwrap_or_default(),
+                    };
                     parts::label_line(ui, t, egui::pos2(x, ry), w_text, &runtime, t.small_size, t.muted);
                     let played = ep.user_data.as_ref().map(|u| u.played).unwrap_or(false);
                     if played {
@@ -361,7 +415,7 @@ impl ShowPage {
                 if focused {
                     resp.scroll_to_me(None);
                 }
-                if resp.clicked() {
+                if resp.clicked() && !unaired {
                     *clicked = Some(ep.clone());
                 }
             }
@@ -379,6 +433,62 @@ enum Hero {
     Missing,
     Heart,
     More,
+}
+
+/// P-TV-2: the Play button for the server's next-up episode: "Play S3 E1", or "Resume S3 E1 · 12 min left".
+pub fn server_pick(ep: &Item) -> Option<PlayPick> {
+    let (s, e) = (ep.parent_index_number?, ep.index_number?);
+    let pos = ep.user_data.as_ref().map(|u| u.playback_position_ticks).unwrap_or(0);
+    let played = ep.user_data.as_ref().map(|u| u.played).unwrap_or(false);
+    if pos > 0 && !played {
+        let total = ep.run_time_ticks.map(ticks_to_secs).unwrap_or(0.0);
+        let m = (((total - ticks_to_secs(pos)).max(0.0) / 60.0).ceil() as i64).max(1);
+        Some(PlayPick { episode_id: ep.id.clone(), label: format!("Resume S{s} E{e} · {m} min left"), resume: true })
+    } else {
+        Some(PlayPick { episode_id: ep.id.clone(), label: format!("Play S{s} E{e}"), resume: false })
+    }
+}
+
+/// The `(year, month, day)` at the front of an episode's premiere date.
+fn air_date(ep: &Item) -> Option<(i32, u32, u32)> {
+    let d = ep.premiere_date.as_deref()?.get(..10)?;
+    let mut it = d.split('-');
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+}
+
+/// Today's UTC date as `(year, month, day)`.
+pub fn today() -> (i32, u32, u32) {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.as_secs() / 86_400) as i64)
+        .unwrap_or(0);
+    civil_from_days(days)
+}
+
+/// Days since 1970-01-01 → (year, month, day) (proleptic Gregorian).
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = (yoe + era * 400) as i32 + (m <= 2) as i32;
+    (y, m, d)
+}
+
+/// P-TV-7: an episode whose premiere date is after `today`.
+pub fn is_unaired(ep: &Item, today: (i32, u32, u32)) -> bool {
+    air_date(ep).is_some_and(|d| d > today)
+}
+
+/// P-TV-7: "Airs 14 Oct".
+pub fn airs_label(ep: &Item) -> Option<String> {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (_, m, d) = air_date(ep)?;
+    Some(format!("Airs {d} {}", MONTHS.get(m.checked_sub(1)? as usize)?))
 }
 
 fn seed() -> u64 {
@@ -437,7 +547,7 @@ impl Screen for ShowPage {
         }
         match key {
             Key::Enter => {
-                let plan = show::plan(&self.episodes);
+                let plan = self.plan();
                 if self.drop_open {
                     if let Some(&s) = plan.seasons.get(self.focus.index) {
                         self.open_season = s;
@@ -453,10 +563,10 @@ impl Screen for ShowPage {
                     return true;
                 }
                 if self.focus.group == G_LIST {
-                    let idx = self.season_episode_indices().get(self.focus.index).copied();
-                    if let Some(i) = idx {
-                        let ep = self.episodes[i].clone();
-                        self.play_episode(cx, &ep);
+                    if let Some(ep) = self.season_rows().get(self.focus.index).cloned() {
+                        if !is_unaired(&ep, today()) {
+                            self.play_episode(cx, &ep);
+                        }
                     }
                     return true;
                 }
@@ -465,7 +575,7 @@ impl Screen for ShowPage {
             Key::Back => {
                 if self.drop_open {
                     self.drop_open = false;
-                    let plan = show::plan(&self.episodes);
+                    let plan = self.plan();
                     self.focus = Focus { group: G_HERO, index: Self::hero_drop_idx(&plan).unwrap_or(0) };
                     true
                 } else {
@@ -516,6 +626,16 @@ impl Screen for ShowPage {
             }
             return;
         }
+        if tag == "next-up" {
+            if let Ok(r) = payload.downcast::<Result<Option<Item>>>() {
+                match *r {
+                    Ok(v) => self.next_up = v,
+                    Err(ApiError::Unauthorized) => cx.signed_out(),
+                    Err(_) => self.next_up = None,
+                }
+            }
+            return;
+        }
         if tag != "episodes" {
             return;
         }
@@ -523,11 +643,15 @@ impl Screen for ShowPage {
         let Ok(r) = payload.downcast::<Result<Vec<Item>>>() else { return };
         match *r {
             Ok(v) => {
-                self.episodes = v;
+                // P-TV-7: with the missing-episodes option off, nothing that has not aired shows either.
+                let today = today();
+                let (unaired, aired): (Vec<Item>, Vec<Item>) = v.into_iter().partition(|e| is_unaired(e, today));
+                self.episodes = aired;
+                self.unaired = if cx.settings.show_missing_episodes { unaired } else { vec![] };
                 self.error = None;
                 if !self.initialized {
                     self.initialized = true;
-                    let plan = show::plan(&self.episodes);
+                    let plan = self.plan();
                     self.open_season = self.requested_season.unwrap_or(plan.open_season);
                 }
             }
@@ -576,7 +700,7 @@ impl Screen for ShowPage {
             return;
         }
 
-        let plan = show::plan(&self.episodes);
+        let plan = self.plan();
         let moving = ui.input(|i| i.pointer.is_moving());
         self.draw_hero(ui, cx);
 

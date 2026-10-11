@@ -1,6 +1,6 @@
-//! Scheduled tasks (P-ADM-23): list by category, Run now / Stop, and a read-only detail with its triggers.
-//! Editing triggers is a later packet, so P-ADM-23 is marked partial in PARITY.md.
+//! Scheduled tasks (P-ADM-23): list by category, Run now / Stop, and a detail with its triggers (add / remove).
 use super::sectioned_list;
+use super::users::Ctl;
 use crate::api::gen_admin::{TaskInfo, TaskTriggerInfo};
 use crate::api::{ApiError, Result};
 use crate::app::{Cx, Screen};
@@ -351,12 +351,169 @@ fn interval(ticks: Option<i64>) -> String {
 
 // ---------- detail ----------
 
+const TICKS_PER_SEC: i64 = 10_000_000;
+const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const KINDS: [&str; 4] = ["Daily", "Every N hours", "On app start", "Weekly"];
+const K_DAILY: usize = 0;
+const K_INTERVAL: usize = 1;
+const K_STARTUP: usize = 2;
+const K_WEEKLY: usize = 3;
+
+/// "03:30" → ticks since midnight; `None` for anything that isn't a 24-hour time.
+fn parse_time(text: &str) -> Option<i64> {
+    let (h, m) = text.trim().split_once(':')?;
+    let (h, m): (i64, i64) = (h.trim().parse().ok()?, m.trim().parse().ok()?);
+    ((0..24).contains(&h) && (0..60).contains(&m)).then_some((h * 3600 + m * 60) * TICKS_PER_SEC)
+}
+
+/// "6" → ticks; whole hours from 1 to 168 (a week).
+fn parse_hours(text: &str) -> Option<i64> {
+    let h: i64 = text.trim().parse().ok()?;
+    (1..=168).contains(&h).then_some(h * 3600 * TICKS_PER_SEC)
+}
+
+/// The trigger the form describes, or the reason it can't be added.
+fn build_trigger(
+    kind: usize,
+    time: &str,
+    hours: &str,
+    day: usize,
+) -> std::result::Result<TaskTriggerInfo, &'static str> {
+    let at = || parse_time(time).ok_or("Enter the time as HH:MM, like 03:30.");
+    let mut tr = TaskTriggerInfo::default();
+    match kind {
+        K_DAILY => {
+            tr.type_ = Some("DailyTrigger".into());
+            tr.time_of_day_ticks = Some(at()?);
+        }
+        K_INTERVAL => {
+            tr.type_ = Some("IntervalTrigger".into());
+            tr.interval_ticks = Some(parse_hours(hours).ok_or("Enter whole hours, from 1 to 168.")?);
+        }
+        K_STARTUP => tr.type_ = Some("StartupTrigger".into()),
+        K_WEEKLY => {
+            tr.type_ = Some("WeeklyTrigger".into());
+            tr.day_of_week = Some(DAYS[day % 7].into());
+            tr.time_of_day_ticks = Some(at()?);
+        }
+        _ => return Err("Pick a trigger type."),
+    }
+    Ok(tr)
+}
+
+fn with_trigger(list: &[TaskTriggerInfo], new: TaskTriggerInfo) -> Vec<TaskTriggerInfo> {
+    let mut out = list.to_vec();
+    out.push(new);
+    out
+}
+
+fn without_trigger(list: &[TaskTriggerInfo], i: usize) -> Vec<TaskTriggerInfo> {
+    let mut out = list.to_vec();
+    if i < out.len() {
+        out.remove(i);
+    }
+    out
+}
+
+struct Form {
+    kind: usize,
+    time: String,
+    hours: String,
+    day: usize,
+}
+
 pub struct TaskDetail {
     task: TaskInfo,
+    form: Option<Form>,
+    focus: Focus,
+    groups: Vec<Group>,
+    enter: bool,
+    on_field: bool,
+    busy: bool,
+    error: Option<String>,
+    notice: Option<String>,
 }
 
 pub fn detail_screen(task: TaskInfo) -> Box<dyn Screen> {
-    Box::new(TaskDetail { task })
+    // Start on "Add trigger" (after the Remove buttons), so a stray Enter never removes a trigger.
+    let first = task.triggers.as_ref().map_or(0, |t| t.len());
+    Box::new(TaskDetail {
+        task,
+        form: None,
+        focus: Focus { group: 0, index: first },
+        groups: vec![],
+        enter: false,
+        on_field: false,
+        busy: false,
+        error: None,
+        notice: None,
+    })
+}
+
+enum DetAct {
+    OpenForm,
+    Kind(usize),
+    Day,
+    Add,
+    Cancel,
+    Remove(usize),
+}
+
+impl TaskDetail {
+    fn triggers(&self) -> Vec<TaskTriggerInfo> {
+        self.task.triggers.clone().unwrap_or_default()
+    }
+
+    fn save(&mut self, cx: &Cx, list: Vec<TaskTriggerInfo>) {
+        let Some(id) = self.task.id.clone() else { return };
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.error = None;
+        self.notice = None;
+        let c = cx.api();
+        cx.spawn("save", move || c.set_task_triggers(&id, &list));
+    }
+
+    fn run(&mut self, a: DetAct, cx: &Cx) {
+        match a {
+            DetAct::OpenForm => {
+                self.form = Some(Form { kind: K_DAILY, time: "03:00".into(), hours: "6".into(), day: 1 });
+                self.error = None;
+            }
+            DetAct::Kind(k) => {
+                if let Some(f) = &mut self.form {
+                    f.kind = k;
+                }
+                self.error = None;
+            }
+            DetAct::Day => {
+                if let Some(f) = &mut self.form {
+                    f.day = (f.day + 1) % 7;
+                }
+            }
+            DetAct::Cancel => {
+                self.form = None;
+                self.error = None;
+            }
+            DetAct::Add => {
+                let Some(f) = &self.form else { return };
+                match build_trigger(f.kind, &f.time, &f.hours, f.day) {
+                    Ok(tr) => {
+                        let list = with_trigger(&self.triggers(), tr);
+                        self.form = None;
+                        self.save(cx, list);
+                    }
+                    Err(e) => self.error = Some(e.to_string()),
+                }
+            }
+            DetAct::Remove(i) => {
+                let list = without_trigger(&self.triggers(), i);
+                self.save(cx, list);
+            }
+        }
+    }
 }
 
 impl Screen for TaskDetail {
@@ -364,8 +521,69 @@ impl Screen for TaskDetail {
         "taskdetail"
     }
 
+    fn on_key(&mut self, _cx: &mut Cx, key: Key) -> bool {
+        match key {
+            Key::Back if self.form.is_some() => {
+                self.form = None;
+                self.error = None;
+                true
+            }
+            Key::Enter => {
+                self.enter = true;
+                true
+            }
+            Key::Left | Key::Right if self.on_field => true,
+            Key::Left | Key::Up => {
+                self.focus = move_focus(&self.groups, self.focus, Key::Up);
+                true
+            }
+            Key::Right | Key::Down => {
+                self.focus = move_focus(&self.groups, self.focus, Key::Down);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn on_done(&mut self, cx: &mut Cx, tag: &'static str, payload: Box<dyn std::any::Any + Send>) {
+        match tag {
+            "save" => {
+                let Ok(r) = payload.downcast::<Result<()>>() else { return };
+                match *r {
+                    Ok(()) => {
+                        self.notice = Some("Saved.".into());
+                        let (c, id) = (cx.api(), self.task.id.clone().unwrap_or_default());
+                        cx.spawn("task", move || c.scheduled_task(&id));
+                    }
+                    Err(ApiError::Unauthorized) => {
+                        self.busy = false;
+                        cx.signed_out()
+                    }
+                    Err(e) => {
+                        self.busy = false;
+                        self.error = Some(e.to_string());
+                    }
+                }
+            }
+            "task" => {
+                self.busy = false;
+                let Ok(r) = payload.downcast::<Result<TaskInfo>>() else { return };
+                match *r {
+                    Ok(t) => self.task = t,
+                    Err(ApiError::Unauthorized) => cx.signed_out(),
+                    Err(e) => self.error = Some(e.to_string()),
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
         let t = cx.theme;
+        let moving = ui.input(|i| i.pointer.is_moving());
+        let enter = std::mem::take(&mut self.enter);
+        let mut ctl = Ctl::new(Some(self.focus.index), enter, moving);
+        let mut acts: Vec<DetAct> = vec![];
         ui.add_space(t.margin);
         parts::title(ui, t, self.task.name.as_deref().unwrap_or("Task"));
         ui.add_space(t.gap / 2.0);
@@ -396,13 +614,75 @@ impl Screen for TaskDetail {
         parts::heading(ui, t, "Triggers");
         match self.task.triggers.as_deref() {
             Some(triggers) if !triggers.is_empty() => {
-                for trigger in triggers {
-                    parts::muted(ui, t, &trigger_label(trigger));
+                for (i, trigger) in triggers.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                        parts::muted(ui, t, &trigger_label(trigger));
+                        if ctl.button(ui, t, "Remove", false) {
+                            acts.push(DetAct::Remove(i));
+                        }
+                    });
                 }
             }
             _ => parts::muted(ui, t, "None"),
         }
-        parts::muted(ui, t, "Editing triggers is a later packet.");
+        ui.add_space(t.gap / 2.0);
+
+        if let Some(e) = self.error.clone() {
+            parts::error_line(ui, t, &e);
+        }
+        if let Some(n) = &self.notice {
+            parts::muted(ui, t, n);
+        }
+        match &mut self.form {
+            None => {
+                let label = if self.busy { "Saving…" } else { "Add trigger" };
+                if ctl.button(ui, t, label, true) {
+                    acts.push(DetAct::OpenForm);
+                }
+            }
+            Some(f) => {
+                parts::heading(ui, t, "New trigger");
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                    for (k, name) in KINDS.iter().enumerate() {
+                        if ctl.button(ui, t, name, f.kind == k) {
+                            acts.push(DetAct::Kind(k));
+                        }
+                    }
+                });
+                if f.kind == K_WEEKLY && ctl.button(ui, t, DAYS[f.day % 7], false) {
+                    acts.push(DetAct::Day);
+                }
+                match f.kind {
+                    K_DAILY | K_WEEKLY => ctl.field(ui, t, &mut f.time, "Time, 24-hour, like 03:30", false),
+                    K_INTERVAL => ctl.field(ui, t, &mut f.hours, "Hours between runs", false),
+                    _ => parts::muted(ui, t, "Runs each time the server starts."),
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                    if ctl.button(ui, t, "Add", true) {
+                        acts.push(DetAct::Add);
+                    }
+                    if ctl.button(ui, t, "Cancel", false) {
+                        acts.push(DetAct::Cancel);
+                    }
+                });
+            }
+        }
+
+        self.on_field = ctl.on_field;
+        self.groups = vec![Group { len: ctl.idx, cols: 1, xs: ctl.xs.clone() }];
+        self.focus = move_focus(&self.groups, self.focus, Key::Enter);
+        if let Some(i) = ctl.hover.or(ctl.clicked) {
+            self.focus = Focus { group: 0, index: i };
+        }
+        if ctl.advance {
+            self.focus = move_focus(&self.groups, self.focus, Key::Down);
+        }
+        for a in acts {
+            self.run(a, cx);
+        }
     }
 }
 
@@ -415,5 +695,65 @@ fn short_time(iso: &str) -> String {
         time
     } else {
         iso.chars().take(16).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const H: i64 = 3600 * TICKS_PER_SEC;
+
+    #[test]
+    fn times_parse_as_24_hour_clock() {
+        assert_eq!(parse_time("03:30"), Some(3 * H + 30 * 60 * TICKS_PER_SEC));
+        assert_eq!(parse_time(" 0:00 "), Some(0));
+        assert_eq!(parse_time("23:59"), Some(23 * H + 59 * 60 * TICKS_PER_SEC));
+        for bad in ["24:00", "12:60", "3", "ab:cd", "", "-1:00"] {
+            assert_eq!(parse_time(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn hours_are_whole_and_bounded() {
+        assert_eq!(parse_hours("6"), Some(6 * H));
+        assert_eq!(parse_hours("168"), Some(168 * H));
+        for bad in ["0", "169", "-2", "1.5", "x", ""] {
+            assert_eq!(parse_hours(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn each_kind_builds_its_trigger() {
+        let d = build_trigger(K_DAILY, "04:15", "", 0).unwrap();
+        assert_eq!(d.type_.as_deref(), Some("DailyTrigger"));
+        assert_eq!(d.time_of_day_ticks, Some(4 * H + 15 * 60 * TICKS_PER_SEC));
+        let i = build_trigger(K_INTERVAL, "", "12", 0).unwrap();
+        assert_eq!((i.type_.as_deref(), i.interval_ticks), (Some("IntervalTrigger"), Some(12 * H)));
+        let s = build_trigger(K_STARTUP, "", "", 0).unwrap();
+        assert_eq!(s.type_.as_deref(), Some("StartupTrigger"));
+        let w = build_trigger(K_WEEKLY, "01:00", "", 3).unwrap();
+        assert_eq!((w.type_.as_deref(), w.day_of_week.as_deref()), (Some("WeeklyTrigger"), Some("Wednesday")));
+        assert_eq!(w.time_of_day_ticks, Some(H));
+    }
+
+    #[test]
+    fn bad_input_builds_nothing() {
+        assert!(build_trigger(K_DAILY, "late", "", 0).is_err());
+        assert!(build_trigger(K_INTERVAL, "", "0", 0).is_err());
+        assert!(build_trigger(K_WEEKLY, "99:00", "", 1).is_err());
+        assert!(build_trigger(9, "", "", 0).is_err());
+    }
+
+    #[test]
+    fn add_and_remove_edit_the_list() {
+        let a = build_trigger(K_STARTUP, "", "", 0).unwrap();
+        let b = build_trigger(K_DAILY, "02:00", "", 0).unwrap();
+        let both = with_trigger(std::slice::from_ref(&a), b.clone());
+        assert_eq!(both.len(), 2);
+        let left = without_trigger(&both, 0);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].type_, b.type_);
+        assert_eq!(without_trigger(&both, 7).len(), 2);
     }
 }

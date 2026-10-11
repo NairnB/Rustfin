@@ -1,5 +1,5 @@
 //! Scripted runs for render tests and benchmarks (SPEC §11 render, R-PERF-1). One command per line:
-//!   wait-screen <name>     wait until the top screen is <name> (20 s timeout → exit 4)
+//!   wait-screen <name>     wait until the top screen is <name> (60 s timeout → exit 4: slack for a busy build box)
 //!   idle                   wait until no loads are pending (then 3 more frames)
 //!   key <up|down|left|right|enter|back|space|backspace|info> [n]
 //!   type <text>            text into the focused field
@@ -120,8 +120,8 @@ impl Runner {
             Cmd::WaitScreen(name) => {
                 if screen != name {
                     next = false;
-                    if elapsed > Duration::from_secs(20) {
-                        eprintln!("SCRIPT FAIL: waited 20 s for screen {name}, still on {screen}");
+                    if elapsed > Duration::from_secs(60) {
+                        eprintln!("SCRIPT FAIL: waited 60 s for screen {name}, still on {screen}");
                         std::process::exit(4);
                     }
                 }

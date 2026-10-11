@@ -1,4 +1,4 @@
-# P-AUTH-8 parity tour (G13): Change server → Connect lists the saved server above the discovered ones.
+# P-AUTH-8 parity tour (RR7): Home user menu → Switch user → the same server's sign-in, public user tiles focused.
 wait-screen connect
 wait 2500
 idle
@@ -6,13 +6,20 @@ type http://jf-test:8096
 key enter
 wait-screen signin
 idle
+type viewer
 key down
-key down
-key right
-key right
+type view-pass-1
 key enter
-wait-screen connect
-wait 2500
+wait-screen home
+idle
+key up 20
+key right 5
+key enter
+key down
+key enter
+wait-screen signin
+idle
+wait 1500
 idle
 shot p-auth-8
 quit

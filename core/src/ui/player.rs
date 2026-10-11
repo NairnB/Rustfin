@@ -8,8 +8,9 @@ use crate::api::{
 };
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
-use crate::platform::{Key, PlayRequest, PlayerState, PlayerStats, SubColour, SubSize, SubStyle};
+use crate::platform::{Aspect, Key, PlayRequest, PlayerState, PlayerStats, SubColour, SubSize, SubStyle};
 use crate::playreq::build_plan;
+use crate::repeat::{end_action, EndAction, Repeat};
 use crate::settings::SubPrefs;
 use std::any::Any;
 
@@ -199,9 +200,13 @@ enum Action {
     ToggleMute,
     OpenQuality,
     OpenSpeed,
+    OpenAspect,
+    OpenRepeat,
     ToggleStats,
     PickQuality(u32),
     PickSpeed(f64),
+    PickAspect(Aspect),
+    PickRepeat(Repeat),
 }
 
 pub struct PlayerScreen {
@@ -226,9 +231,14 @@ pub struct PlayerScreen {
     // G6: quality (max kbps chosen here; None = the Settings cap), speed, stats, transcoding state
     quality_open: bool,
     speed_open: bool,
+    aspect_open: bool,
+    repeat_open: bool,
     stats_open: bool,
     quality_kbps: Option<u32>,
     speed: f64,
+    // P-PLAY-14 / P-PLAY-15: aspect and repeat choice (this session only)
+    aspect: Aspect,
+    repeat: Repeat,
     transcoding: bool,
     fell_back: bool,
     reload_pos: f64,
@@ -301,9 +311,13 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         subtitle_open: false,
         quality_open: false,
         speed_open: false,
+        aspect_open: false,
+        repeat_open: false,
         stats_open: false,
         quality_kbps: None,
         speed: 1.0,
+        aspect: Aspect::default(),
+        repeat: Repeat::default(),
         transcoding: false,
         fell_back: false,
         reload_pos: 0.0,
@@ -379,7 +393,13 @@ impl PlayerScreen {
     }
 
     fn any_menu(&self) -> bool {
-        self.audio_open || self.subtitle_open || self.chapters_open || self.quality_open || self.speed_open
+        self.audio_open
+            || self.subtitle_open
+            || self.chapters_open
+            || self.quality_open
+            || self.speed_open
+            || self.aspect_open
+            || self.repeat_open
     }
 
     fn close_menus(&mut self) {
@@ -388,6 +408,8 @@ impl PlayerScreen {
         self.chapters_open = false;
         self.quality_open = false;
         self.speed_open = false;
+        self.aspect_open = false;
+        self.repeat_open = false;
     }
 
     fn quality_labels(&self) -> Vec<String> {
@@ -399,6 +421,14 @@ impl PlayerScreen {
 
     fn speed_labels(&self) -> Vec<String> {
         SPEED_STEPS.iter().map(|s| format!("{s}×")).collect()
+    }
+
+    fn aspect_labels(&self) -> Vec<String> {
+        Aspect::ALL.iter().map(|a| a.label().to_string()).collect()
+    }
+
+    fn repeat_labels(&self) -> Vec<String> {
+        Repeat::ALL.iter().map(|r| r.label().to_string()).collect()
     }
 
     fn audio_label(&self) -> String {
@@ -441,6 +471,8 @@ impl PlayerScreen {
         v.push(("Chapters".to_string(), Action::OpenChapters));
         v.push((format!("Quality: {}", quality_label(self.quality_kbps, self.settings_kbps)), Action::OpenQuality));
         v.push((format!("Speed: {}×", self.speed), Action::OpenSpeed));
+        v.push((format!("Aspect: {}", self.aspect.label()), Action::OpenAspect));
+        v.push((format!("Repeat: {}", self.repeat.label()), Action::OpenRepeat));
         v.push(("Stats".to_string(), Action::ToggleStats));
         v.push(("Fullscreen".to_string(), Action::ToggleFullscreen));
         v
@@ -516,6 +548,7 @@ impl PlayerScreen {
         self.osd_last_input = cx.now;
         cx.player.load(&req);
         cx.player.set_speed(self.speed);
+        cx.player.set_aspect(self.aspect);
         self.report_now(cx);
     }
 
@@ -604,6 +637,7 @@ impl PlayerScreen {
                 cx.player.set_sub_style(&self.sub_style);
                 cx.player.set_sub_delay(0.0);
                 cx.player.set_speed(self.speed);
+                cx.player.set_aspect(self.aspect);
                 self.ensure_next(cx);
                 self.ensure_prev(cx);
                 match fixture_segments() {
@@ -669,20 +703,51 @@ impl PlayerScreen {
             return;
         }
         self.handling_end = true;
-        if self.queue.is_some() || (self.item.kind == ItemKind::Episode && self.item.series_id.is_some()) {
-            if self.next_known {
-                if self.next.is_some() {
-                    self.begin_up_next(cx);
-                } else {
-                    cx.pop();
-                }
-            } else {
-                self.pending_end = true;
-                self.ensure_next(cx);
-            }
+        let series = self.queue.is_some() || (self.item.kind == ItemKind::Episode && self.item.series_id.is_some());
+        if series && self.repeat != Repeat::One && !self.next_known {
+            self.pending_end = true;
+            self.ensure_next(cx);
         } else {
-            cx.pop();
+            self.finish_item(cx);
         }
+    }
+
+    /// P-PLAY-14/15: the item ended and what comes next is known; act on the Repeat choice.
+    fn finish_item(&mut self, cx: &mut Cx) {
+        match end_action(self.repeat, self.next.is_some()) {
+            EndAction::Close => cx.pop(),
+            EndAction::UpNext => self.begin_up_next(cx),
+            EndAction::Replay => self.replay(cx),
+            EndAction::Restart => {
+                let first = self.queue.as_ref().and_then(|q| q.first()).filter(|f| f.id != self.item.id).cloned();
+                match first {
+                    Some(first) => {
+                        self.next = Some(first);
+                        self.play_next(cx);
+                    }
+                    None => self.replay(cx),
+                }
+            }
+        }
+    }
+
+    /// Play the current item again from the start, with no "Up next".
+    fn replay(&mut self, cx: &mut Cx) {
+        let Some(mut req) = self.req.clone() else {
+            cx.pop();
+            return;
+        };
+        req.start_secs = 0.0;
+        self.reporter = Reporter::new();
+        self.stop_sent = false;
+        self.handling_end = false;
+        self.pending_end = false;
+        self.auto_skipped = vec![];
+        self.up_next = None;
+        self.up_next_deadline = None;
+        cx.player.load(&req);
+        cx.player.set_speed(self.speed);
+        cx.player.set_aspect(self.aspect);
     }
 
     fn begin_up_next(&mut self, cx: &mut Cx) {
@@ -945,6 +1010,22 @@ impl PlayerScreen {
                 self.osd_visible = true;
                 self.osd_last_input = cx.now;
             }
+            Action::OpenAspect => {
+                self.close_menus();
+                self.aspect_open = true;
+                let at = Aspect::ALL.iter().position(|&a| a == self.aspect).unwrap_or(0);
+                self.focus = Focus { group: G_LIST, index: at };
+                self.osd_visible = true;
+                self.osd_last_input = cx.now;
+            }
+            Action::OpenRepeat => {
+                self.close_menus();
+                self.repeat_open = true;
+                let at = Repeat::ALL.iter().position(|&r| r == self.repeat).unwrap_or(0);
+                self.focus = Focus { group: G_LIST, index: at };
+                self.osd_visible = true;
+                self.osd_last_input = cx.now;
+            }
             Action::ToggleStats => self.stats_open = !self.stats_open,
             Action::PickQuality(kbps) => {
                 self.close_menus();
@@ -957,6 +1038,17 @@ impl PlayerScreen {
                 self.focus = Focus { group: G_BTN, index: B_PLAY };
                 self.speed = speed;
                 cx.player.set_speed(speed);
+            }
+            Action::PickAspect(aspect) => {
+                self.close_menus();
+                self.focus = Focus { group: G_BTN, index: B_PLAY };
+                self.aspect = aspect;
+                cx.player.set_aspect(aspect);
+            }
+            Action::PickRepeat(mode) => {
+                self.close_menus();
+                self.focus = Focus { group: G_BTN, index: B_PLAY };
+                self.repeat = mode;
             }
         }
     }
@@ -990,6 +1082,14 @@ impl PlayerScreen {
         } else if self.speed_open {
             if let Some(&s) = SPEED_STEPS.get(self.focus.index) {
                 self.do_action(cx, Action::PickSpeed(s));
+            }
+        } else if self.aspect_open {
+            if let Some(&a) = Aspect::ALL.get(self.focus.index) {
+                self.do_action(cx, Action::PickAspect(a));
+            }
+        } else if self.repeat_open {
+            if let Some(&r) = Repeat::ALL.get(self.focus.index) {
+                self.do_action(cx, Action::PickRepeat(r));
             }
         }
     }
@@ -1039,7 +1139,8 @@ impl PlayerScreen {
         let buttons = self.buttons(play_label);
         let audio_open = self.audio_open;
         let subtitle_open = self.subtitle_open;
-        let chapters_open = self.chapters_open || self.quality_open || self.speed_open;
+        let chapters_open =
+            self.chapters_open || self.quality_open || self.speed_open || self.aspect_open || self.repeat_open;
         let focus_bar = self.focus.group == G_BAR;
         let focus_btn_index = (self.focus.group == G_BTN).then_some(self.focus.index);
         let focus_vol = self.focus.group == G_VOL;
@@ -1221,6 +1322,10 @@ impl PlayerScreen {
             self.quality_labels()
         } else if self.speed_open {
             self.speed_labels()
+        } else if self.aspect_open {
+            self.aspect_labels()
+        } else if self.repeat_open {
+            self.repeat_labels()
         } else {
             let entries = self.chapter_entries();
             let mut v: Vec<String> = entries.into_iter().map(|(_, l)| l).collect();
@@ -1258,6 +1363,10 @@ impl PlayerScreen {
             clicked.and_then(|i| QUALITY_KBPS.get(i).map(|&k| Action::PickQuality(k)))
         } else if self.speed_open {
             clicked.and_then(|i| SPEED_STEPS.get(i).map(|&s| Action::PickSpeed(s)))
+        } else if self.aspect_open {
+            clicked.and_then(|i| Aspect::ALL.get(i).map(|&a| Action::PickAspect(a)))
+        } else if self.repeat_open {
+            clicked.and_then(|i| Repeat::ALL.get(i).map(|&r| Action::PickRepeat(r)))
         } else {
             clicked.and_then(|i| self.chapter_entries().get(i).map(|(secs, _)| Action::SeekChapter(*secs)))
         };
@@ -1771,11 +1880,7 @@ impl Screen for PlayerScreen {
                 }
                 if self.pending_end {
                     self.pending_end = false;
-                    if self.next.is_some() {
-                        self.begin_up_next(cx);
-                    } else {
-                        cx.pop();
-                    }
+                    self.finish_item(cx);
                 }
             }
             "nextinfo" => {

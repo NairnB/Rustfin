@@ -1,6 +1,5 @@
-# P-ITEM-2 parity tour (G2): overview + tagline (first, italic) under the title.
-# Signs in as viewer, opens "Star Drift - Ember Rising". The film has no tagline, so the shot shows the
-# overview with no tagline line (the tagline is drawn when present).
+# P-ITEM-2 parity tour (RR5): a short overview shows in full, with no More button. The long-overview case (6 lines +
+# More / Less) is tools/scripts/fixture/p-item-2-long.txt. Signs in as viewer, opens "Star Drift - Ember Rising".
 wait-screen connect
 wait 2500
 idle
@@ -25,6 +24,7 @@ idle
 key down
 key enter
 wait-screen movie
+wait 1500
 idle
 shot p-item-2
 quit

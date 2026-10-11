@@ -197,16 +197,19 @@ pub enum ViewMode {
     #[default]
     Posters,
     Thumbs,
+    /// P-LIB-14: wide strips (Banner image, else Thumb, else Backdrop).
+    Banners,
     List,
 }
 
 impl ViewMode {
-    pub const ALL: [ViewMode; 3] = [ViewMode::Posters, ViewMode::Thumbs, ViewMode::List];
+    pub const ALL: [ViewMode; 4] = [ViewMode::Posters, ViewMode::Thumbs, ViewMode::Banners, ViewMode::List];
     /// Menu label.
     pub fn label(self) -> &'static str {
         match self {
             ViewMode::Posters => "Posters",
             ViewMode::Thumbs => "Thumbs",
+            ViewMode::Banners => "Banners",
             ViewMode::List => "List",
         }
     }
@@ -282,6 +285,14 @@ impl Settings {
             Some(slot) => *slot = entry,
             None => self.servers.push(entry),
         }
+    }
+    /// P-AUTH-5: remember a fresh sign-in. `keep` false stores the server only — the session lives in the
+    /// client in memory, so the next start asks for the password again.
+    pub fn remember_signed_in(&mut self, mut entry: ServerEntry, keep: bool) {
+        if !keep {
+            entry.session = None;
+        }
+        self.remember(entry);
     }
     pub fn last(&self) -> Option<&ServerEntry> {
         let id = self.last_server.as_deref()?;

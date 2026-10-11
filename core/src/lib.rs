@@ -8,6 +8,7 @@ pub mod nav;
 pub mod order;
 pub mod platform;
 pub mod playreq;
+pub mod repeat;
 pub mod sections;
 pub mod settings;
 pub mod show;

@@ -14,17 +14,21 @@ use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
 
-const G_BTN: usize = 0;
-const G_LIST: usize = 1;
-const G_CHAPTERS: usize = 2;
-const G_PEOPLE: usize = 3;
-const G_SPECIALS: usize = 4;
-const G_SIMILAR: usize = 5;
-const G_INFO: usize = 6;
-const G_LINKS: usize = 7;
-const G_RETRY: usize = 8;
-const G_POS: usize = 9;
-const G_STORY: usize = 10;
+const G_MORE: usize = 0;
+const G_BTN: usize = 1;
+const G_LIST: usize = 2;
+const G_CHIPS: usize = 3;
+const G_CHAPTERS: usize = 4;
+const G_PEOPLE: usize = 5;
+const G_SPECIALS: usize = 6;
+const G_SIMILAR: usize = 7;
+const G_INFO: usize = 8;
+const G_LINKS: usize = 9;
+const G_RETRY: usize = 10;
+const G_POS: usize = 11;
+const G_STORY: usize = 12;
+/// P-ITEM-2: an overview longer than this many lines is cut with a More / Less button.
+const OVERVIEW_LINES: usize = 6;
 
 const POS_MIN: i64 = 0;
 const POS_MAX: i64 = 1_000_000_000;
@@ -136,6 +140,8 @@ pub struct ItemScreen {
     collections: Option<Vec<Item>>,
     in_collections: Vec<Item>,
     add_note: Option<String>,
+    // RR5 (P-ITEM-2): the overview is showing in full.
+    overview_open: bool,
     focus: Focus,
     groups: Vec<Group>,
     started: bool,
@@ -189,6 +195,7 @@ pub fn screen_in(item: Item, place: Option<String>) -> Box<dyn Screen> {
                 collections: None,
                 in_collections: vec![],
                 add_note: None,
+                overview_open: false,
                 focus: Focus { group: G_BTN, index: 0 },
                 groups: vec![],
                 started: false,
@@ -886,6 +893,12 @@ impl ItemScreen {
             }
             return true;
         }
+        if self.focus.group == G_CHIPS {
+            if let Some(c) = chips(self.current()).get(self.focus.index) {
+                open_chip(cx, &c.target.clone());
+            }
+            return true;
+        }
         if self.focus.group == G_LINKS {
             let links = external_links(&self.current().provider_ids, false);
             if let Some((_, url)) = links.get(self.focus.index) {
@@ -976,6 +989,46 @@ impl ItemScreen {
                         }
                         if r.clicked() {
                             clicked = Some(p.clone());
+                        }
+                    }
+                });
+            });
+        clicked
+    }
+
+    /// P-ITEM-3: one row of genre / studio / director / writer link chips, each under its section name.
+    fn draw_chips(&mut self, ui: &mut egui::Ui, cx: &mut Cx, chip_xs: &mut Vec<f32>) -> Option<ChipTarget> {
+        let chips = chips(self.current());
+        if chips.is_empty() {
+            return None;
+        }
+        let t = cx.theme;
+        let pointer_moved = ui.input(|i| i.pointer.is_moving());
+        let mut clicked = None;
+        ui.add_space(t.gap / 2.0);
+        egui::ScrollArea::horizontal()
+            .id_salt("item-chips")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                    let mut last = "";
+                    for (i, c) in chips.iter().enumerate() {
+                        if c.section != last {
+                            last = c.section;
+                            ui.label(egui::RichText::new(c.section).size(t.small_size).color(t.muted));
+                        }
+                        let focused = self.focus.group == G_CHIPS && self.focus.index == i;
+                        let r = parts::button(ui, t, &c.label, focused, false);
+                        chip_xs.push(r.rect.center().x);
+                        if focused {
+                            r.scroll_to_me(None);
+                        }
+                        if pointer_moved && r.hovered() {
+                            self.focus = Focus { group: G_CHIPS, index: i };
+                        }
+                        if r.clicked() {
+                            clicked = Some(c.target.clone());
                         }
                     }
                 });
@@ -1481,15 +1534,61 @@ pub fn media_info_lines(src: &SourceInfo, admin: bool) -> Vec<(String, String)> 
     v
 }
 
-fn truncate_overview(ov: &str) -> String {
-    let s = ov.trim();
-    if s.chars().count() > 340 {
-        let mut t: String = s.chars().take(340).collect();
-        t.push('…');
-        t
-    } else {
-        s.to_string()
+/// P-ITEM-3: where a genre / studio / director / writer chip goes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChipTarget {
+    Genre(String),
+    Studio { id: String, name: String },
+    Person { id: String, name: String },
+}
+
+/// P-ITEM-3: one chip: the section it sits under ("Genres", "Studios", "Director", "Writers"), its label, its target.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chip {
+    pub section: &'static str,
+    pub label: String,
+    pub target: ChipTarget,
+}
+
+/// P-ITEM-3: the focusable link chips of an item page, in the order genres · studios · directors · writers.
+pub fn chips(item: &Item) -> Vec<Chip> {
+    let mut v: Vec<Chip> = item
+        .genres
+        .iter()
+        .map(|g| Chip { section: "Genres", label: g.clone(), target: ChipTarget::Genre(g.clone()) })
+        .collect();
+    v.extend(item.studios.iter().filter(|s| !s.id.is_empty()).map(|s| Chip {
+        section: "Studios",
+        label: s.name.clone(),
+        target: ChipTarget::Studio { id: s.id.clone(), name: s.name.clone() },
+    }));
+    for (kind, one, many) in [("Director", "Director", "Directors"), ("Writer", "Writer", "Writers")] {
+        let who: Vec<&PersonRef> = item.people.iter().filter(|p| p.kind == kind && !p.id.is_empty()).collect();
+        let section = if who.len() == 1 { one } else { many };
+        v.extend(who.into_iter().map(|p| Chip {
+            section,
+            label: p.name.clone(),
+            target: ChipTarget::Person { id: p.id.clone(), name: p.name.clone() },
+        }));
     }
+    v
+}
+
+fn open_chip(cx: &mut Cx, target: &ChipTarget) {
+    match target {
+        ChipTarget::Genre(g) => cx.push(super::browse::genre(g)),
+        ChipTarget::Studio { id, name } => cx.push(super::browse::studio(id, name)),
+        ChipTarget::Person { id, name } => cx.push(super::person::screen(id.clone(), name.clone())),
+    }
+}
+
+/// P-ITEM-2: the overview as a laid-out text; `cut` limits it to `OVERVIEW_LINES` lines (ending in "…").
+fn overview_job(text: &str, font: egui::FontId, color: egui::Color32, width: f32, cut: bool) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::simple(text.to_string(), font, color, width);
+    if cut {
+        job.wrap.max_rows = OVERVIEW_LINES;
+    }
+    job
 }
 
 /// P-ITEM-19: external links built from `ProviderIds`. Only the ids the server supplied are returned, in
@@ -1555,10 +1654,6 @@ fn ordered_people(item: &Item) -> Vec<PersonRef> {
     v
 }
 
-fn people_names(item: &Item, kind: &str) -> Vec<String> {
-    item.people.iter().filter(|p| p.kind == kind).map(|p| p.name.clone()).collect()
-}
-
 fn person_card(ui: &mut egui::Ui, cx: &mut Cx, p: &PersonRef, focused: bool) -> egui::Response {
     let t = cx.theme;
     let size = egui::vec2(t.person_size, t.person_size);
@@ -1619,6 +1714,9 @@ impl ItemScreen {
         self.init_tracks();
         self.is_admin = cx.admin;
         let t = cx.theme;
+        let mut more_x: Option<f32> = None;
+        let mut more_hover = false;
+        let mut more_click = false;
 
         {
             let item = self.current();
@@ -1654,32 +1752,21 @@ impl ItemScreen {
                 col.add_space(t.gap / 4.0);
                 parts::facts_line_with(&mut col, t, item, cx.settings.show_release_year, cx.settings.show_story_year);
             }
-            if let Some(ov) = &item.overview {
-                let ov = truncate_overview(ov);
-                if !ov.is_empty() {
-                    col.add_space(t.gap / 2.0);
-                    col.add(egui::Label::new(egui::RichText::new(ov).size(t.body_size).color(t.muted)).wrap());
+            if let Some(ov) = item.overview.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                col.add_space(t.gap / 2.0);
+                let font = t.font(t.body_size);
+                let width = col.available_width();
+                let full = col.fonts(|f| f.layout_job(overview_job(ov, font.clone(), t.muted, width, false)));
+                let long = full.rows.len() > OVERVIEW_LINES;
+                col.label(overview_job(ov, font, t.muted, width, long && !self.overview_open));
+                if long {
+                    col.add_space(t.gap / 4.0);
+                    let label = if self.overview_open { "Less" } else { "More" };
+                    let r = parts::button(&mut col, t, label, self.focus.group == G_MORE, false);
+                    more_x = Some(r.rect.center().x);
+                    more_hover = r.hovered();
+                    more_click = r.clicked();
                 }
-            }
-            let genres = item.genres.iter().map(|g| g.as_str()).collect::<Vec<_>>().join(", ");
-            if !genres.is_empty() {
-                col.add_space(t.gap / 4.0);
-                col.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("Genres  {genres}")).size(t.small_size).color(t.muted),
-                    )
-                    .wrap(),
-                );
-            }
-            let studios = item.studios.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ");
-            if !studios.is_empty() {
-                col.add_space(t.gap / 4.0);
-                col.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("Studios  {studios}")).size(t.small_size).color(t.muted),
-                    )
-                    .wrap(),
-                );
             }
             if !self.in_collections.is_empty() {
                 let names = self.in_collections.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
@@ -1695,32 +1782,18 @@ impl ItemScreen {
                 col.add_space(t.gap / 4.0);
                 col.add(egui::Label::new(egui::RichText::new(note).size(t.small_size).color(t.text)).wrap());
             }
-            let directors = people_names(item, "Director");
-            if !directors.is_empty() {
-                let label = if directors.len() == 1 { "Director" } else { "Directors" };
-                col.add_space(t.gap / 4.0);
-                col.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("{label}  {}", directors.join(", ")))
-                            .size(t.small_size)
-                            .color(t.muted),
-                    )
-                    .wrap(),
-                );
+            // A long overview grows the column past the backdrop: keep the buttons below it.
+            let over = col.min_rect().bottom() - rect.bottom();
+            if over > 0.0 {
+                ui.add_space(over);
             }
-            let writers = people_names(item, "Writer");
-            if !writers.is_empty() {
-                let label = if writers.len() == 1 { "Writer" } else { "Writers" };
-                col.add_space(t.gap / 4.0);
-                col.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("{label}  {}", writers.join(", ")))
-                            .size(t.small_size)
-                            .color(t.muted),
-                    )
-                    .wrap(),
-                );
-            }
+        }
+
+        if more_hover && ui.input(|i| i.pointer.is_moving()) {
+            self.focus = Focus { group: G_MORE, index: 0 };
+        }
+        if more_click {
+            self.overview_open = !self.overview_open;
         }
 
         ui.add_space(t.gap);
@@ -1730,8 +1803,10 @@ impl ItemScreen {
         let mut list_xs: Vec<f32> = vec![];
         let mut row_xs: Vec<f32> = vec![];
         let mut people_xs: Vec<f32> = vec![];
+        let mut chip_xs: Vec<f32> = vec![];
         let mut link_xs: Vec<f32> = vec![];
         let mut push_person: Option<PersonRef> = None;
+        let mut open_chip_target: Option<ChipTarget> = None;
         let mut open_url: Option<String> = None;
         let mut chapter_xs: Vec<f32> = vec![];
         let mut special_xs: Vec<f32> = vec![];
@@ -1744,6 +1819,9 @@ impl ItemScreen {
         match self.kind {
             ItemKind::Movie | ItemKind::Episode => {
                 act = self.draw_movie_episode(ui, cx, &mut btn_xs, &mut list_xs, &mut pos_xs, &mut story_xs);
+                if !self.picker_open() {
+                    open_chip_target = self.draw_chips(ui, cx, &mut chip_xs);
+                }
                 // G4 (P-ITEM-17): a Chapters row below the buttons (hidden while a picker is open).
                 if !self.picker_open() {
                     let a = self.draw_chapters(ui, cx, &mut chapter_xs);
@@ -1791,7 +1869,7 @@ impl ItemScreen {
             }
         }
 
-        let mut groups = vec![Group::default(); 11];
+        let mut groups = vec![Group::default(); 13];
         match self.kind {
             ItemKind::Movie | ItemKind::Episode => {
                 let n = btn_xs.len();
@@ -1806,6 +1884,7 @@ impl ItemScreen {
                     // G4 (P-ITEM-17)
                     groups[G_CHAPTERS] = Group { len: chapter_xs.len(), cols: 1, xs: chapter_xs };
                 }
+                groups[G_CHIPS] = Group { len: chip_xs.len(), cols: chip_xs.len(), xs: chip_xs };
                 groups[G_PEOPLE] = Group { len: people_xs.len(), cols: people_xs.len(), xs: people_xs };
                 groups[G_SPECIALS] = Group { len: special_xs.len(), cols: special_xs.len(), xs: special_xs };
                 groups[G_SIMILAR] = Group { len: similar_xs.len(), cols: similar_xs.len(), xs: similar_xs };
@@ -1820,6 +1899,9 @@ impl ItemScreen {
                 groups[G_LIST] = Group { len: row_xs.len(), cols: 1, xs: row_xs };
             }
             _ => {}
+        }
+        if let Some(x) = more_x {
+            groups[G_MORE] = Group { len: 1, cols: 1, xs: vec![x] };
         }
         if !retry_xs.is_empty() {
             groups[G_RETRY] = Group { len: 1, cols: 1, xs: retry_xs };
@@ -1851,6 +1933,9 @@ impl ItemScreen {
         if let Some(p) = push_person {
             cx.push(super::person::screen(p.id, p.name));
         }
+        if let Some(target) = open_chip_target {
+            open_chip(cx, &target);
+        }
         if let Some(url) = open_url.or_else(|| self.pending_open.take()) {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
@@ -1876,6 +1961,10 @@ impl Screen for ItemScreen {
             return self.story_key(cx, key);
         }
         match key {
+            Key::Enter if self.focus.group == G_MORE => {
+                self.overview_open = !self.overview_open;
+                true
+            }
             Key::Enter => match self.kind {
                 ItemKind::Movie | ItemKind::Episode => self.enter_movie_episode(cx),
                 ItemKind::Series => self.enter_series(cx),

@@ -1,5 +1,5 @@
 //! R-UI-2 / R-SET-1: sign in with a password, public-user tiles, and a Quick Connect entry point.
-use super::parts;
+use super::{parts, widgets};
 use crate::api::{
     ApiError, Branding, Client, ForgotAction, ForgotPassword, PinRedeem, PublicInfo, PublicUser, Result, Session,
 };
@@ -11,7 +11,8 @@ use crate::settings::ServerEntry;
 const G_USERS: usize = 0;
 const G_USERNAME: usize = 1;
 const G_PASSWORD: usize = 2;
-const G_BUTTONS: usize = 3;
+const G_REMEMBER: usize = 3;
+const G_BUTTONS: usize = 4;
 
 pub struct SignIn {
     client: Client,
@@ -27,24 +28,43 @@ pub struct SignIn {
     focus: Focus,
     groups: Vec<Group>,
     started: bool,
+    /// P-AUTH-5: keep the session on disk (default on); off = in memory only.
+    remember: bool,
+    /// P-AUTH-8: opened by Switch user — focus the public user tiles once they load.
+    prefer_users: bool,
 }
 
 pub fn screen(client: Client, message: Option<String>) -> Box<dyn Screen> {
-    Box::new(SignIn {
-        client,
-        info: None,
-        users: vec![],
-        username: String::new(),
-        password: String::new(),
-        error: message,
-        busy: false,
-        quick_connect: false,
-        quick_connect_known: false,
-        disclaimer: None,
-        focus: Focus { group: G_USERNAME, index: 0 },
-        groups: vec![],
-        started: false,
-    })
+    Box::new(SignIn::new(client, message))
+}
+
+impl SignIn {
+    fn new(client: Client, message: Option<String>) -> SignIn {
+        SignIn {
+            client,
+            info: None,
+            users: vec![],
+            username: String::new(),
+            password: String::new(),
+            error: message,
+            busy: false,
+            quick_connect: false,
+            quick_connect_known: false,
+            disclaimer: None,
+            focus: Focus { group: G_USERNAME, index: 0 },
+            groups: vec![],
+            started: false,
+            remember: true,
+            prefer_users: false,
+        }
+    }
+}
+
+/// P-AUTH-8: Switch user — the same server's sign-in with the public user tiles focused first.
+pub fn switch_user(client: Client) -> Box<dyn Screen> {
+    let mut s = SignIn::new(client, None);
+    s.prefer_users = true;
+    Box::new(s)
 }
 
 impl SignIn {
@@ -87,7 +107,8 @@ impl SignIn {
     fn signed_in(&mut self, cx: &mut Cx, client: Client, session: Session) {
         let id = self.info.as_ref().map(|i| i.id.clone()).unwrap_or_default();
         let name = self.info.as_ref().map(|i| i.server_name.clone()).unwrap_or_default();
-        cx.settings.remember(ServerEntry { id, name, address: client.base.clone(), session: Some(session) });
+        let entry = ServerEntry { id, name, address: client.base.clone(), session: Some(session) };
+        cx.settings.remember_signed_in(entry, self.remember);
         cx.save_settings();
         *cx.client = Some(client);
         cx.reset(super::home::screen(false));
@@ -100,6 +121,7 @@ enum Act {
     QuickConnect,
     Forgot,
     ChangeServer,
+    Remember,
 }
 
 impl Screen for SignIn {
@@ -119,9 +141,12 @@ impl Screen for SignIn {
                     }
                     G_USERNAME => self.focus = Focus { group: G_PASSWORD, index: 0 },
                     G_PASSWORD => self.sign_in(cx),
+                    G_REMEMBER => self.remember = !self.remember,
                     G_BUTTONS => match self.focus.index {
                         0 => self.sign_in(cx),
-                        1 if self.qc_shown() => cx.push(super::quickconnect::screen(self.client.clone())),
+                        1 if self.qc_shown() => {
+                            cx.push(super::quickconnect::screen(self.client.clone(), self.remember))
+                        }
                         i if i == self.forgot_index() => self.open_forgot(cx),
                         _ => cx.reset(super::connect::screen(None)),
                     },
@@ -154,6 +179,10 @@ impl Screen for SignIn {
                 if let Ok(v) = payload.downcast::<Result<Vec<PublicUser>>>() {
                     if let Ok(users) = *v {
                         self.users = users;
+                        if self.prefer_users && !self.users.is_empty() {
+                            self.prefer_users = false;
+                            self.focus = Focus { group: G_USERS, index: 0 };
+                        }
                     }
                 }
             }
@@ -205,6 +234,7 @@ impl Screen for SignIn {
         let mut user_xs = vec![];
         let mut username_x = vec![];
         let mut password_x = vec![];
+        let mut remember_x = vec![];
         let mut button_xs = vec![];
         let mut act: Option<Act> = None;
         ui.vertical_centered(|ui| {
@@ -241,6 +271,16 @@ impl Screen for SignIn {
             password_x.push(r.rect.center().x);
             if r.clicked() {
                 self.focus = Focus { group: G_PASSWORD, index: 0 };
+            }
+            ui.add_space(t.gap / 2.0);
+            let focused = self.focus.group == G_REMEMBER;
+            let tg = widgets::toggle(ui, t, "Remember me", self.remember, focused);
+            remember_x.push(tg.x);
+            if tg.hovered {
+                self.focus = Focus { group: G_REMEMBER, index: 0 };
+            }
+            if tg.clicked {
+                act = Some(Act::Remember);
             }
             ui.add_space(t.gap);
             parts::centered_row(ui, "buttons", |ui| {
@@ -304,7 +344,8 @@ impl Screen for SignIn {
                 self.pick_user(name);
             }
             Some(Act::SignIn) => self.sign_in(cx),
-            Some(Act::QuickConnect) => cx.push(super::quickconnect::screen(self.client.clone())),
+            Some(Act::QuickConnect) => cx.push(super::quickconnect::screen(self.client.clone(), self.remember)),
+            Some(Act::Remember) => self.remember = !self.remember,
             Some(Act::Forgot) => self.open_forgot(cx),
             Some(Act::ChangeServer) => cx.reset(super::connect::screen(None)),
             None => {}
@@ -314,6 +355,7 @@ impl Screen for SignIn {
             Group { len: self.users.len(), cols: self.users.len().max(1), xs: user_xs },
             Group { len: 1, cols: 1, xs: username_x },
             Group { len: 1, cols: 1, xs: password_x },
+            Group { len: 1, cols: 1, xs: remember_x },
             Group { len: buttons, cols: buttons, xs: button_xs },
         ];
     }

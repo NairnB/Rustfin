@@ -105,6 +105,31 @@ pub struct PlayerStats {
     pub buffer_secs: Option<f64>,
 }
 
+/// Video aspect (P-PLAY-14): the Aspect menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Aspect {
+    #[default]
+    Auto,
+    Fit,
+    Fill,
+    Wide16x9,
+    Standard4x3,
+}
+
+impl Aspect {
+    pub const ALL: [Aspect; 5] = [Aspect::Auto, Aspect::Fit, Aspect::Fill, Aspect::Wide16x9, Aspect::Standard4x3];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Aspect::Auto => "Auto",
+            Aspect::Fit => "Fit",
+            Aspect::Fill => "Fill",
+            Aspect::Wide16x9 => "16:9",
+            Aspect::Standard4x3 => "4:3",
+        }
+    }
+}
+
 /// R-PLAT-1
 pub trait Player {
     fn load(&mut self, req: &PlayRequest);
@@ -142,6 +167,10 @@ pub trait Player {
     /// Playback speed, 1.0 = normal (P-PLAY-12). Default: no speed control.
     fn set_speed(&mut self, speed: f64) {
         let _ = speed;
+    }
+    /// Video aspect (P-PLAY-14). Default: no aspect control.
+    fn set_aspect(&mut self, aspect: Aspect) {
+        let _ = aspect;
     }
     /// Stream facts for the stats overlay (P-PLAY-20). Default: nothing known.
     fn stats(&self) -> PlayerStats {

@@ -449,6 +449,7 @@ impl Library {
             SortBy::DatePlayed,
             SortBy::PlayCount,
             SortBy::Runtime,
+            SortBy::ParentalRating,
             SortBy::Random,
         ];
         if story::any_story(loaded) || self.prefs.sort == SortBy::StoryOrder {
@@ -1134,6 +1135,7 @@ impl Library {
                     frame.show(ui, |ui| {
                         let (size, kind) = match mode {
                             ViewMode::Thumbs => (egui::vec2(t.thumb_w, t.thumb_h), parts::CardKind::Thumb),
+                            ViewMode::Banners => (egui::vec2(t.banner_w, t.banner_h), parts::CardKind::Banner),
                             _ => (egui::vec2(t.poster_w, t.poster_h), parts::CardKind::Poster),
                         };
                         let cols = if mode == ViewMode::List {
@@ -1181,7 +1183,9 @@ impl Library {
                         let focus = (self.focus.group == gi).then_some(self.focus.index);
                         let out = match mode {
                             ViewMode::Posters => parts::grid(ui, cx, &items, cols, focus, sec_items.len()),
-                            ViewMode::Thumbs => parts::grid_kind(ui, cx, &items, cols, focus, sec_items.len(), kind),
+                            ViewMode::Thumbs | ViewMode::Banners => {
+                                parts::grid_kind(ui, cx, &items, cols, focus, sec_items.len(), kind)
+                            }
                             ViewMode::List => list_rows(ui, cx, &items, focus),
                         };
                         groups.push(Group { len: sec_items.len(), cols, xs: out.xs });

@@ -1,4 +1,5 @@
-# G9 parity tour: P-TV-7 'Missing episodes' toggle on the show page (turns it on, shoots, turns it off).
+# P-TV-7 parity tour (RR5): the "Missing episodes" option also lists episodes that have not aired ("Airs 14 Oct",
+# not playable). Signs in as viewer, opens "Drift Rebels", turns the option on, then off again.
 wait-screen connect
 wait 2500
 idle

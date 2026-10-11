@@ -2,7 +2,9 @@
 //! current. Track mapping (R-PLAY-6) and the remaining polish are packet P1.
 use crate::mpv::{Mpv, END_FILE_REASON_EOF, END_FILE_REASON_ERROR};
 use crate::tracks;
-use jf_core::platform::{PlayRequest, Player, PlayerState, PlayerStats, SubColour, SubSize, SubStyle, TrackRef};
+use jf_core::platform::{
+    Aspect, PlayRequest, Player, PlayerState, PlayerStats, SubColour, SubSize, SubStyle, TrackRef,
+};
 
 pub type GetProcFactory = Box<dyn Fn() -> Box<dyn Fn(&std::ffi::CStr) -> *const std::ffi::c_void>>;
 
@@ -235,6 +237,20 @@ impl Player for MpvPlayer {
     fn set_speed(&mut self, speed: f64) {
         if let Some(m) = &self.mpv {
             m.command(&["set", "speed", &format!("{:.2}", speed.clamp(0.25, 4.0))]);
+        }
+    }
+    /// P-PLAY-14: mpv `video-aspect-override` + `panscan` (Fill crops to cover the window).
+    fn set_aspect(&mut self, aspect: Aspect) {
+        if let Some(m) = &self.mpv {
+            let (over, pan) = match aspect {
+                Aspect::Auto | Aspect::Fit => ("no", "0"),
+                Aspect::Fill => ("no", "1.0"),
+                Aspect::Wide16x9 => ("16:9", "0"),
+                Aspect::Standard4x3 => ("4:3", "0"),
+            };
+            m.command(&["set", "keepaspect", "yes"]);
+            m.command(&["set", "video-aspect-override", over]);
+            m.command(&["set", "panscan", pan]);
         }
     }
     /// P-PLAY-20: mpv's own counters.

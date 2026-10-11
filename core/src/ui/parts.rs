@@ -10,6 +10,8 @@ pub enum CardKind {
     Poster,
     /// 16:9 thumb (episodes in rows, continue watching, library tiles)
     Thumb,
+    /// P-LIB-14: wide strip (Banner image, else Thumb, else Backdrop)
+    Banner,
 }
 
 impl CardKind {
@@ -17,12 +19,13 @@ impl CardKind {
         match self {
             CardKind::Poster => vec2(t.poster_w, t.poster_h),
             CardKind::Thumb => vec2(t.thumb_w, t.thumb_h),
+            CardKind::Banner => vec2(t.banner_w, t.banner_h),
         }
     }
     pub fn image(self) -> ImageKind {
         match self {
             CardKind::Poster => ImageKind::Primary,
-            CardKind::Thumb => ImageKind::Primary,
+            CardKind::Thumb | CardKind::Banner => ImageKind::Primary,
         }
     }
 }
@@ -49,6 +52,9 @@ pub fn progress_bar(ui: &Ui, t: &Theme, r: Rect, frac: f32) {
 /// The image URL a card shows (and the one to prefetch).
 pub fn card_image_url(cx: &Cx, item: &Item, kind: CardKind, scale: f32) -> Option<String> {
     let w = image_width_bucket(kind.size(cx.theme).x, scale);
+    if kind == CardKind::Banner {
+        return cx.client.as_ref()?.banner_image_url(item, w);
+    }
     cx.client.as_ref()?.image_url(item, kind.image(), w)
 }
 
@@ -365,9 +371,21 @@ pub fn grid(
 /// `focused` is the focused button (0..5 → Home, Search, Settings, Favourites, Playlists); the returned `RowOut` maps
 /// `clicked` / `hovered` / `xs` the same way.
 pub fn topbar(ui: &mut Ui, cx: &mut Cx, focused: Option<usize>) -> RowOut {
+    topbar_with_user(ui, cx, focused, None).0
+}
+
+/// P-HOME-7: `topbar` plus a user chip (initial in a small circle + name) at the far right as button 5. Returns the
+/// chip's rect too, so the caller can hang its menu under it.
+pub fn topbar_with_user(
+    ui: &mut Ui,
+    cx: &mut Cx,
+    focused: Option<usize>,
+    user: Option<&str>,
+) -> (RowOut, Option<Rect>) {
     let t = cx.theme;
     let mut out = RowOut { clicked: None, hovered: None, xs: vec![] };
-    const BUTTONS: [&str; 5] = ["Home", "Search", "Settings", "Favourites", "Playlists"];
+    const BUTTONS: [&str; 6] = ["Home", "Search", "Settings", "Favourites", "Playlists", ""];
+    let n = if user.is_some() { 6 } else { 5 };
 
     let bar_rect = Rect::from_min_size(ui.cursor().left_top(), vec2(ui.available_width(), t.topbar_h));
     ui.advance_cursor_after_rect(bar_rect);
@@ -376,24 +394,36 @@ pub fn topbar(ui: &mut Ui, cx: &mut Cx, focused: Option<usize>) -> RowOut {
     let name = ui.fonts(|f| f.layout_no_wrap("Rustfin".to_string(), t.font(t.title_size), t.text));
     ui.painter().galley(pos2(bar_rect.left() + t.margin, bar_rect.center().y), name, t.text);
 
-    let mut widths = [0.0f32; 5];
-    for (i, label) in BUTTONS.iter().enumerate() {
-        let g = ui.fonts(|f| f.layout_no_wrap((*label).to_string(), t.font(t.body_size), t.text));
-        widths[i] = g.size().x + 2.0 * t.button_pad;
+    let avatar = t.button_h * 0.65;
+    let mut widths = [0.0f32; 6];
+    for i in 0..n {
+        let label = if i == 5 { user.unwrap_or_default() } else { BUTTONS[i] };
+        let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), t.font(t.body_size), t.text));
+        widths[i] = g.size().x + 2.0 * t.button_pad + if i == 5 { avatar + t.gap / 3.0 } else { 0.0 };
     }
     let mut right = bar_rect.right() - t.margin;
-    let mut rects = [Rect::NOTHING; 5];
-    for i in (0..5).rev() {
+    let mut rects = [Rect::NOTHING; 6];
+    for i in (0..n).rev() {
         rects[i] =
             Rect::from_center_size(pos2(right - widths[i] / 2.0, bar_rect.center().y), vec2(widths[i], t.button_h));
         right -= widths[i] + t.gap;
     }
-    for (i, rect) in rects.iter().enumerate() {
+    for (i, rect) in rects.iter().take(n).enumerate() {
         let label = BUTTONS[i];
         let resp = ui.interact(*rect, ui.id().with(("topbar", i)), Sense::click());
         let fill = if resp.hovered() { t.surface_hi.gamma_multiply(1.3) } else { t.surface_hi };
         ui.painter().rect_filled(*rect, t.radius, fill);
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, t.font(t.body_size), t.text);
+        if i == 5 {
+            let name = user.unwrap_or_default();
+            let c = pos2(rect.left() + t.button_pad / 2.0 + avatar / 2.0, rect.center().y);
+            ui.painter().circle_filled(c, avatar / 2.0, t.accent);
+            let initial = name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_default();
+            ui.painter().text(c, Align2::CENTER_CENTER, initial, t.font(t.small_size), t.accent_text);
+            let tx = rect.left() + t.button_pad / 2.0 + avatar + t.gap / 3.0;
+            ui.painter().text(pos2(tx, rect.center().y), Align2::LEFT_CENTER, name, t.font(t.body_size), t.text);
+        } else {
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, t.font(t.body_size), t.text);
+        }
         if focused == Some(i) {
             focus_ring(ui, t, *rect);
         }
@@ -405,7 +435,7 @@ pub fn topbar(ui: &mut Ui, cx: &mut Cx, focused: Option<usize>) -> RowOut {
             out.clicked = Some(i);
         }
     }
-    out
+    (out, user.map(|_| rects[5]))
 }
 
 /// A horizontal row centred in the available width. Centring uses the row's width from the previous frame, so

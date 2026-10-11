@@ -9,6 +9,8 @@ idle
 type nobody-here
 key down
 key down
+key down
+key down
 key enter
 wait-screen forgot
 idle

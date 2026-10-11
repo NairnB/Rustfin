@@ -2,7 +2,7 @@
 //! is admin-only on the server: a non-admin (or signed-out) caller gets `ApiError::Forbidden` / `Unauthorized`.
 use super::gen_admin::{
     ActivityLogEntry, AuthenticationInfo, DeviceInfoDto, LibraryOptions, LogFile, PackageInfo, PluginInfo,
-    RepositoryInfo, SessionInfoDto, SystemInfo, TaskInfo, UserDto, UserPolicy, VirtualFolderInfo,
+    RepositoryInfo, SessionInfoDto, SystemInfo, TaskInfo, TaskTriggerInfo, UserDto, UserPolicy, VirtualFolderInfo,
 };
 use super::{url_encode, Client, Result};
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,12 @@ impl Client {
     /// P-ADM-23: run a task now.
     pub fn run_task(&self, id: &str) -> Result<()> {
         self.post_empty_ok(&format!("/ScheduledTasks/Running/{id}"))
+    }
+
+    /// P-ADM-23: `POST /ScheduledTasks/{id}/Triggers` replaces the task's whole trigger list (add or remove =
+    /// edit the list and post it back).
+    pub fn set_task_triggers(&self, id: &str, triggers: &[TaskTriggerInfo]) -> Result<()> {
+        self.post_ok(&format!("/ScheduledTasks/{}/Triggers", url_encode(id)), &triggers)
     }
 
     /// P-ADM-23: stop a running task.
@@ -433,4 +439,32 @@ impl Client {
     pub fn set_repositories(&self, repos: &[RepositoryInfo]) -> Result<()> {
         self.post_ok("/Repositories", &repos)
     }
+
+    /// P-ADM-24: `GET /web/ConfigurationPages` — the settings pages plugins register with the server's web app.
+    pub fn configuration_pages(&self) -> Result<Vec<ConfigPage>> {
+        self.get_json("/web/ConfigurationPages")
+    }
+}
+
+/// P-ADM-24: one plugin settings page (`Name` is what the web app's `configurationpage?name=` takes).
+#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct ConfigPage {
+    pub name: String,
+    pub plugin_id: Option<String>,
+}
+
+fn same_guid(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.chars().filter(|c| *c != '-').collect::<String>().to_lowercase();
+    norm(a) == norm(b)
+}
+
+/// P-ADM-24: the settings page of the plugin with this id, if it registered one.
+pub fn page_for_plugin<'a>(pages: &'a [ConfigPage], plugin_id: &str) -> Option<&'a ConfigPage> {
+    pages.iter().find(|p| !p.name.is_empty() && p.plugin_id.as_deref().is_some_and(|id| same_guid(id, plugin_id)))
+}
+
+/// P-ADM-24: where the server's web app shows that settings page (opened in the browser).
+pub fn plugin_settings_url(base: &str, page_name: &str) -> String {
+    format!("{}/web/#/configurationpage?name={}", base.trim_end_matches('/'), url_encode(page_name))
 }

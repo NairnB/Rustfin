@@ -1,0 +1,22 @@
+# P-AUTH-5 parity tour (RR7): Remember me toggle on the sign-in screen — switched off, then sign in (session stays in memory).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+shot p-auth-5-on
+type viewer
+key down
+type view-pass-1
+key down
+key enter
+idle
+shot p-auth-5
+key up
+key enter
+wait-screen home
+idle
+shot p-auth-5-home
+quit

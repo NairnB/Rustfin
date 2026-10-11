@@ -45,7 +45,14 @@ pub struct Home {
     groups: Vec<Group>,
     roles: Vec<Role>,
     auto: bool,
+    /// P-HOME-7: the user menu — `Some(highlighted entry)` while open.
+    user_menu: Option<usize>,
+    /// Set while the server sign-out runs; the next sign-in screen opens on the public user tiles when true.
+    switching: bool,
 }
+
+const USER_MENU: [&str; 3] = ["Settings", "Switch user", "Sign out"];
+const TOPBAR_USER: usize = 5;
 
 pub fn screen(verify_session: bool) -> Box<dyn Screen> {
     Box::new(Home {
@@ -62,6 +69,8 @@ pub fn screen(verify_session: bool) -> Box<dyn Screen> {
         groups: vec![],
         roles: vec![],
         auto: true,
+        user_menu: None,
+        switching: false,
     })
 }
 
@@ -176,6 +185,60 @@ impl Home {
         }
     }
 
+    /// P-HOME-7: the menu under the user chip — Settings, Switch user, Sign out.
+    fn draw_user_menu(&mut self, ui: &mut egui::Ui, cx: &mut Cx, chip: egui::Rect, highlighted: usize) {
+        let t = cx.theme;
+        let w = t.dropdown_w * 0.75;
+        let pos = egui::pos2(chip.right() - w, chip.bottom() + t.gap / 4.0);
+        let mut hovered = None;
+        let mut clicked = None;
+        let area = egui::Area::new(egui::Id::new("home-user-menu")).order(egui::Order::Foreground).fixed_pos(pos).show(
+            ui.ctx(),
+            |ui| {
+                ui.spacing_mut().item_spacing.y = t.gap / 6.0;
+                for (i, label) in USER_MENU.iter().enumerate() {
+                    let r = parts::button_width(ui, t, label, highlighted == i, false, w);
+                    if r.hovered() {
+                        hovered = Some(i);
+                    }
+                    if r.clicked() {
+                        clicked = Some(i);
+                    }
+                }
+            },
+        );
+        if let Some(i) = hovered {
+            self.user_menu = Some(i);
+        }
+        if let Some(i) = clicked {
+            self.pick_user_menu(cx, i);
+        } else if ui.input(|i| i.pointer.any_click()) {
+            let pos = ui.input(|i| i.pointer.interact_pos());
+            if pos.is_some_and(|p| !area.response.rect.contains(p) && !chip.contains(p)) {
+                self.user_menu = None;
+            }
+        }
+    }
+
+    fn pick_user_menu(&mut self, cx: &mut Cx, i: usize) {
+        self.user_menu = None;
+        match i {
+            0 => cx.push(super::settings_screen::screen()),
+            _ => {
+                if self.switching {
+                    return;
+                }
+                // Switch user and Sign out both end this server session (server side too) and keep the server.
+                self.switching = i == 1;
+                let mut client = cx.api();
+                cx.spawn("signout", move || {
+                    let _ = client.sign_out();
+                    client
+                });
+            }
+        }
+    }
+
     fn activate(&mut self, cx: &mut Cx) {
         let Some(role) = self.roles.get(self.focus.group).cloned() else { return };
         match role {
@@ -190,6 +253,7 @@ impl Home {
                 }
             }
             Role::Topbar => match self.focus.index {
+                TOPBAR_USER => self.user_menu = Some(0),
                 1 => cx.push(super::search::screen()),
                 2 => cx.push(super::settings_screen::screen()),
                 3 => cx.push(super::favourites::screen()),
@@ -280,6 +344,16 @@ impl Screen for Home {
     }
 
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
+        if let Some(h) = self.user_menu {
+            match key {
+                Key::Up => self.user_menu = Some(h.saturating_sub(1)),
+                Key::Down => self.user_menu = Some((h + 1).min(USER_MENU.len() - 1)),
+                Key::Enter => self.pick_user_menu(cx, h),
+                Key::Back => self.user_menu = None,
+                _ => {}
+            }
+            return true;
+        }
         match key {
             Key::Enter => {
                 self.auto = false;
@@ -334,6 +408,22 @@ impl Screen for Home {
                 }
                 if unauth {
                     cx.signed_out();
+                }
+            }
+            "signout" => {
+                let Ok(c) = payload.downcast::<crate::api::Client>() else { return };
+                let client = *c;
+                if let Some(c) = cx.client.as_mut() {
+                    c.session = None;
+                }
+                if let Some(id) = cx.settings.last_server.clone() {
+                    cx.settings.forget_session(&id);
+                }
+                cx.save_settings();
+                if self.switching {
+                    cx.reset(super::signin::switch_user(client));
+                } else {
+                    cx.reset(super::signin::screen(client, None));
                 }
             }
             "verify" => match *payload.downcast::<Result<()>>().unwrap() {
@@ -426,7 +516,7 @@ impl Screen for Home {
             groups.push(Group { len: 2, cols: 2, xs: vec![] });
         }
         roles.push(Role::Topbar);
-        groups.push(Group { len: 5, cols: 5, xs: vec![] });
+        groups.push(Group { len: 6, cols: 6, xs: vec![] });
         let mut gi = topbar_gi + 1;
         for (id, _, _, st) in &plan {
             match st {
@@ -458,7 +548,10 @@ impl Screen for Home {
 
         // Topbar.
         let tb_focus = (self.focus.group == topbar_gi).then_some(self.focus.index);
-        let tb = parts::topbar(ui, cx, tb_focus);
+        let user_name = cx.settings.last().and_then(|e| e.session.as_ref()).map(|s| s.user_name.clone());
+        let user_name =
+            user_name.or_else(|| cx.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_name.clone()));
+        let (tb, chip) = parts::topbar_with_user(ui, cx, tb_focus, Some(user_name.as_deref().unwrap_or("Account")));
         groups[topbar_gi].xs = tb.xs;
         if pointer_moved {
             if let Some(i) = tb.hovered {
@@ -470,12 +563,16 @@ impl Screen for Home {
             self.focus = Focus { group: topbar_gi, index: i };
             self.auto = false;
             match i {
+                TOPBAR_USER => self.user_menu = Some(0),
                 1 => cx.push(super::search::screen()),
                 2 => cx.push(super::settings_screen::screen()),
                 3 => cx.push(super::favourites::screen()),
                 4 => cx.push(super::playlists::list()),
                 _ => {}
             }
+        }
+        if let (Some(h), Some(chip)) = (self.user_menu, chip) {
+            self.draw_user_menu(ui, cx, chip, h);
         }
 
         // Offline banner (R-SET-2).

@@ -1,0 +1,40 @@
+# P-ITEM-21 parity tour (RR5): Shuffle beside Play all on the collection page → the player with a random queue.
+# Signs in as viewer, Archive → Collections → "Star Drift Saga".
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key enter
+wait-screen library
+idle
+key up
+key left 10
+key right 3
+idle
+key enter
+wait-screen collections
+idle
+key enter
+wait-screen collection
+wait 1000
+idle
+key right
+idle
+shot p-item-21
+key enter
+wait-screen player
+wait 3000
+idle
+shot p-item-21-play
+quit

@@ -4,7 +4,7 @@
 //! Keys are only ever drawn masked (`mask_key`) and never logged.
 use super::sectioned_list;
 use super::users::{fail, short_date, skeleton_rows, Ctl};
-use crate::api::admin::{mask_key, newest_first};
+use crate::api::admin::{mask_key, newest_first, page_for_plugin, plugin_settings_url, ConfigPage};
 use crate::api::gen_admin::{AuthenticationInfo, DeviceInfoDto, LogFile, PackageInfo, PluginInfo, RepositoryInfo};
 use crate::api::Result;
 use crate::app::{Cx, Screen};
@@ -591,13 +591,19 @@ impl Screen for Keys {
 pub struct Plugins {
     b: Base,
     list: Option<Vec<PluginInfo>>,
+    /// Settings pages the server's web app knows (P-ADM-24); empty until loaded, or when none is registered.
+    pages: Vec<ConfigPage>,
+    open: Option<String>,
 }
 
 pub fn plugins() -> Box<dyn Screen> {
-    Box::new(Plugins { b: Base::default(), list: None })
+    Box::new(Plugins { b: Base::default(), list: None, pages: vec![], open: None })
 }
 
+const P_PAGES: &str = "pages";
+
 enum PlugAct {
+    Settings(usize),
     Toggle(usize),
     Uninstall(usize),
 }
@@ -607,15 +613,22 @@ impl Plugins {
         self.b.error = None;
         let c = cx.api();
         cx.spawn(D_LIST, move || c.plugins());
+        let c = cx.api();
+        cx.spawn(P_PAGES, move || c.configuration_pages());
     }
 
     fn run(&mut self, a: PlugAct, cx: &Cx) {
         let Some(p) = (match a {
-            PlugAct::Toggle(i) | PlugAct::Uninstall(i) => self.list.as_ref().and_then(|l| l.get(i)).cloned(),
+            PlugAct::Settings(i) | PlugAct::Toggle(i) | PlugAct::Uninstall(i) => {
+                self.list.as_ref().and_then(|l| l.get(i)).cloned()
+            }
         }) else {
             return;
         };
         match a {
+            PlugAct::Settings(_) => {
+                self.open = page_for_plugin(&self.pages, &p.id).map(|pg| plugin_settings_url(&cx.api().base, &pg.name));
+            }
             PlugAct::Toggle(_) => {
                 if self.b.busy {
                     return;
@@ -675,6 +688,12 @@ impl Screen for Plugins {
                     }
                 }
             }
+            P_PAGES => {
+                // Settings buttons are a convenience: a failed lookup just hides them.
+                if let Some(Ok(v)) = take::<Vec<ConfigPage>>(payload) {
+                    self.pages = v;
+                }
+            }
             D_DONE => {
                 if let Some(r) = take::<()>(payload) {
                     if self.b.finished(cx, r, "Done. Restart the server for this to take effect.") {
@@ -711,6 +730,9 @@ impl Screen for Plugins {
                         small_line(ui, t, &format!("{} · {}", p.status, p.description));
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                            if page_for_plugin(&self.pages, &p.id).is_some() && ctl.button(ui, t, "Settings", false) {
+                                acts.push(PlugAct::Settings(i));
+                            }
                             let label = if plugin_disabled(p) { "Enable" } else { "Disable" };
                             if ctl.button(ui, t, label, false) {
                                 acts.push(PlugAct::Toggle(i));
@@ -729,6 +751,9 @@ impl Screen for Plugins {
         }
         for a in acts {
             self.run(a, cx);
+        }
+        if let Some(url) = self.open.take() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
         if let Some(i) = self.b.confirm_ui(ui, t, moving) {
             self.uninstall(i, cx);

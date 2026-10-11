@@ -1,0 +1,41 @@
+# RR1 parity tour: P-PLAY-15 Repeat menu in the player OSD, pick All, OSD shows Repeat: All (Archive film).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right
+key enter
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3000
+
+key right
+key right 8
+key enter
+wait 400
+shot p-play-15-menu
+key down 2
+key enter
+wait 400
+shot p-play-15
+quit

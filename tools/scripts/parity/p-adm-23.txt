@@ -1,5 +1,6 @@
 # P-ADM-23 parity tour (A1): scheduled tasks list by category, then a task's triggers. Signs in as
-# tester (admin), opens Settings → Server admin → Scheduled tasks → first task's detail.
+# tester (admin), opens Settings → Server admin → Scheduled tasks → first task's detail, then opens the
+# Add trigger form (nothing is saved here; the add/remove round trip is core/tests/live_rr9.rs).
 wait-screen connect
 wait 2500
 idle
@@ -32,4 +33,10 @@ key enter
 wait-screen taskdetail
 idle
 shot p-adm-23-detail
+key down 40
+key enter
+idle
+shot p-adm-23-add
+key back
+idle
 quit

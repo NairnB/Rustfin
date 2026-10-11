@@ -1,4 +1,4 @@
-# P-LIB-7 parity tour (G1): sort by runtime — Archive, Sort dropdown → "Runtime".
+# P-LIB-7 parity tour (G1, RR7): sort by runtime, then by parental rating — Archive, Sort dropdown.
 wait-screen connect
 wait 2500
 idle
@@ -19,6 +19,11 @@ wait-screen library
 idle
 key enter
 key down 7
+key enter
+idle
+shot p-lib-7-runtime
+key enter
+key down
 key enter
 idle
 shot p-lib-7

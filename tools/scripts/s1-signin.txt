@@ -9,6 +9,8 @@ idle
 shot signin
 key down
 key down
+key down
+key down
 key left
 key left
 key right

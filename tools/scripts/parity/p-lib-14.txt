@@ -1,4 +1,4 @@
-# P-LIB-14 parity tour (G11): View dropdown on Mixed — Thumbs, then List.
+# P-LIB-14 parity tour (G11, RR7): View dropdown on Mixed — Thumbs, Banners, then List.
 wait-screen connect
 wait 2500
 idle
@@ -24,6 +24,11 @@ key down
 key enter
 idle
 shot p-lib-14-thumbs
+key enter
+key down
+key enter
+idle
+shot p-lib-14-banners
 key enter
 key down
 key enter
