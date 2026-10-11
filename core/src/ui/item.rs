@@ -548,7 +548,8 @@ impl ItemScreen {
                 let sid2 = sid.clone();
                 cx.spawn("seasons", move || client.seasons(&sid2));
                 let client = cx.api();
-                cx.spawn("nextup", move || client.next_up(20));
+                let (rw, nd) = (cx.settings.next_up_rewatching, cx.settings.next_up_days);
+                cx.spawn("nextup", move || client.next_up_with(20, rw, nd));
                 let client = cx.api();
                 cx.spawn("episodes", move || client.episodes(&sid, None));
             }
@@ -2051,6 +2052,11 @@ impl Screen for ItemScreen {
             ItemKind::Episode => "episode",
             _ => "item",
         }
+    }
+
+    /// NAV: this screen's part of the toolbar breadcrumb.
+    fn crumbs(&self) -> Vec<String> {
+        vec![self.item.name.clone()]
     }
 
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {

@@ -2,6 +2,8 @@
 wait-screen connect
 wait 2500
 idle
+key down 10
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin
@@ -12,11 +14,9 @@ type view-pass-1
 key enter
 wait-screen home
 idle
-key up 20
-key right 5
-key enter
-key down
-key enter
+click 130 1038
+idle
+click 130 927
 wait-screen signin
 idle
 wait 1500

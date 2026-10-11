@@ -189,7 +189,22 @@ impl Screen for Playlist {
         "playlist"
     }
 
+    /// NAV: this screen's part of the toolbar breadcrumb.
+    fn crumbs(&self) -> Vec<String> {
+        vec![self.item.name.clone()]
+    }
+
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
+        // BRIEF-coverflow: Info opens Poster Flow on the playlist, in its order.
+        if key == Key::Info && !self.confirm_delete {
+            if let Some(Ok(e)) = &self.entries {
+                let v: Vec<Item> = e.iter().map(|x| x.item.clone()).collect();
+                if !v.is_empty() {
+                    cx.push(super::posterflow::items(v, 0));
+                }
+            }
+            return true;
+        }
         if self.confirm_delete {
             match key {
                 Key::Left => self.confirm_focus = 0,

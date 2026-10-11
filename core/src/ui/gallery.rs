@@ -195,6 +195,18 @@ impl Screen for Gallery {
             parts::title(ui, t, "Widget gallery");
             ui.add_space(t.gap);
 
+            // The hero buttons at rest (not in a focus group here; they are focusable on Home and details).
+            boxed(ui, t, "Buttons", |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                    widgets::play_pill(ui, t, "Play", false);
+                    widgets::pill_button(ui, t, "Trailer", false, false);
+                    for i in [widgets::Icon::Plus, widgets::Icon::Tick, widgets::Icon::More] {
+                        widgets::round_button(ui, t, i, false);
+                    }
+                });
+            });
+
             boxed(ui, t, "Dropdown / menu", |ui| {
                 let out = widgets::dropdown(
                     ui,
@@ -275,7 +287,7 @@ impl Screen for Gallery {
             });
 
             boxed(ui, t, "Dialog / confirm", |ui| {
-                let r = parts::button(ui, t, "Show dialog", self.focus.group == G_DIALOG, false);
+                let r = widgets::pill_button(ui, t, "Show dialog", self.focus.group == G_DIALOG, false);
                 if r.hovered() {
                     self.focus = Focus { group: G_DIALOG, index: 0 };
                 }
@@ -369,7 +381,8 @@ impl Screen for Gallery {
 fn boxed(ui: &mut egui::Ui, t: &Theme, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     parts::heading(ui, t, label);
     ui.add_space(t.gap / 3.0);
-    egui::Frame::NONE.fill(t.surface).inner_margin(egui::Margin::same(t.gap as i8)).show(ui, |ui| {
+    let frame = egui::Frame::NONE.fill(t.surface).corner_radius(t.section_radius);
+    frame.inner_margin(egui::Margin::same(t.gap as i8)).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         add(ui);
     });

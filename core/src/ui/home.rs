@@ -1,4 +1,5 @@
-//! R-UI-4 Home: a fixed top bar above rows (Continue watching, Next up, Latest per library, Libraries).
+//! R-UI-4 Home: a full-bleed hero of a featured item (Apple TV look, docs/DESIGN-appletv.md) with the top pill
+//! bar floating over it, then rows (Continue watching, Next up, Latest per library, Libraries).
 //! All loads start at once on the worker pool; focus groups are rebuilt every frame from what is drawn.
 use super::parts::{self, CardKind, RowOut};
 use crate::api::{ApiError, Item, Result};
@@ -21,6 +22,7 @@ enum RowId {
 enum Role {
     Banner,
     Topbar,
+    Hero,
     Row(RowId),
 }
 
@@ -49,6 +51,9 @@ pub struct Home {
     user_menu: Option<usize>,
     /// Set while the server sign-out runs; the next sign-in screen opens on the public user tiles when true.
     switching: bool,
+    /// The hero's item with its full fields (overview, streams for badges), fetched when the featured item changes.
+    hero_full: Option<Item>,
+    hero_for: Option<String>,
     /// D10: Sign out / Switch user is waiting on the server — say so.
     leaving: bool,
     /// Who is signed in, noted when leaving so Sign out can drop their saved session.
@@ -75,6 +80,8 @@ pub fn screen(verify_session: bool) -> Box<dyn Screen> {
         auto: true,
         user_menu: None,
         switching: false,
+        hero_full: None,
+        hero_for: None,
         leaving: false,
         user_id: None,
     })
@@ -94,7 +101,8 @@ impl Home {
         let client = cx.api();
         cx.spawn("resume", move || client.resume(20));
         let client = cx.api();
-        cx.spawn("next_up", move || client.next_up(20));
+        let (rw, nd) = (cx.settings.next_up_rewatching, cx.settings.next_up_days);
+        cx.spawn("next_up", move || client.next_up_with(20, rw, nd));
         let client = cx.api();
         cx.spawn("favourites", move || client.favourites("Movie,Series"));
         let client = cx.api();
@@ -115,7 +123,8 @@ impl Home {
         let client = cx.api();
         cx.spawn("resume", move || client.resume(20));
         let client = cx.api();
-        cx.spawn("next_up", move || client.next_up(20));
+        let (rw, nd) = (cx.settings.next_up_rewatching, cx.settings.next_up_days);
+        cx.spawn("next_up", move || client.next_up_with(20, rw, nd));
         let client = cx.api();
         cx.spawn("favourites", move || client.favourites("Movie,Series"));
         let client = cx.api();
@@ -149,7 +158,8 @@ impl Home {
             RowId::NextUp => {
                 self.next_up = None;
                 let client = cx.api();
-                cx.spawn("next_up", move || client.next_up(20));
+                let (rw, nd) = (cx.settings.next_up_rewatching, cx.settings.next_up_days);
+                cx.spawn("next_up", move || client.next_up_with(20, rw, nd));
             }
             RowId::Favourites => {
                 self.favourites = None;
@@ -177,6 +187,31 @@ impl Home {
             RowId::Libraries => self.views.as_ref()?.as_ref().ok()?,
         };
         items.get(index).cloned()
+    }
+
+    /// The hero shows what you are most likely to play next: the first Continue watching item, else the first
+    /// Next up episode, else the newest item of the first film/TV library.
+    fn featured(&self) -> Option<Item> {
+        let first =
+            |r: &Option<Result<Vec<Item>>>| r.as_ref().and_then(|r| r.as_ref().ok()).and_then(|v| v.first().cloned());
+        first(&self.resume)
+            .or_else(|| first(&self.next_up))
+            .or_else(|| self.video_views.iter().find_map(|v| self.latest.get(&v.id)?.as_ref().ok()?.first().cloned()))
+    }
+
+    /// The featured item, with the full fields once they have loaded.
+    fn hero_item(&self) -> Option<Item> {
+        let f = self.featured()?;
+        Some(self.hero_full.clone().filter(|h| h.id == f.id).unwrap_or(f))
+    }
+
+    fn activate_hero(&mut self, cx: &mut Cx, index: usize) {
+        let Some(item) = self.hero_item() else { return };
+        if index == 0 && matches!(item.kind, crate::api::ItemKind::Movie | crate::api::ItemKind::Episode) {
+            cx.push(super::player::screen(item, super::player::PlayOptions::default()));
+        } else {
+            cx.push(super::item::screen(item));
+        }
     }
 
     fn row_is_error(&self, id: RowId) -> bool {
@@ -267,6 +302,7 @@ impl Home {
                     cx.reset(super::connect::screen(None));
                 }
             }
+            Role::Hero => self.activate_hero(cx, self.focus.index),
             Role::Topbar => match self.focus.index {
                 TOPBAR_USER => self.user_menu = Some(0),
                 1 => cx.push(super::search::screen()),
@@ -425,6 +461,13 @@ impl Screen for Home {
                     cx.signed_out();
                 }
             }
+            "hero" => {
+                if let Ok(r) = payload.downcast::<Result<Item>>() {
+                    if let Ok(item) = *r {
+                        self.hero_full = Some(item);
+                    }
+                }
+            }
             "signout" => {
                 let Ok(c) = payload.downcast::<crate::api::Client>() else { return };
                 let client = *c;
@@ -472,7 +515,8 @@ impl Screen for Home {
         let client = cx.api();
         cx.spawn("resume", move || client.resume(20));
         let client = cx.api();
-        cx.spawn("next_up", move || client.next_up(20));
+        let (rw, nd) = (cx.settings.next_up_rewatching, cx.settings.next_up_days);
+        cx.spawn("next_up", move || client.next_up_with(20, rw, nd));
         let client = cx.api();
         cx.spawn("favourites", move || client.favourites("Movie,Series"));
     }
@@ -535,9 +579,23 @@ impl Screen for Home {
             roles.push(Role::Banner);
             groups.push(Group { len: 2, cols: 2, xs: vec![] });
         }
+        // TV: the top pill bar. Desktop: the app shell's sidebar replaces it, so its group stays empty.
+        let tv_bar = !cx.sidebar;
         roles.push(Role::Topbar);
-        groups.push(Group { len: 6, cols: 6, xs: vec![] });
-        let mut gi = topbar_gi + 1;
+        groups.push(Group { len: if tv_bar { 6 } else { 0 }, cols: 6, xs: vec![] });
+        let hero = self.hero_item();
+        if let Some(h) = &hero {
+            if self.hero_for.as_deref() != Some(h.id.as_str()) {
+                self.hero_for = Some(h.id.clone());
+                let client = cx.api();
+                let id = h.id.clone();
+                cx.spawn("hero", move || client.item(&id));
+            }
+            roles.push(Role::Hero);
+            groups.push(Group { len: 2, cols: 2, xs: vec![] });
+        }
+        let hero_gi = topbar_gi + 1;
+        let mut gi = topbar_gi + 1 + usize::from(hero.is_some());
         for (id, _, _, st) in &plan {
             match st {
                 RowState::Hidden | RowState::Loading => {}
@@ -557,7 +615,8 @@ impl Screen for Home {
         }
 
         if self.auto {
-            let first_row = roles.iter().position(|r| matches!(r, Role::Row(_)));
+            // Focus starts on the hero's Play pill (Apple TV), else the first row.
+            let first_row = roles.iter().position(|r| matches!(r, Role::Hero | Role::Row(_)));
             self.focus = match first_row {
                 Some(gi) => Focus { group: gi, index: 0 },
                 None => Focus { group: topbar_gi, index: 0 },
@@ -566,47 +625,9 @@ impl Screen for Home {
             self.focus = clamp(&groups, self.focus);
         }
 
-        // Topbar.
-        let tb_focus = (self.focus.group == topbar_gi).then_some(self.focus.index);
-        let user_name = cx.settings.last().and_then(|e| e.session.as_ref()).map(|s| s.user_name.clone());
-        let user_name =
-            user_name.or_else(|| cx.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_name.clone()));
-        let (tb, chip) = parts::topbar_with_user(ui, cx, tb_focus, Some(user_name.as_deref().unwrap_or("Account")));
-        groups[topbar_gi].xs = tb.xs;
-        if pointer_moved {
-            if let Some(i) = tb.hovered {
-                self.focus = Focus { group: topbar_gi, index: i };
-                self.auto = false;
-            }
-        }
-        if let Some(i) = tb.clicked {
-            self.focus = Focus { group: topbar_gi, index: i };
-            self.auto = false;
-            match i {
-                TOPBAR_USER => self.user_menu = Some(0),
-                1 => cx.push(super::search::screen()),
-                2 => cx.push(super::settings_screen::screen()),
-                3 => cx.push(super::favourites::screen()),
-                4 => cx.push(super::playlists::list()),
-                _ => {}
-            }
-        }
-        if let (Some(h), Some(chip)) = (self.user_menu, chip) {
-            self.draw_user_menu(ui, cx, chip, h);
-        }
-
-        if self.leaving {
-            let label = if self.switching { "Switching user…" } else { "Signing out…" };
-            let at = ui.max_rect().center_top() + egui::vec2(0.0, t.margin);
-            let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), t.font(t.body_size), t.text));
-            let pill = egui::Rect::from_center_size(
-                at + egui::vec2(0.0, g.size().y / 2.0),
-                g.size() + egui::vec2(t.gap * 2.0, t.gap),
-            );
-            ui.painter().rect_filled(pill, t.radius, t.surface_hi);
-            ui.painter().text(pill.center(), egui::Align2::CENTER_CENTER, label, t.font(t.body_size), t.text);
-        }
-
+        // Full-bleed page: the scroll area runs under the side margins; parts line up with the margin inside.
+        let page = ui.max_rect();
+        let bleed = page.expand2(egui::vec2(t.margin, 0.0));
         // Offline banner (R-SET-2).
         if let Some(name) = self.offline.clone() {
             let mut xs = vec![];
@@ -660,33 +681,65 @@ impl Screen for Home {
         let mut clicked: Option<(RowId, usize)> = None;
         let mut hovered: Option<(RowId, usize)> = None;
         let mut xs_map: Vec<Option<Vec<f32>>> = vec![None; plan.len()];
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.add_space(t.margin);
-            for (k, (id, heading, kind, st)) in plan.iter().enumerate() {
-                if matches!(st, RowState::Hidden) {
-                    continue;
-                }
-                let focus_idx = group_of.get(id).and_then(|g| (*g == focus_group).then_some(focus_index));
-                let top = ui.cursor().top();
-                let out = Self::draw_row(ui, cx, heading, st, *kind, focus_idx, *id == RowId::Favourites);
-                let bottom = ui.cursor().top();
-                if focus_idx.is_some() {
-                    let rect = egui::Rect::from_min_max(
-                        egui::pos2(ui.min_rect().left(), top),
-                        egui::pos2(ui.max_rect().right(), bottom),
-                    );
-                    ui.scroll_to_rect(rect, None);
-                }
-                xs_map[k] = Some(out.xs);
-                if let Some(i) = out.clicked {
-                    clicked = Some((*id, i));
-                }
+        let mut hero_out = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bleed), |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Frame::NONE.inner_margin(egui::Margin::symmetric(t.margin as i8, 0)).show(ui, |ui| {
+                    ui.set_min_width(page.width());
+                    if let Some(h) = &hero {
+                        let focus = (focus_group == hero_gi).then_some(focus_index);
+                        let top = ui.cursor().top();
+                        let out = parts::hero(ui, cx, h, focus);
+                        if focus.is_some() {
+                            ui.scroll_to_rect(
+                                egui::Rect::from_min_size(egui::pos2(page.left(), top), egui::vec2(1.0, 1.0)),
+                                None,
+                            );
+                        }
+                        hero_out = Some(out);
+                    } else {
+                        ui.add_space(if tv_bar { t.topbar_h + t.margin } else { t.margin });
+                    }
+                    for (k, (id, heading, kind, st)) in plan.iter().enumerate() {
+                        if matches!(st, RowState::Hidden) {
+                            continue;
+                        }
+                        let focus_idx = group_of.get(id).and_then(|g| (*g == focus_group).then_some(focus_index));
+                        let top = ui.cursor().top();
+                        let out = Self::draw_row(ui, cx, heading, st, *kind, focus_idx, *id == RowId::Favourites);
+                        let bottom = ui.cursor().top();
+                        if focus_idx.is_some() {
+                            let rect = egui::Rect::from_min_max(
+                                egui::pos2(ui.min_rect().left(), top),
+                                egui::pos2(ui.max_rect().right(), bottom),
+                            );
+                            ui.scroll_to_rect(rect, None);
+                        }
+                        xs_map[k] = Some(out.xs);
+                        if let Some(i) = out.clicked {
+                            clicked = Some((*id, i));
+                        }
+                        if let Some(i) = out.hovered {
+                            hovered = Some((*id, i));
+                        }
+                    }
+                    ui.add_space(t.margin);
+                });
+            });
+        });
+        if let Some(out) = hero_out {
+            groups[hero_gi].xs = out.xs;
+            if pointer_moved {
                 if let Some(i) = out.hovered {
-                    hovered = Some((*id, i));
+                    self.focus = Focus { group: hero_gi, index: i };
+                    self.auto = false;
                 }
             }
-            ui.add_space(t.margin);
-        });
+            if let Some(i) = out.clicked {
+                self.auto = false;
+                self.activate_hero(cx, i);
+            }
+        }
         for (k, xs) in xs_map.into_iter().enumerate() {
             if let (Some(g), Some(xs)) = (group_of.get(&plan[k].0), xs) {
                 groups[*g].xs = xs;
@@ -712,6 +765,57 @@ impl Screen for Home {
             } else if self.row_is_error(id) {
                 self.retry_row(cx, id);
             }
+        }
+
+        // Topbar (TV only).
+        if tv_bar {
+            let tb_focus = (self.focus.group == topbar_gi).then_some(self.focus.index);
+            let user_name = cx.settings.last().and_then(|e| e.session.as_ref()).map(|s| s.user_name.clone());
+            let user_name =
+                user_name.or_else(|| cx.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_name.clone()));
+            // The tvOS top pill bar floats over the hero (drawn last, so it is on top).
+            let bar_rect = egui::Rect::from_min_size(page.min, egui::vec2(page.width(), t.topbar_h));
+            let user = Some(user_name.as_deref().unwrap_or("Account"));
+            let (tb, chip) = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+                    parts::topbar_with_user(ui, cx, tb_focus, user)
+                })
+                .inner;
+            groups[topbar_gi].xs = tb.xs;
+            if pointer_moved {
+                if let Some(i) = tb.hovered {
+                    self.focus = Focus { group: topbar_gi, index: i };
+                    self.auto = false;
+                }
+            }
+            if let Some(i) = tb.clicked {
+                self.focus = Focus { group: topbar_gi, index: i };
+                self.auto = false;
+                match i {
+                    TOPBAR_USER => self.user_menu = Some(0),
+                    1 => cx.push(super::search::screen()),
+                    2 => cx.push(super::settings_screen::screen()),
+                    3 => cx.push(super::favourites::screen()),
+                    4 => cx.push(super::playlists::list()),
+                    _ => {}
+                }
+            }
+            if let (Some(h), Some(chip)) = (self.user_menu, chip) {
+                self.draw_user_menu(ui, cx, chip, h);
+            }
+        }
+
+        // D10: Sign out / Switch user waits on the server — say so (a translucent pill, desktop and TV).
+        if self.leaving {
+            let label = if self.switching { "Switching user…" } else { "Signing out…" };
+            let at = page.center_top() + egui::vec2(0.0, t.bar_top + t.bar_h / 2.0);
+            let g = ui.fonts(|f| {
+                f.layout_no_wrap(label.to_string(), t.font_w(t.body_size, crate::theme::Weight::Medium), t.text)
+            });
+            let pill = egui::Rect::from_center_size(at, egui::vec2(g.size().x + 2.0 * t.bar_item_pad, t.bar_h));
+            ui.painter().add(t.shadow(0.6).as_shape(pill, t.bar_h / 2.0));
+            ui.painter().rect_filled(pill, t.bar_h / 2.0, t.menu_fill);
+            ui.painter().galley(pill.center() - g.size() / 2.0, g, t.text);
         }
 
         self.groups = groups;

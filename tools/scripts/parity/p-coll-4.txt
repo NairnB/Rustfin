@@ -3,6 +3,8 @@
 wait-screen connect
 wait 2500
 idle
+key down 10
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin
@@ -14,9 +16,7 @@ key enter
 wait-screen home
 idle
 # Home top bar → Search → "amber" → the film page
-key up
-key right
-key enter
+key search
 wait-screen search
 idle
 type iron tide
@@ -47,10 +47,7 @@ wait-screen search
 key back
 wait-screen home
 idle
-key up 10
-key left 10
-key right 4
-key enter
+click 130 497
 wait-screen playlists
 wait 800
 idle

@@ -132,6 +132,11 @@ impl Screen for Browse {
         "browse"
     }
 
+    /// NAV: this screen's part of the toolbar breadcrumb.
+    fn crumbs(&self) -> Vec<String> {
+        vec![self.filter.title()]
+    }
+
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
         match key {
             Key::Enter => {

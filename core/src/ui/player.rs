@@ -563,8 +563,9 @@ impl PlayerScreen {
     /// G6: PlaybackInfo for `id` under the current quality choice (or the Settings cap); `force` = transcode.
     fn fetch_plan(&self, cx: &mut Cx, tag: &'static str, id: String, force: bool) {
         let cap = self.quality_kbps.unwrap_or(cx.settings.max_streaming_bitrate);
+        let fmp4 = cx.settings.prefer_fmp4;
         let client = cx.api();
-        cx.spawn(tag, move || client.playback_plan(&id, cap, force));
+        cx.spawn(tag, move || client.playback_plan_with(&id, cap, force, fmp4));
     }
 
     /// G6: load the same item again through a new plan, at the current position (quality change, or the

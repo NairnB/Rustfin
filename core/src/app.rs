@@ -37,6 +37,11 @@ pub trait Screen {
     fn on_leave(&mut self, cx: &mut Cx) {
         let _ = cx;
     }
+    /// NAV: this screen's part of the toolbar breadcrumb ("Drift Rebels", "Season 2"). Empty → a label from
+    /// `name()` (see `ui::shell::crumbs_of`).
+    fn crumbs(&self) -> Vec<String> {
+        vec![]
+    }
 }
 
 pub enum Nav {
@@ -44,6 +49,12 @@ pub enum Nav {
     Pop,
     /// Clear the stack and start from this screen (sign-in done, sign out).
     Reset(Box<dyn Screen>),
+    /// NAV: re-open the screen the last Back left.
+    Forward,
+    /// NAV: keep the first `n` screens; the ones above go to the forward history (breadcrumb click).
+    PopTo(usize),
+    /// NAV: a sidebar place — back to the first screen (Home), then open this one on top (None = Home itself).
+    Section(Option<Box<dyn Screen>>),
 }
 
 /// What a screen can reach during a frame.
@@ -62,6 +73,8 @@ pub struct Cx<'a> {
     pub shell: &'a mut crate::platform::ShellRequests,
     /// Seconds since the app started (for timers: debounce, OSD hide, countdowns).
     pub now: f64,
+    /// NAV: the desktop shell draws the sidebar + toolbar around this screen (its own top bar is not needed).
+    pub sidebar: bool,
     pub(crate) screen_id: u64,
     pub(crate) nav: &'a mut Vec<Nav>,
 }
@@ -75,6 +88,14 @@ impl Cx<'_> {
     }
     pub fn reset(&mut self, s: Box<dyn Screen>) {
         self.nav.push(Nav::Reset(s));
+    }
+    /// NAV: re-open the screen the last Back left (no-op without one).
+    pub fn forward(&mut self) {
+        self.nav.push(Nav::Forward);
+    }
+    /// NAV: go to a top-level place: back to Home, then `s` on top (None = Home).
+    pub fn section(&mut self, s: Option<Box<dyn Screen>>) {
+        self.nav.push(Nav::Section(s));
     }
     /// Blocking work on the pool; the result comes back to this screen's `on_done` as `Box<T>`.
     pub fn spawn<T: Send + 'static>(&self, tag: &'static str, f: impl FnOnce() -> T + Send + 'static) {
@@ -116,6 +137,8 @@ pub struct AppOptions {
     pub device_name: String,
     /// A screen to open on top after the sign-in state is decided (`--screen`), e.g. "gallery".
     pub start_screen: Option<String>,
+    /// NAV: desktop shell — sidebar + Back/Forward toolbar around viewer screens (the TV build leaves it off).
+    pub desktop: bool,
 }
 
 fn device_info(s: &Settings, o: &AppOptions) -> DeviceInfo {
@@ -129,6 +152,11 @@ fn device_info(s: &Settings, o: &AppOptions) -> DeviceInfo {
 /// Screen id reserved for the admin check result (real screen ids start at 1).
 const ADMIN_SCREEN: u64 = 0;
 const ADMIN_TAG: &str = "admin";
+/// NAV: the server's libraries for the sidebar (loaded with the admin check).
+const VIEWS_TAG: &str = "views";
+/// Screen id reserved for the screensaver's backdrop list.
+const SAVER_SCREEN: u64 = u64::MAX;
+const SAVER_TAG: &str = "saver";
 
 pub struct App {
     pub theme: Theme,
@@ -139,12 +167,28 @@ pub struct App {
     tasks: Pool,
     pub images: Images,
     stack: Vec<(u64, Box<dyn Screen>)>,
+    /// NAV: screens Back left, nearest last; Forward re-opens them. Opening a new screen clears it.
+    forward: Vec<(u64, Box<dyn Screen>)>,
+    /// NAV: the signed-in user's libraries (sidebar).
+    views: Vec<crate::api::Item>,
+    /// NAV: the keyboard was used last (focus marks show).
+    keyboard: bool,
     next_id: u64,
     started: crate::time::Instant,
+    /// Recording (the `record` script command): each frame moves the clock on by this step, not by wall time.
+    fixed_step: Option<f64>,
+    fixed_now: f64,
     themed: bool,
     client_key: Option<(String, Option<String>)>,
     admin: bool,
     shell: crate::platform::ShellRequests,
+    /// RR8 / P-USER-2: app time of the last key or pointer input, and the screensaver while it is up.
+    last_input: f64,
+    saver: Option<ui::screensaver::Overlay>,
+    /// RR8 / P-USER-1: files the shell's picker returned, handed to the top screen next frame.
+    picked: Vec<String>,
+    /// Added to the clock (render scripts fast-forward the idle time with it).
+    skew: f64,
 }
 
 impl App {
@@ -164,12 +208,21 @@ impl App {
             tasks: Pool::new(4),
             images: Images::new(disk),
             stack: vec![],
+            forward: vec![],
+            views: vec![],
+            keyboard: true,
             next_id: 1,
             started: crate::time::Instant::now(),
+            fixed_step: None,
+            fixed_now: 0.0,
             themed: false,
             client_key: None,
             admin: false,
             shell: Default::default(),
+            last_input: 0.0,
+            saver: None,
+            picked: vec![],
+            skew: 0.0,
         };
         let first: Box<dyn Screen> = match app.settings.last().cloned() {
             Some(e) if e.session.is_some() => {
@@ -196,8 +249,18 @@ impl App {
     }
 
     fn push(&mut self, s: Box<dyn Screen>) {
+        self.forward.clear();
         self.stack.push((self.next_id, s));
         self.next_id += 1;
+    }
+
+    /// NAV: names of the screens on the stack, bottom first (tests, scripts).
+    pub fn history(&self) -> Vec<&'static str> {
+        self.stack.iter().map(|(_, s)| s.name()).collect()
+    }
+    /// NAV: names of the screens Forward would re-open, nearest first.
+    pub fn forward_history(&self) -> Vec<&'static str> {
+        self.forward.iter().rev().map(|(_, s)| s.name()).collect()
     }
 
     /// Window requests made during the last frame (taken: the next frame starts empty).
@@ -216,25 +279,103 @@ impl App {
         self.tasks.pending() == 0 && self.images.pending() == 0
     }
     pub fn now(&self) -> f64 {
-        self.started.elapsed().as_secs_f64()
+        match self.fixed_step {
+            Some(_) => self.fixed_now,
+            None => self.started.elapsed().as_secs_f64() + self.skew,
+        }
+    }
+    /// Recording: `Some(step)` makes every frame exactly `step` seconds long for screens that animate on `cx.now`;
+    /// `None` goes back to wall time (the clock only ever moves forward).
+    pub fn set_fixed_step(&mut self, step: Option<f64>) {
+        self.fixed_now = self.now().max(self.fixed_now);
+        self.fixed_step = step;
+    }
+    /// Move the app clock forward (render scripts: `fast-forward`), e.g. to reach the screensaver without waiting.
+    pub fn advance_clock(&mut self, secs: f64) {
+        self.skew += secs;
+        self.fixed_now += secs;
+    }
+    /// RR8 / P-USER-1: the shell's file picker chose `path`; the top screen gets it as `picked-file`.
+    pub fn file_picked(&mut self, path: String) {
+        self.picked.push(path);
+    }
+    /// RR8 / P-USER-2: the screensaver is up.
+    pub fn screensaver_active(&self) -> bool {
+        self.saver.is_some()
     }
 
     /// One frame: results → keys → draw → navigation.
     pub fn frame(&mut self, ctx: &egui::Context, player: &mut dyn Player, keys: &[Key]) {
         if !self.themed {
             self.theme.apply(ctx);
+            // NAV: everything clickable shows a hand cursor.
+            ctx.style_mut(|s| s.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand));
             self.themed = true;
+            // Fonts set now only bind at the next pass (named Inter weights would panic): draw from then.
+            ctx.request_repaint();
+            return;
         }
+        // NAV: focus marks follow the last input — keys turn them on, the mouse moving or clicking turns them off.
+        if keys.iter().any(|k| matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::Enter)) {
+            self.keyboard = true;
+        } else if ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO || i.pointer.any_pressed()) {
+            self.keyboard = false;
+        }
+        ui::shell::set_keyboard_focus(ctx, self.keyboard);
         self.images.begin_frame(ctx);
         let mut nav = vec![];
+        if let Some(step) = self.fixed_step {
+            self.fixed_now += step;
+        }
         let now = self.now();
+        let input = !keys.is_empty()
+            || ctx.input(|i| {
+                i.pointer.delta() != egui::Vec2::ZERO
+                    || i.pointer.any_pressed()
+                    || i.events.iter().any(|e| matches!(e, egui::Event::Text(_) | egui::Event::MouseWheel { .. }))
+            });
+        let mut keys = keys;
+        if input {
+            self.last_input = now;
+            if self.saver.take().is_some() {
+                keys = &[]; // the key that ends the screensaver does nothing else
+            }
+        }
+        if self.saver.is_none() {
+            let over_player = self.stack.last().map(|(_, s)| s.shows_video()).unwrap_or(false);
+            let (mode, mins) = (self.settings.screensaver, self.settings.screensaver_minutes);
+            if self.client.is_some() && ui::screensaver::idle_due(mode, mins, self.last_input, now, over_player) {
+                self.saver = Some(ui::screensaver::Overlay::new(mode, now));
+            }
+        }
+        if self.saver.as_ref().is_some_and(|s| s.wants_items()) {
+            if let Some(c) = self.client.clone() {
+                if let Some(s) = self.saver.as_mut() {
+                    s.loaded = true;
+                }
+                self.tasks.spawn(SAVER_SCREEN, SAVER_TAG, move || {
+                    c.backdrop_items(ui::screensaver::Overlay::slides()).unwrap_or_default()
+                });
+            }
+        }
         let done = self.tasks.drain();
         let done: Vec<_> = done
             .into_iter()
             .filter_map(|d| {
+                if d.screen == SAVER_SCREEN && d.tag == SAVER_TAG {
+                    if let (Ok(items), Some(s)) = (d.payload.downcast::<Vec<crate::api::Item>>(), self.saver.as_mut()) {
+                        s.set_items(*items);
+                    }
+                    return None;
+                }
                 if d.screen == ADMIN_SCREEN && d.tag == ADMIN_TAG {
                     if let Ok(b) = d.payload.downcast::<bool>() {
                         self.admin = *b;
+                    }
+                    None
+                } else if d.screen == ADMIN_SCREEN && d.tag == VIEWS_TAG {
+                    if let Ok(v) = d.payload.downcast::<Vec<crate::api::Item>>() {
+                        self.views = *v;
                     }
                     None
                 } else {
@@ -244,6 +385,10 @@ impl App {
             .collect();
         let Some((top_id, _)) = self.stack.last() else { return };
         let top_id = *top_id;
+        let sidebar = self.opts.desktop && self.shell_on();
+        if sidebar {
+            self.draw_shell(ctx, &mut nav);
+        }
         {
             let (id, screen) = self.stack.last_mut().unwrap();
             let mut cx = Cx {
@@ -258,6 +403,7 @@ impl App {
                 admin: self.admin,
                 shell: &mut self.shell,
                 now,
+                sidebar,
                 screen_id: *id,
                 nav: &mut nav,
             };
@@ -265,10 +411,31 @@ impl App {
             for d in done.into_iter().filter(|d| d.screen == top_id) {
                 screen.on_done(&mut cx, d.tag, d.payload);
             }
+            for path in std::mem::take(&mut self.picked) {
+                screen.on_done(&mut cx, "picked-file", Box::new(path));
+            }
             for &k in keys {
-                if !screen.on_key(&mut cx, k) && k == Key::Back && cx.nav.is_empty() {
-                    cx.pop();
+                if !screen.on_key(&mut cx, k) && cx.nav.is_empty() {
+                    match k {
+                        Key::Back => cx.pop(),
+                        Key::Forward => cx.forward(),
+                        Key::Search if screen.name() != "search" && cx.client.is_some() => {
+                            cx.section(Some(ui::search::screen()))
+                        }
+                        _ => {}
+                    }
                 }
+            }
+            if let Some(saver) = &self.saver {
+                let frame = egui::Frame::NONE.fill(cx.theme.bg);
+                let (t, now) = (cx.theme, cx.now);
+                egui::CentralPanel::default()
+                    .frame(frame)
+                    .show(ctx, |ui| saver.ui(ui, t, cx.client.as_ref(), cx.images, now));
+                self.images.end_frame(ctx);
+                self.client_changed();
+                self.apply_nav(nav, player);
+                return;
             }
             let theme_bg = cx.theme.bg;
             let margin = egui::Margin::symmetric(cx.theme.margin as i8, 0);
@@ -284,13 +451,73 @@ impl App {
         self.apply_nav(nav, player);
     }
 
+    /// NAV: the sidebar + toolbar show on signed-in viewer screens, never over the player or the sign-in flow.
+    fn shell_on(&self) -> bool {
+        let signed_in = self.client.as_ref().is_some_and(|c| c.session.is_some());
+        let Some((_, top)) = self.stack.last() else { return false };
+        signed_in && !top.shows_video() && !matches!(top.name(), "connect" | "signin" | "quickconnect" | "forgot")
+    }
+
+    /// NAV: draws the sidebar and toolbar (egui side/top panels, before the screen's central panel) and turns a
+    /// click into navigation.
+    fn draw_shell(&mut self, ctx: &egui::Context, nav: &mut Vec<Nav>) {
+        let entry = self.settings.last();
+        let user = entry.and_then(|e| e.session.as_ref()).map(|s| s.user_name.clone()).unwrap_or_default();
+        let crumbs: Vec<Vec<String>> =
+            self.stack.iter().skip(1).map(|(_, s)| ui::shell::crumbs_of(s.as_ref())).collect();
+        let second = self.stack.get(1).map(|(_, s)| (s.name(), s.crumbs()));
+        let view = ui::shell::View {
+            views: &self.views,
+            user: &user,
+            admin: self.admin,
+            collapsed: self.settings.sidebar_collapsed,
+            place: ui::shell::place_of(second.as_ref().map(|(n, c)| (*n, c.as_slice())), &self.views),
+            can_back: self.stack.len() > 1,
+            can_forward: !self.forward.is_empty(),
+            crumbs: &crumbs,
+        };
+        let Some(action) = ui::shell::draw(ctx, &self.theme, &view) else { return };
+        use ui::shell::Action;
+        match action {
+            Action::Back => nav.push(Nav::Pop),
+            Action::Forward => nav.push(Nav::Forward),
+            Action::Crumb(i) => nav.push(Nav::PopTo(i + 2)),
+            Action::Open(place) => nav.push(Nav::Section(ui::shell::open(place, &self.views))),
+            Action::Collapse => {
+                self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
+                let _ = self.settings.save(self.store.as_ref());
+            }
+            Action::SwitchUser | Action::SignOut => {
+                let Some(mut c) = self.client.clone() else { return };
+                if action == Action::SignOut {
+                    let mut server = c.clone();
+                    self.tasks.spawn(ADMIN_SCREEN, "signout", move || {
+                        let _ = server.sign_out();
+                    });
+                }
+                c.session = None;
+                if let Some(id) = self.settings.last_server.clone() {
+                    self.settings.forget_session(&id);
+                    let _ = self.settings.save(self.store.as_ref());
+                }
+                self.client = Some(c.clone());
+                nav.push(Nav::Reset(ui::signin::screen(c, None)));
+            }
+        }
+    }
+
     fn client_changed(&mut self) {
         let key = self.client.as_ref().map(|c| (c.base.clone(), c.session.as_ref().map(|s| s.token.clone())));
         if key != self.client_key {
             self.client_key = key;
             self.images.set_client(self.client.clone());
             self.admin = false;
+            self.views.clear();
             if let Some(c) = self.client.clone() {
+                if c.session.is_some() {
+                    let v = c.clone();
+                    self.tasks.spawn(ADMIN_SCREEN, VIEWS_TAG, move || v.views().unwrap_or_default());
+                }
                 self.tasks.spawn(ADMIN_SCREEN, ADMIN_TAG, move || c.is_admin().unwrap_or(false));
             }
         }
@@ -302,8 +529,7 @@ impl App {
                 Nav::Push(s) => self.push(s),
                 Nav::Pop => {
                     if self.stack.len() > 1 {
-                        self.leave_top(player);
-                        self.stack.pop();
+                        self.back_one(player);
                         self.resume_top(player);
                     }
                 }
@@ -313,6 +539,33 @@ impl App {
                         self.stack.pop();
                     }
                     self.push(s);
+                }
+                Nav::Forward => {
+                    if let Some(s) = self.forward.pop() {
+                        self.stack.push(s);
+                        self.resume_top(player);
+                    }
+                }
+                Nav::PopTo(n) => {
+                    if self.stack.len() > n.max(1) {
+                        while self.stack.len() > n.max(1) {
+                            self.back_one(player);
+                        }
+                        self.resume_top(player);
+                    }
+                }
+                Nav::Section(s) => {
+                    while self.stack.len() > 1 {
+                        self.leave_top(player);
+                        self.stack.pop();
+                    }
+                    match s {
+                        Some(s) => self.push(s),
+                        None => {
+                            self.forward.clear();
+                            self.resume_top(player);
+                        }
+                    }
                 }
             }
         }
@@ -334,12 +587,22 @@ impl App {
                 admin: self.admin,
                 shell: &mut self.shell,
                 now,
+                sidebar: false,
                 screen_id: *id,
                 nav: &mut nav,
             };
             f(screen.as_mut(), &mut cx);
         }
         // navigation requested from on_leave/on_resume is ignored on purpose (no loops)
+    }
+    /// Back: the top screen leaves and waits in the forward history (a player is not kept: it reported stopped).
+    fn back_one(&mut self, player: &mut dyn Player) {
+        self.leave_top(player);
+        if let Some(top) = self.stack.pop() {
+            if !top.1.shows_video() {
+                self.forward.push(top);
+            }
+        }
     }
     fn leave_top(&mut self, player: &mut dyn Player) {
         self.with_top(player, |s, cx| s.on_leave(cx));
@@ -358,5 +621,111 @@ impl App {
         while self.tasks.pending() > 0 && t.elapsed() < std::time::Duration::from_secs(2) {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::NullPlayer;
+    use crate::settings::MemStorage;
+
+    struct Fake(&'static str, bool);
+    impl Screen for Fake {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn ui(&mut self, _ui: &mut egui::Ui, _cx: &mut Cx) {}
+        fn shows_video(&self) -> bool {
+            self.1
+        }
+    }
+    fn s(name: &'static str) -> Box<dyn Screen> {
+        Box::new(Fake(name, false))
+    }
+
+    /// An app whose stack is `names` (bottom first).
+    fn app(names: &[&'static str]) -> (App, NullPlayer) {
+        let mut a = App::new(Arc::new(MemStorage::default()), AppOptions::default());
+        let mut p = NullPlayer::default();
+        a.apply_nav(vec![Nav::Reset(s(names[0]))], &mut p);
+        a.apply_nav(names[1..].iter().map(|n| Nav::Push(s(n))).collect(), &mut p);
+        (a, p)
+    }
+
+    #[test]
+    fn back_then_forward_reopens_the_same_screen() {
+        let (mut a, mut p) = app(&["home", "library", "movie"]);
+        a.apply_nav(vec![Nav::Pop], &mut p);
+        assert_eq!(a.history(), ["home", "library"]);
+        assert_eq!(a.forward_history(), ["movie"]);
+        a.apply_nav(vec![Nav::Pop], &mut p);
+        assert_eq!(a.forward_history(), ["library", "movie"]);
+        a.apply_nav(vec![Nav::Forward], &mut p);
+        assert_eq!(a.history(), ["home", "library"]);
+        assert_eq!(a.forward_history(), ["movie"]);
+        a.apply_nav(vec![Nav::Forward, Nav::Forward], &mut p);
+        assert_eq!(a.history(), ["home", "library", "movie"]);
+        assert!(a.forward_history().is_empty());
+    }
+
+    #[test]
+    fn opening_a_new_screen_clears_forward() {
+        let (mut a, mut p) = app(&["home", "library", "movie"]);
+        a.apply_nav(vec![Nav::Pop, Nav::Push(s("search"))], &mut p);
+        assert_eq!(a.history(), ["home", "library", "search"]);
+        assert!(a.forward_history().is_empty());
+    }
+
+    #[test]
+    fn back_stops_at_the_first_screen() {
+        let (mut a, mut p) = app(&["home"]);
+        a.apply_nav(vec![Nav::Pop], &mut p);
+        assert_eq!(a.history(), ["home"]);
+        assert!(a.forward_history().is_empty());
+    }
+
+    #[test]
+    fn breadcrumb_pops_to_a_screen_keeping_forward() {
+        let (mut a, mut p) = app(&["home", "library", "show", "season"]);
+        a.apply_nav(vec![Nav::PopTo(2)], &mut p);
+        assert_eq!(a.history(), ["home", "library"]);
+        assert_eq!(a.forward_history(), ["show", "season"]);
+    }
+
+    #[test]
+    fn section_goes_back_to_home_then_opens() {
+        let (mut a, mut p) = app(&["home", "library", "movie"]);
+        a.apply_nav(vec![Nav::Pop], &mut p);
+        a.apply_nav(vec![Nav::Section(Some(s("search")))], &mut p);
+        assert_eq!(a.history(), ["home", "search"]);
+        assert!(a.forward_history().is_empty());
+        a.apply_nav(vec![Nav::Section(None)], &mut p);
+        assert_eq!(a.history(), ["home"]);
+    }
+
+    #[test]
+    fn the_player_is_not_kept_for_forward() {
+        let (mut a, mut p) = app(&["home", "movie"]);
+        a.apply_nav(vec![Nav::Push(Box::new(Fake("player", true))), Nav::Pop], &mut p);
+        assert_eq!(a.history(), ["home", "movie"]);
+        assert!(a.forward_history().is_empty());
+    }
+
+    #[test]
+    fn back_and_forward_keys_drive_history() {
+        let (mut a, mut p) = app(&["home", "library"]);
+        let ctx = egui::Context::default();
+        let mut run = |a: &mut App, keys: &[Key]| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| a.frame(ctx, &mut p, keys));
+        };
+        run(&mut a, &[]); // the first frame only loads fonts
+        run(&mut a, &[Key::Back]);
+        assert_eq!(a.history(), ["home"]);
+        run(&mut a, &[Key::Forward]);
+        assert_eq!(a.history(), ["home", "library"]);
+        // Search needs a signed-in client: without one the key does nothing.
+        run(&mut a, &[Key::Search]);
+        assert_eq!(a.history(), ["home", "library"]);
     }
 }

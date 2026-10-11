@@ -1,0 +1,68 @@
+# Poster Flow render tour (BRIEF-coverflow): Home → Libraries → Mixed → Info opens Poster Flow;
+# flick, glide right, flip a film (overview, Play, audio, subtitles), play it, back to the flow, flip a show to its episodes.
+wait-screen connect
+wait 2500
+idle
+key down
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+# Down to the Libraries row, then to the Mixed tile (Archive, Collections, Mixed, Movies, Shows → index 2).
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+key info
+wait-screen posterflow
+idle
+wait 600
+shot posterflow-open
+# Flick right-to-left: lands on a cover, then back to the start.
+drag 1400 500 600 500 140
+wait 1500
+idle
+shot posterflow-flick
+key left 20
+wait 900
+idle
+key right 3
+wait 150
+shot posterflow-glide
+wait 600
+idle
+shot posterflow-settled
+key enter
+wait 250
+shot posterflow-flipping
+wait 600
+idle
+shot posterflow-film-back
+# Enter on Play (focused) starts the film.
+key enter
+wait-screen player
+wait 1500
+shot posterflow-play
+key back
+wait-screen posterflow
+idle
+key back
+wait 800
+# The first item in Mixed is a show: back to it and flip it to its seasons and episodes.
+key left 20
+wait 900
+idle
+key enter
+wait 900
+idle
+shot posterflow-show-back
+quit

@@ -1,0 +1,37 @@
+# D1 Apple TV preview tour, desktop: Home in the app shell (sidebar + toolbar), a library, a show page (back
+# arrow + breadcrumb), the sidebar collapsed. Clicks are 1920×1080 pixels (sidebar rows as in nav-shell.txt).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 300
+shot preview-home
+click 130 341
+wait-screen library
+idle
+wait 300
+shot preview-library
+click 130 393
+wait-screen library
+idle
+click 484 820
+wait-screen show
+idle
+wait 300
+shot preview-show
+click 38 36
+idle
+wait 300
+shot preview-collapsed
+quit

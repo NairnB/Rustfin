@@ -15,8 +15,9 @@ WORDS='n[a]irn|(^|[^a-z])b[r]own([^a-z]|$)|(^|[^a-z])b[y]re([^a-z]|$)|h[a]mestac
 TAILNET='(^|[^0-9])1[0]0\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}'   # carrier-grade NAT range (/10), used by tailnets
 HOMEPATH='/h[o]me/n[a]irn|/U[s]ers/n[a]irn'   # the build machine's home (third-party libs carry other CI paths)
 # Exact third-party names in our binaries or Cargo.lock that contain a listed word (each checked by hand):
-# a Rust hash-map crate, a TV-remote key name in winit, an OpenGL function, a macOS AppKit selector.
-THIRD_PARTY='hashb[r]own|ColorF5B[r]own|ByR[e]gion|initByR[e]ferencingFile'
+# a Rust hash-map crate, a TV-remote key name in winit, an OpenGL function, a macOS AppKit selector,
+# a glyph name in the Inter font (core/assets/fonts).
+THIRD_PARTY='hashb[r]own|ColorF5B[r]own|ByR[e]gion|initByR[e]ferencingFile|kg[r]eenlandic'
 case "$MODE" in
   plain) ALLOW='^$' ;;
   preset)

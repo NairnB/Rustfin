@@ -5,6 +5,8 @@ mark connect-shown
 wait 2500          # discovery finishes (2 s)
 idle
 shot connect
+key down 10
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin

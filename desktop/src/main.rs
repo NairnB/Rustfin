@@ -1,5 +1,5 @@
 //! Desktop shell: winit window + glutin GL context, the core app drawn with egui, libmpv video underneath.
-//!   rustfin [--server URL] [--data-dir DIR] [--size WxH] [--gles2] [--script FILE --shots DIR]
+//!   rustfin [--server URL] [--data-dir DIR] [--size WxH] [--gles2] [--tv] [--script FILE --shots DIR]
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod mpv;
 mod player;
@@ -45,6 +45,8 @@ struct Args {
     audio: Option<i32>,
     sub: Option<Option<i32>>,
     screen: Option<String>,
+    /// `--tv`: run with the TV's remote-first navigation (no sidebar/toolbar shell; the top pill bar on Home).
+    tv: bool,
 }
 
 fn args() -> Args {
@@ -62,6 +64,7 @@ fn args() -> Args {
         audio: None,
         sub: None,
         screen: None,
+        tv: false,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -92,6 +95,7 @@ fn args() -> Args {
                 i += 1
             }
             "--gles2" => a.gles2 = true,
+            "--tv" => a.tv = true,
             "--playtest" => a.playtest = true,
             "--user" => {
                 a.user = Some(next);
@@ -161,6 +165,8 @@ struct Shell {
     gfx: Option<Gfx>,
     keys: Vec<Key>,
     runner: Option<script::Runner>,
+    /// `record` script command: frames go to this folder, numbered.
+    recording: Option<(PathBuf, u32)>,
     playtest: Option<Playtest>,
     last: Instant,
     started: Instant,
@@ -168,6 +174,8 @@ struct Shell {
     first_poster: bool,
     /// Where scripted mouse commands last put the pointer (points).
     pointer: egui::Pos2,
+    /// Held modifier keys (for the Back / Forward / Search shortcuts).
+    mods: winit::keyboard::ModifiersState,
     /// Tour mode: when the next frame is due (None = at once).
     wake: Option<Instant>,
 }
@@ -291,7 +299,17 @@ impl Shell {
         let size = g.window.inner_size();
         let mut step = script::Step::default();
         if let Some(r) = self.runner.as_mut() {
-            step = r.step(self.app.screen_name(), self.app.is_idle(), frame_ms);
+            step = r.step(self.app.screen_name(), self.app.is_idle(), frame_ms, self.app.now());
+        }
+        if let Some(rec) = step.record.take() {
+            self.app.set_fixed_step(rec.as_ref().map(|(_, fps)| 1.0 / (*fps).max(1) as f64));
+            self.recording = rec.map(|(name, _)| (self.a.shots.join(name), 0));
+            if let Some((dir, _)) = &self.recording {
+                let _ = std::fs::create_dir_all(dir);
+            }
+        }
+        if let Some(secs) = step.fast_forward {
+            self.app.advance_clock(secs);
         }
         if let Some(t) = &step.text {
             g.egui.egui_winit.egui_input_mut().events.push(egui::Event::Text(t.clone()));
@@ -359,7 +377,16 @@ impl Shell {
             });
         }
         // G4 / P-PLAY-18: apply the window request the player screen made last frame.
-        if let Some(fs) = self.app.take_shell_requests().fullscreen {
+        let requests = self.app.take_shell_requests();
+        // RR8 / P-USER-1: the native file dialog (modal, on this thread). Scripted runs have no one to answer it.
+        if requests.pick_file && self.runner.is_none() {
+            let picked =
+                rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"]).pick_file();
+            if let Some(path) = picked {
+                self.app.file_picked(path.to_string_lossy().into_owned());
+            }
+        }
+        if let Some(fs) = requests.fullscreen {
             let want = if fs { Some(winit::window::Fullscreen::Borderless(None)) } else { None };
             if g.window.fullscreen() != want {
                 g.window.set_fullscreen(want);
@@ -377,6 +404,10 @@ impl Shell {
         if let Some(name) = &step.shot {
             let path = self.a.shots.join(format!("{name}.png"));
             shoot_png(&g.gl, size.width, size.height, &path);
+        }
+        if let Some((dir, n)) = self.recording.as_mut() {
+            *n += 1;
+            shoot_png_quiet(&g.gl, size.width, size.height, &dir.join(format!("{n:05}.png")));
         }
         g.surface.swap_buffers(&g.ctx).expect("swap");
         // Tour mode draws flat out (no vsync). Draw again at once only when something can change: script input,
@@ -451,6 +482,21 @@ impl Shell {
 }
 
 fn shoot_png(gl: &glow::Context, w: u32, h: u32, path: &std::path::Path) {
+    let Some(img) = capture(gl, w, h) else { return };
+    match img.save(path) {
+        Ok(_) => println!("SHOT {}", path.display()),
+        Err(e) => eprintln!("SHOT FAILED {}: {e}", path.display()),
+    }
+}
+
+/// A `record` frame: like `shoot_png`, without a line per frame.
+fn shoot_png_quiet(gl: &glow::Context, w: u32, h: u32, path: &std::path::Path) {
+    if let Some(Err(e)) = capture(gl, w, h).map(|img| img.save(path)) {
+        eprintln!("RECORD FAILED {}: {e}", path.display());
+    }
+}
+
+fn capture(gl: &glow::Context, w: u32, h: u32) -> Option<image::RgbaImage> {
     use glow::HasContext;
     let mut px = vec![0u8; (w * h * 4) as usize];
     unsafe {
@@ -464,15 +510,12 @@ fn shoot_png(gl: &glow::Context, w: u32, h: u32, path: &std::path::Path) {
             glow::PixelPackData::Slice(Some(&mut px)),
         );
     }
-    let Some(mut img) = image::RgbaImage::from_raw(w, h, px) else { return };
+    let mut img = image::RgbaImage::from_raw(w, h, px)?;
     image::imageops::flip_vertical_in_place(&mut img);
     for p in img.pixels_mut() {
         p.0[3] = 255;
     }
-    match img.save(path) {
-        Ok(_) => println!("SHOT {}", path.display()),
-        Err(e) => eprintln!("SHOT FAILED {}: {e}", path.display()),
-    }
+    Some(img)
 }
 
 /// R-PLAT-3 key map. Backspace and Space only act as Back / Play-pause when no text field has focus.
@@ -503,6 +546,25 @@ fn map_key(k: &WKey, typing: bool) -> Option<Key> {
         },
         _ => return None,
     })
+}
+
+/// NAV shortcuts: Alt+Left / Alt+Right (Windows, Linux), Cmd+[ / Cmd+] (Mac) → Back / Forward; Cmd/Ctrl+F → Search.
+/// They work while typing too (they are not text).
+fn nav_shortcut(k: &WKey, m: winit::keyboard::ModifiersState) -> Option<Key> {
+    let cmd = m.super_key() || m.control_key();
+    match k {
+        WKey::Named(NamedKey::ArrowLeft) if m.alt_key() => Some(Key::Back),
+        WKey::Named(NamedKey::ArrowRight) if m.alt_key() => Some(Key::Forward),
+        WKey::Named(NamedKey::BrowserForward) => Some(Key::Forward),
+        WKey::Named(NamedKey::BrowserSearch) => Some(Key::Search),
+        WKey::Character(c) if cmd => match c.to_lowercase().as_str() {
+            "[" => Some(Key::Back),
+            "]" => Some(Key::Forward),
+            "f" => Some(Key::Search),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Mouse side buttons: 4 = Back, 5 = Forward (like a browser).
@@ -542,10 +604,15 @@ impl ApplicationHandler for Shell {
                 );
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if let Some(k) = map_key(&event.logical_key, typing) {
+                if let Some(k) = nav_shortcut(&event.logical_key, self.mods) {
+                    self.keys.push(k);
+                } else if self.mods.super_key() || self.mods.control_key() || self.mods.alt_key() {
+                    // Other shortcuts (Cmd+Q, Ctrl+C …) are not remote keys.
+                } else if let Some(k) = map_key(&event.logical_key, typing) {
                     self.keys.push(k);
                 }
             }
+            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
                 self.keys.extend(mouse_key(button));
             }
@@ -575,7 +642,12 @@ fn main() {
         std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "Desktop".into());
     let app = App::new(
         store,
-        AppOptions { default_server: a.server.clone(), device_name: host, start_screen: a.screen.clone() },
+        AppOptions {
+            default_server: a.server.clone(),
+            device_name: host,
+            start_screen: a.screen.clone(),
+            desktop: !a.tv,
+        },
     );
     let runner = a.script.as_ref().map(|p| {
         let src = std::fs::read_to_string(p).expect("script");
@@ -598,13 +670,41 @@ fn main() {
         gfx: None,
         keys: vec![],
         runner,
+        recording: None,
         playtest,
         last: Instant::now(),
         started,
         first_frame: true,
         first_poster: false,
         pointer: egui::Pos2::ZERO,
+        mods: Default::default(),
         wake: None,
     };
     el.run_app(&mut shell).expect("run");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::ModifiersState as M;
+
+    #[test]
+    fn back_forward_search_shortcuts() {
+        let ch = |s: &str| WKey::Character(s.into());
+        assert_eq!(nav_shortcut(&WKey::Named(NamedKey::ArrowLeft), M::ALT), Some(Key::Back));
+        assert_eq!(nav_shortcut(&WKey::Named(NamedKey::ArrowRight), M::ALT), Some(Key::Forward));
+        assert_eq!(nav_shortcut(&WKey::Named(NamedKey::ArrowLeft), M::empty()), None);
+        assert_eq!(nav_shortcut(&ch("["), M::SUPER), Some(Key::Back));
+        assert_eq!(nav_shortcut(&ch("]"), M::SUPER), Some(Key::Forward));
+        assert_eq!(nav_shortcut(&ch("f"), M::CONTROL), Some(Key::Search));
+        assert_eq!(nav_shortcut(&ch("F"), M::SUPER), Some(Key::Search));
+        assert_eq!(nav_shortcut(&ch("f"), M::empty()), None);
+        assert_eq!(mouse_key(MouseButton::Back), Some(Key::Back));
+        assert_eq!(mouse_key(MouseButton::Forward), Some(Key::Forward));
+        assert_eq!(mouse_key(MouseButton::Left), None);
+        // Esc is Back even while typing; Backspace only when not typing.
+        assert_eq!(map_key(&WKey::Named(NamedKey::Escape), true), Some(Key::Back));
+        assert_eq!(map_key(&WKey::Named(NamedKey::Backspace), true), None);
+        assert_eq!(map_key(&WKey::Named(NamedKey::Backspace), false), Some(Key::Back));
+    }
 }

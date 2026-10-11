@@ -1,0 +1,64 @@
+# args: --size 1280x720
+# Poster Flow preview video: Mixed library, flick, glide, flip a film, run back to a show and flip it.
+wait-screen connect
+wait 2500
+idle
+key down
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+# Down to the Libraries row, then to the Mixed tile (Archive, Collections, Mixed, Movies, Shows → index 2).
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+key info
+wait-screen posterflow
+idle
+# Warm the posters either side, then film ~11 s at a fixed 30 fps (preview video for BRIEF-coverflow).
+key right 6
+wait 1500
+idle
+key left 6
+wait 1500
+idle
+record posterflow-video 30
+wait 700
+# Flick right-to-left: momentum, then it lands exactly on a cover.
+drag 900 330 380 330 140
+wait 1900
+# Arrow steps, then flip a film to its back and walk its rows.
+key right
+wait 450
+key enter
+wait 1300
+key down
+wait 400
+key down
+wait 400
+key right
+wait 700
+key back
+wait 900
+# Held arrow (one press a frame): the flow runs faster the longer it is held, back to the show at the start.
+key left 14
+wait 1500
+key enter
+wait 1500
+key down 2
+wait 800
+key back
+wait 900
+record-stop
+shot posterflow-video-end
+quit

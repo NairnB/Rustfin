@@ -232,6 +232,8 @@ pub struct Library {
     dlg: Option<FilterDlg>,
     jump: Option<char>,
     az_on: bool,
+    /// BRIEF-coverflow: Poster Flow opened itself once for a library remembered in that view.
+    flow_opened: bool,
 }
 
 pub fn screen(view: Item) -> Box<dyn Screen> {
@@ -271,6 +273,7 @@ pub fn screen(view: Item) -> Box<dyn Screen> {
         dlg: None,
         jump: None,
         az_on: false,
+        flow_opened: false,
     })
 }
 
@@ -314,13 +317,27 @@ impl Library {
         }
     }
 
-    /// The view mode actually drawn: the Episodes tab has no posters, so Posters shows thumbs there.
+    /// The view mode actually drawn: the Episodes tab has no posters, so Posters shows thumbs there;
+    /// Poster Flow is its own screen, so the grid under it shows posters.
     fn mode(&self) -> ViewMode {
-        if self.tab == Tab::Episodes && self.prefs.mode == ViewMode::Posters {
-            ViewMode::Thumbs
-        } else {
-            self.prefs.mode
+        match self.prefs.mode {
+            ViewMode::Posters | ViewMode::PosterFlow if self.tab == Tab::Episodes => ViewMode::Thumbs,
+            ViewMode::PosterFlow => ViewMode::Posters,
+            m => m,
         }
+    }
+
+    /// BRIEF-coverflow: open Poster Flow on what the grid shows, starting at the focused card.
+    fn open_flow(&mut self, cx: &mut Cx) {
+        if !self.tab.is_items() {
+            return;
+        }
+        self.flow_opened = true;
+        let items = self.ordered_loaded();
+        let complete = self.total > 0 && items.len() >= self.total;
+        let start = self.focused_flat_index().unwrap_or(0);
+        let types = if self.tab == Tab::Episodes { "Episode" } else { "Movie,Series" };
+        cx.push(super::posterflow::library(&self.view.id, self.prefs.query(), types, items, complete, start));
     }
 
     /// Switch tab: Collections opens G7's grid; the item tabs reload the library; the rest load their own data.
@@ -475,6 +492,9 @@ impl Library {
         if self.prefs.mode != mode {
             self.prefs.mode = mode;
             self.persist(cx);
+        }
+        if mode == ViewMode::PosterFlow {
+            self.open_flow(cx);
         }
     }
 
@@ -1085,10 +1105,10 @@ impl Library {
         // Play all / Shuffle (P-LIB-23).
         ui.add_space(t.gap / 3.0);
         let mut play_xs = vec![];
-        let mut play_pick: Option<bool> = None;
+        let mut play_pick: Option<usize> = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            for (i, label) in ["Play all", "Shuffle"].into_iter().enumerate() {
+            for (i, label) in ["Play all", "Shuffle", "Poster Flow"].into_iter().enumerate() {
                 let focused = self.focus.group == G_PLAY && self.focus.index == i;
                 let r = parts::button(ui, t, label, focused, false);
                 play_xs.push(r.rect.center().x);
@@ -1096,13 +1116,15 @@ impl Library {
                     *hovered = Some(Focus { group: G_PLAY, index: i });
                 }
                 if r.clicked() {
-                    play_pick = Some(i == 1);
+                    play_pick = Some(i);
                 }
             }
         });
-        groups[G_PLAY] = Group { len: 2, cols: 2, xs: play_xs };
-        if let Some(shuffle) = play_pick {
-            self.play_library(cx, shuffle);
+        groups[G_PLAY] = Group { len: 3, cols: 3, xs: play_xs };
+        match play_pick {
+            Some(2) => self.open_flow(cx),
+            Some(i) => self.play_library(cx, i == 1),
+            None => {}
         }
 
         ui.add_space(t.gap / 2.0);
@@ -1182,7 +1204,9 @@ impl Library {
                         let items: Vec<Option<Item>> = sec_items.iter().cloned().map(Some).collect();
                         let focus = (self.focus.group == gi).then_some(self.focus.index);
                         let out = match mode {
-                            ViewMode::Posters => parts::grid(ui, cx, &items, cols, focus, sec_items.len()),
+                            ViewMode::Posters | ViewMode::PosterFlow => {
+                                parts::grid(ui, cx, &items, cols, focus, sec_items.len())
+                            }
                             ViewMode::Thumbs | ViewMode::Banners => {
                                 parts::grid_kind(ui, cx, &items, cols, focus, sec_items.len(), kind)
                             }
@@ -1293,6 +1317,11 @@ impl Screen for Library {
         "library"
     }
 
+    /// NAV: this screen's part of the toolbar breadcrumb.
+    fn crumbs(&self) -> Vec<String> {
+        vec![self.view.name.clone()]
+    }
+
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
         if self.dlg.is_some() {
             return self.dlg_key(cx, key);
@@ -1355,6 +1384,11 @@ impl Screen for Library {
                 return true;
             }
         }
+        // BRIEF-coverflow: Info (i / the remote's Info) opens Poster Flow.
+        if key == Key::Info && self.tab.is_items() {
+            self.open_flow(cx);
+            return true;
+        }
         // P-LIB-13: the A–Z bar is vertical, so Up/Down walk the letters and Left returns to the grid.
         if self.focus.group == G_AZ && self.az_on {
             match key {
@@ -1411,7 +1445,11 @@ impl Screen for Library {
                     true
                 }
                 G_PLAY => {
-                    self.play_library(cx, self.focus.index == 1);
+                    if self.focus.index == 2 {
+                        self.open_flow(cx);
+                    } else {
+                        self.play_library(cx, self.focus.index == 1);
+                    }
                     true
                 }
                 G_TOGGLE => {
@@ -1524,6 +1562,8 @@ impl Screen for Library {
             return;
         }
         self.in_flight = false;
+        // BRIEF-coverflow: a library remembered in Poster Flow opens straight into it (once; Back shows the grid).
+        let open_flow = result.is_ok() && self.prefs.mode == ViewMode::PosterFlow && !self.flow_opened;
         match result {
             Ok(page) => {
                 self.total = page.total_record_count;
@@ -1541,6 +1581,9 @@ impl Screen for Library {
             }
             Err(ApiError::Unauthorized) => cx.signed_out(),
             Err(e) => self.error = Some(e.to_string()),
+        }
+        if open_flow {
+            self.open_flow(cx);
         }
     }
 

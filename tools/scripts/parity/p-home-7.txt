@@ -1,7 +1,10 @@
+# args: --tv
 # P-HOME-7 parity tour (RR7): the user menu at the right of the Home top bar — open it, then Settings.
 wait-screen connect
 wait 2500
 idle
+key down 10
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin

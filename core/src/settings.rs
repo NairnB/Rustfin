@@ -45,6 +45,29 @@ impl HomeSection {
     }
 }
 
+/// What the screensaver shows after the idle time (P-USER-2).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screensaver {
+    #[default]
+    None,
+    /// A slideshow of library backdrops.
+    Backdrops,
+    /// The app name, drifting around the screen.
+    Logo,
+}
+
+impl Screensaver {
+    pub const ALL: [Screensaver; 3] = [Screensaver::None, Screensaver::Backdrops, Screensaver::Logo];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Screensaver::None => "None",
+            Screensaver::Backdrops => "Backdrops",
+            Screensaver::Logo => "Logo",
+        }
+    }
+}
+
 /// How dates are shown (P-USER-2). Stored in settings; applied to premiere/birth dates.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -179,8 +202,20 @@ pub struct Settings {
     pub show_missing_episodes: bool,
     /// G10 / P-PLAY-11: segment kinds skipped automatically during playback (default none).
     pub auto_skip: Vec<SegmentKind>,
+    /// NAV: the desktop sidebar shows icons only.
+    pub sidebar_collapsed: bool,
     /// D10 / R9: users who signed in here before, newest first (all servers).
     pub saved_users: Vec<SavedUser>,
+    /// RR8 / P-USER-4: ask the server for fMP4 HLS segments when transcoding.
+    pub prefer_fmp4: bool,
+    /// RR8 / P-USER-4: Next up also lists episodes the user has started rewatching.
+    pub next_up_rewatching: bool,
+    /// RR8 / P-USER-4: Next up drops shows not watched for this many days (0 = no limit).
+    pub next_up_days: u32,
+    /// RR8 / P-USER-2: what the screensaver shows.
+    pub screensaver: Screensaver,
+    /// RR8 / P-USER-2: idle minutes before the screensaver starts.
+    pub screensaver_minutes: u32,
 }
 
 /// When to show subtitles (P-USER-5). `Default` = the server's default for the item.
@@ -212,10 +247,13 @@ pub enum ViewMode {
     /// P-LIB-14: wide strips (Banner image, else Thumb, else Backdrop).
     Banners,
     List,
+    /// BRIEF-coverflow: the iPod-style 3D poster flow, full window (the grid underneath shows posters).
+    PosterFlow,
 }
 
 impl ViewMode {
-    pub const ALL: [ViewMode; 4] = [ViewMode::Posters, ViewMode::Thumbs, ViewMode::Banners, ViewMode::List];
+    pub const ALL: [ViewMode; 5] =
+        [ViewMode::Posters, ViewMode::Thumbs, ViewMode::Banners, ViewMode::List, ViewMode::PosterFlow];
     /// Menu label.
     pub fn label(self) -> &'static str {
         match self {
@@ -223,6 +261,7 @@ impl ViewMode {
             ViewMode::Thumbs => "Thumbs",
             ViewMode::Banners => "Banners",
             ViewMode::List => "List",
+            ViewMode::PosterFlow => "Poster Flow",
         }
     }
 }
@@ -267,7 +306,13 @@ impl Default for Settings {
             home_hidden: vec![],
             show_missing_episodes: false,
             auto_skip: vec![],
+            sidebar_collapsed: false,
             saved_users: vec![],
+            prefer_fmp4: false,
+            next_up_rewatching: false,
+            next_up_days: 0,
+            screensaver: Screensaver::None,
+            screensaver_minutes: 3,
         }
     }
 }

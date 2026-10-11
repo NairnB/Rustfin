@@ -9,5 +9,6 @@ X() { xvfb-run -a -s "-screen 0 1920x1080x24" "$BIN" --data-dir "$DATA" --size 1
 X tools/bench/first-run.txt >/dev/null
 echo "== cold start, empty image cache"; find "$DATA/cache" -mindepth 1 -delete; X tools/bench/cold-start.txt | grep -E "MARK|BENCH|MEM"
 echo "== cold start, warm image cache"; X tools/bench/cold-start.txt | grep -E "MARK|BENCH|MEM"
+echo "== Poster Flow, 500 films, held arrow"; X tools/bench/posterflow.txt | grep -E "MARK|BENCH|MEM"
 rm -rf "$DATA"
 echo "== sizes"; ls -l "$BIN" | awk '{print "linux binary bytes", $5}'

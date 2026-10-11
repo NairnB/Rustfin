@@ -168,6 +168,19 @@ impl Screen for Favourites {
     }
 
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
+        // BRIEF-coverflow: Info opens Poster Flow on the favourite films and shows.
+        if key == Key::Info {
+            let v: Vec<Item> = match &self.items {
+                Some(Ok(v)) => {
+                    v.iter().filter(|i| matches!(i.kind, ItemKind::Movie | ItemKind::Series)).cloned().collect()
+                }
+                _ => vec![],
+            };
+            if !v.is_empty() {
+                cx.push(super::posterflow::items(v, 0));
+            }
+            return true;
+        }
         match key {
             Key::Enter => {
                 if self.focus.group == G_RETRY {

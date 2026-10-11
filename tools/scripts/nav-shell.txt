@@ -1,0 +1,81 @@
+# NAV render tour (BRIEF-desktop-nav): mouse only. Sidebar → library → film → back via the toolbar arrow, via mouse
+# button 4 and via Esc; Forward via mouse button 5 and the keyboard; the breadcrumb; a show page; the sidebar
+# collapsed. Coordinates are 1920×1080 pixels (sidebar rows: Home 103, Search 155, then one row per library).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 300
+shot nav-home
+
+# Sidebar: Movies (fourth library row) → the Movies library.
+click 130 341
+wait-screen library
+idle
+wait 300
+shot nav-library
+
+# First film → its page; back with the toolbar arrow.
+click 484 820
+wait-screen movie
+idle
+shot nav-movie
+click 293 36
+wait-screen library
+
+# Again, back with mouse button 4, forward with button 5, back with Esc, forward with the keyboard.
+mouse forward
+wait-screen movie
+mouse back
+wait-screen library
+mouse forward
+wait-screen movie
+key esc
+wait-screen library
+key forward
+wait-screen movie
+
+# Breadcrumb: "Movies › <film>" — click "Movies".
+click 410 36
+wait-screen library
+
+# Wheel scrolls the grid.
+move 960 800
+scroll 0 -900
+idle
+wait 300
+shot nav-scrolled
+
+# Sidebar: Shows → first show → its page with "Shows › <show> › Season n".
+click 130 393
+wait-screen library
+idle
+click 484 820
+wait-screen show
+idle
+wait 300
+shot nav-show
+
+# Collapse the sidebar to icons.
+click 38 36
+idle
+wait 300
+shot nav-collapsed
+
+# Cmd/Ctrl+F → Search from anywhere; Home in the (collapsed) sidebar.
+key search
+wait-screen search
+click 38 103
+wait-screen home
+quit

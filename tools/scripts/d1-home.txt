@@ -1,0 +1,35 @@
+# args: --tv
+# D1 Apple TV preview tour (TV mode: no desktop shell): Home with the hero (focus on Play), a 16:9 card mid-focus-animation and settled,
+# then the top pill bar focused. `wait 300` lets the 200 ms focus animation settle.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 300
+shot appletv-home
+key down
+wait 90
+shot appletv-card-mid
+idle
+wait 300
+shot appletv-card
+key right
+idle
+wait 300
+shot appletv-card-next
+key up 2
+idle
+wait 300
+shot appletv-tabbar
+quit

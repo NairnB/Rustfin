@@ -1,8 +1,10 @@
 //! Small reusable parts (R-UI-0). Screens are arrangements of these; every value comes from `Theme`.
-use crate::api::{image_width_bucket, ticks_to_secs, ImageKind, Item, ItemKind};
+//! The look is Apple TV (docs/DESIGN-appletv.md): rounded art, focus = eased lift + shadow + sheen.
+use super::widgets::{self, Icon};
+use crate::api::{image_width_bucket, ticks_to_secs, ImageKind, Item, ItemKind, StreamKind};
 use crate::app::Cx;
-use crate::theme::Theme;
-use egui::{pos2, vec2, Align2, Rect, Response, Sense, Ui};
+use crate::theme::{Theme, Weight};
+use egui::{pos2, vec2, Align2, Color32, Rect, Response, Sense, Ui};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardKind {
@@ -32,6 +34,10 @@ impl CardKind {
 
 /// White outline around a focused thing.
 pub fn focus_ring(ui: &Ui, t: &Theme, r: Rect) {
+    // NAV: rings only after keyboard use, not after a mouse click.
+    if !super::shell::keyboard_focus(ui.ctx()) {
+        return;
+    }
     ui.painter().rect_stroke(
         r.expand(t.focus_gap),
         t.radius + t.focus_gap,
@@ -42,11 +48,17 @@ pub fn focus_ring(ui: &Ui, t: &Theme, r: Rect) {
 
 /// Thin progress bar along the bottom of `r` (`frac` 0..1).
 pub fn progress_bar(ui: &Ui, t: &Theme, r: Rect, frac: f32) {
-    let bar = Rect::from_min_max(pos2(r.left(), r.bottom() - t.progress_h), r.max);
-    ui.painter().rect_filled(bar, 0.0, t.progress_track);
+    // Inset and rounded, inside the art (Apple TV style).
+    let inset = t.card_title_gap;
+    let bar = Rect::from_min_max(
+        pos2(r.left() + inset, r.bottom() - inset - t.progress_h),
+        pos2(r.right() - inset, r.bottom() - inset),
+    );
+    let rr = t.progress_h / 2.0;
+    ui.painter().rect_filled(bar, rr, t.progress_track);
     let mut done = bar;
     done.set_right(bar.left() + bar.width() * frac.clamp(0.0, 1.0));
-    ui.painter().rect_filled(done, 0.0, t.progress);
+    ui.painter().rect_filled(done, rr, t.progress);
 }
 
 /// The image URL a card shows (and the one to prefetch).
@@ -55,7 +67,49 @@ pub fn card_image_url(cx: &Cx, item: &Item, kind: CardKind, scale: f32) -> Optio
     if kind == CardKind::Banner {
         return cx.client.as_ref()?.banner_image_url(item, w);
     }
-    cx.client.as_ref()?.image_url(item, kind.image(), w)
+    let c = cx.client.as_ref()?;
+    if kind == CardKind::Thumb && matches!(item.kind, ItemKind::Movie | ItemKind::Series) {
+        // A film's Primary is a 2:3 poster: a 16:9 card shows its Thumb, else its backdrop.
+        if let Some(u) = c.image_url(item, ImageKind::Thumb, w).or_else(|| c.image_url(item, ImageKind::Backdrop, w)) {
+            return Some(u);
+        }
+    }
+    c.image_url(item, kind.image(), w)
+}
+
+/// The item's own title-logo image (transparent PNG), if it has one.
+pub fn logo_url(cx: &Cx, item: &Item, width_px: u32) -> Option<String> {
+    let c = cx.client.as_ref()?;
+    let tag = item.image_tags.get("Logo")?;
+    Some(format!("{}/Items/{}/Images/Logo?maxWidth={width_px}&quality=90&tag={tag}", c.base, item.id))
+}
+
+/// Paints a texture into `rect` with rounded corners.
+pub fn paint_image(ui: &Ui, tex: egui::TextureId, rect: Rect, radius: f32) {
+    egui::Image::from_texture(egui::load::SizedTexture::new(tex, rect.size())).corner_radius(radius).paint_at(ui, rect);
+}
+
+/// The focus lift on a card's art: shadow under, art grown by `focus_scale`, sheen over the top. `a` = 0..1.
+/// Returns the lifted rect (draw the art into it).
+fn card_lift(ui: &Ui, t: &Theme, img_rect: Rect, a: f32) -> Rect {
+    let r = widgets::lift(img_rect, t.focus_scale, a);
+    if a > 0.01 {
+        ui.painter().add(t.shadow(a).as_shape(r, t.card_radius));
+    }
+    r
+}
+
+/// A light band fading down from the top of the lifted art (stepped, top corners rounded).
+fn sheen(ui: &Ui, t: &Theme, r: Rect, a: f32) {
+    if a <= 0.01 {
+        return;
+    }
+    let cr = egui::CornerRadius { nw: t.card_radius as u8, ne: t.card_radius as u8, sw: 0, se: 0 };
+    for k in 1..=3 {
+        let h = r.height() * 0.16 * k as f32;
+        let band = Rect::from_min_size(r.min, vec2(r.width(), h));
+        ui.painter().rect_filled(band, cr, t.sheen.gamma_multiply(a / 3.0));
+    }
 }
 
 /// Card label lines: (title, subtitle). Both year switches on; see `card_labels_with`.
@@ -134,15 +188,19 @@ pub fn card(ui: &mut Ui, cx: &mut Cx, item: &Item, kind: CardKind, focused: bool
     if !ui.is_rect_visible(rect) {
         return resp;
     }
-    let img_rect = Rect::from_min_size(rect.min, size);
+    // Cards lift for keyboard focus and for mouse hover alike.
+    let lifted = (focused && super::shell::keyboard_focus(ui.ctx())) || resp.hovered();
+    let a = t.ease(ui.ctx().animate_bool_with_time(resp.id.with("focus"), lifted, t.focus_time));
+    let img_rect = card_lift(ui, t, Rect::from_min_size(rect.min, size), a);
     let url = card_image_url(cx, item, kind, ui.ctx().pixels_per_point());
+    let mut has_art = false;
     match url.as_deref().and_then(|u| cx.images.get(u)) {
         Some(tex) => {
-            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-            ui.painter().image(tex, img_rect, uv, egui::Color32::WHITE);
+            paint_image(ui, tex, img_rect, t.card_radius);
+            has_art = true;
         }
         None => {
-            ui.painter().rect_filled(img_rect, t.radius, t.skeleton);
+            ui.painter().rect_filled(img_rect, t.card_radius, t.skeleton);
             if url.is_none() {
                 ui.painter().text(
                     img_rect.center(),
@@ -154,20 +212,60 @@ pub fn card(ui: &mut Ui, cx: &mut Cx, item: &Item, kind: CardKind, focused: bool
             }
         }
     }
+    // 16:9 film/series cards carry the title logo bottom-left, like the Apple TV app.
+    if has_art && kind == CardKind::Thumb && matches!(item.kind, ItemKind::Movie | ItemKind::Series) {
+        let w = image_width_bucket(img_rect.width() * 0.5, ui.ctx().pixels_per_point());
+        if let Some(tex) = logo_url(cx, item, w).and_then(|u| cx.images.get(&u)) {
+            bottom_fade(ui, t, img_rect, 0.5);
+            let pad = t.card_title_gap * 1.5;
+            let box_ = Rect::from_min_max(
+                pos2(img_rect.left() + pad, img_rect.bottom() - pad - img_rect.height() * 0.3),
+                pos2(img_rect.left() + img_rect.width() * 0.55, img_rect.bottom() - pad),
+            );
+            paint_fit(ui, tex, box_, Align2::LEFT_BOTTOM);
+        }
+    }
     if let Some(f) = resume_fraction(item) {
         progress_bar(ui, t, img_rect, f);
     }
-    if focused {
-        focus_ring(ui, t, img_rect);
-    }
+    sheen(ui, t, img_rect, a);
     let (title, sub) = card_labels_with(item, cx.settings.show_release_year, cx.settings.show_story_year);
     let tx = rect.left();
     let w = size.x;
-    label_line(ui, t, pos2(tx, img_rect.bottom() + 6.0), w, &title, t.body_size, t.text);
+    let ty = img_rect.bottom().max(rect.top() + size.y) + t.card_title_gap * (0.5 + a * 0.5);
+    let ink = t.muted.lerp_to_gamma(t.text, a.max(0.6));
+    label_line(ui, t, pos2(tx, ty), w, &title, t.body_size, ink);
     if !sub.is_empty() {
-        label_line(ui, t, pos2(tx, img_rect.bottom() + 8.0 + t.body_size), w, &sub, t.small_size, t.muted);
+        label_line(ui, t, pos2(tx, ty + 2.0 + t.body_size), w, &sub, t.small_size, t.muted);
     }
     resp
+}
+
+/// Darkens the bottom `frac` of `r` towards black (for text or a logo over art). A vertex-colour mesh: no blur.
+pub fn bottom_fade(ui: &Ui, t: &Theme, r: Rect, frac: f32) {
+    let top = r.bottom() - r.height() * frac;
+    let band = Rect::from_min_max(pos2(r.left(), top), r.max);
+    let mut m = egui::Mesh::default();
+    let clear = Color32::TRANSPARENT;
+    let dark = t.scrim;
+    m.colored_vertex(band.left_top(), clear);
+    m.colored_vertex(band.right_top(), clear);
+    m.colored_vertex(band.right_bottom(), dark);
+    m.colored_vertex(band.left_bottom(), dark);
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    ui.painter().add(m);
+}
+
+/// Paints `tex` fitted inside `box_` keeping its aspect (title logos), anchored by `align`.
+pub fn paint_fit(ui: &Ui, tex: egui::TextureId, box_: Rect, align: Align2) {
+    let natural = ui.ctx().tex_manager().read().meta(tex).map(|m| vec2(m.size[0] as f32, m.size[1] as f32));
+    let n = natural.filter(|n| n.x > 0.0 && n.y > 0.0).unwrap_or(box_.size());
+    let s = (box_.width() / n.x).min(box_.height() / n.y);
+    let size = n * s;
+    let r = align.align_size_within_rect(size, box_);
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    ui.painter().image(tex, r, uv, Color32::WHITE);
 }
 
 fn initials(name: &str) -> String {
@@ -189,22 +287,13 @@ pub fn label_line(ui: &Ui, t: &Theme, at: egui::Pos2, w: f32, text: &str, size: 
 pub fn skeleton_card(ui: &mut Ui, t: &Theme, kind: CardKind) {
     let size = kind.size(t);
     let (rect, _) = ui.allocate_exact_size(vec2(size.x, size.y + t.card_label_h), Sense::hover());
-    ui.painter().rect_filled(Rect::from_min_size(rect.min, size), t.radius, t.skeleton);
+    ui.painter().rect_filled(Rect::from_min_size(rect.min, size), t.card_radius, t.skeleton);
 }
 
 /// A button. `primary` = filled accent. Focus ring when focused.
+/// A pill button (see `widgets::pill_button`): glass, or white when `primary`; focused = white plate, lifted.
 pub fn button(ui: &mut Ui, t: &Theme, label: &str, focused: bool, primary: bool) -> Response {
-    let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), t.font(t.body_size), t.text));
-    let size = vec2(g.size().x + 2.0 * t.button_pad, t.button_h);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    let (fill, ink) = if primary { (t.accent, t.accent_text) } else { (t.surface_hi, t.text) };
-    let fill = if resp.hovered() && !primary { t.surface_hi.gamma_multiply(1.3) } else { fill };
-    ui.painter().rect_filled(rect, t.radius, fill);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, t.font(t.body_size), ink);
-    if focused {
-        focus_ring(ui, t, rect);
-    }
-    resp
+    widgets::pill_button(ui, t, label, focused, primary)
 }
 
 /// Single-line text field. Focus follows our focus model: when `focused` it takes keyboard focus, otherwise
@@ -230,10 +319,10 @@ pub fn text_field(ui: &mut Ui, t: &Theme, text: &mut String, hint: &str, focused
 }
 
 pub fn title(ui: &mut Ui, t: &Theme, text: &str) {
-    ui.label(egui::RichText::new(text).size(t.title_size).color(t.text).strong());
+    ui.label(egui::RichText::new(text).font(t.font(t.title_size)).color(t.text));
 }
 pub fn heading(ui: &mut Ui, t: &Theme, text: &str) {
-    ui.label(egui::RichText::new(text).size(t.heading_size).color(t.text));
+    ui.label(egui::RichText::new(text).font(t.font(t.heading_size)).color(t.text));
 }
 pub fn muted(ui: &mut Ui, t: &Theme, text: &str) {
     ui.label(egui::RichText::new(text).size(t.body_size).color(t.muted));
@@ -259,38 +348,77 @@ pub fn row(
     kind: CardKind,
     focus: Option<usize>,
 ) -> RowOut {
+    row_impl(ui, cx, id, heading_text, items, kind, focus, false)
+}
+
+/// Heading + a sideways-scrolling row of cards. Full-bleed: the row runs under the side margins and the first
+/// card lines up with the heading; padding above and below leaves room for the focus lift and its shadow.
+#[allow(clippy::too_many_arguments)]
+fn row_impl(
+    ui: &mut Ui,
+    cx: &mut Cx,
+    id: &str,
+    heading_text: &str,
+    items: &[Item],
+    kind: CardKind,
+    focus: Option<usize>,
+    hearts: bool,
+) -> RowOut {
     let t = cx.theme;
     let mut out = RowOut { clicked: None, hovered: None, xs: vec![] };
     ui.add_space(t.row_gap / 2.0);
     heading(ui, t, heading_text);
-    ui.add_space(t.gap / 3.0);
-    egui::ScrollArea::horizontal()
-        .id_salt(id)
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = cx.theme.gap;
-                for (i, it) in items.iter().enumerate() {
-                    let r = card(ui, cx, it, kind, focus == Some(i));
-                    out.xs.push(r.rect.center().x);
-                    if focus == Some(i) {
-                        r.scroll_to_me(None);
-                        // prefetch the next two cards (R-IMG-2)
-                        for next in items.iter().skip(i + 1).take(2) {
-                            if let Some(u) = card_image_url(cx, next, kind, ui.ctx().pixels_per_point()) {
-                                cx.images.prefetch(&u);
+    let size = kind.size(t);
+    let pad_y = size.y * (t.focus_scale - 1.0) / 2.0 + t.shadow_blur / 2.0;
+    let h = size.y + t.card_label_h + 2.0 * pad_y - t.card_title_gap;
+    let (reserved, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let full = Rect::from_min_max(
+        pos2(reserved.left() - t.margin, reserved.top()),
+        pos2(reserved.right() + t.margin, reserved.bottom()),
+    );
+    // A detached child: the row draws across the margins without moving the parent's cursor.
+    let mut child =
+        ui.new_child(egui::UiBuilder::new().max_rect(full).layout(egui::Layout::top_down(egui::Align::Min)));
+    {
+        let ui = &mut child;
+        let clip = ui.clip_rect().union(full).intersect(ui.ctx().screen_rect());
+        ui.set_clip_rect(clip);
+        egui::ScrollArea::horizontal()
+            .id_salt(id)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.add_space(pad_y);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap;
+                    ui.add_space(t.margin);
+                    for (i, it) in items.iter().enumerate() {
+                        let r = if hearts {
+                            card_with_heart(ui, cx, it, kind, focus == Some(i))
+                        } else {
+                            card(ui, cx, it, kind, focus == Some(i))
+                        };
+                        out.xs.push(r.rect.center().x);
+                        if focus == Some(i) {
+                            ui.scroll_to_rect(r.rect.expand2(vec2(t.margin, 0.0)), None);
+                            // prefetch the next two cards (R-IMG-2)
+                            for next in items.iter().skip(i + 1).take(2) {
+                                if let Some(u) = card_image_url(cx, next, kind, ui.ctx().pixels_per_point()) {
+                                    cx.images.prefetch(&u);
+                                }
                             }
                         }
+                        if r.hovered() {
+                            out.hovered = Some(i);
+                        }
+                        if r.clicked() {
+                            out.clicked = Some(i);
+                        }
                     }
-                    if r.hovered() {
-                        out.hovered = Some(i);
-                    }
-                    if r.clicked() {
-                        out.clicked = Some(i);
-                    }
-                }
+                    ui.add_space(t.margin);
+                });
+                ui.add_space(pad_y - t.card_title_gap);
             });
-        });
+    }
     out
 }
 
@@ -382,50 +510,59 @@ pub fn topbar_with_user(
     focused: Option<usize>,
     user: Option<&str>,
 ) -> (RowOut, Option<Rect>) {
+    // The tvOS top bar: a centred translucent pill of segments (Home is the current one), the user inside it
+    // at the right end. On desktop the app shell's sidebar replaces it (docs/DESIGN-appletv.md §4).
     let t = cx.theme;
     let mut out = RowOut { clicked: None, hovered: None, xs: vec![] };
     const BUTTONS: [&str; 6] = ["Home", "Search", "Settings", "Favourites", "Playlists", ""];
     let n = if user.is_some() { 6 } else { 5 };
 
-    let bar_rect = Rect::from_min_size(ui.cursor().left_top(), vec2(ui.available_width(), t.topbar_h));
-    ui.advance_cursor_after_rect(bar_rect);
-    ui.painter().rect_filled(bar_rect, 0.0, t.surface);
+    let area = Rect::from_min_size(ui.cursor().left_top(), vec2(ui.available_width(), t.topbar_h));
+    ui.advance_cursor_after_rect(area);
 
-    let name = ui.fonts(|f| f.layout_no_wrap("Rustfin".to_string(), t.font(t.title_size), t.text));
-    ui.painter().galley(pos2(bar_rect.left() + t.margin, bar_rect.center().y), name, t.text);
-
-    let avatar = t.button_h * 0.65;
+    let font = t.font_w(t.body_size, Weight::Medium);
+    let seg_h = t.bar_h - 2.0 * t.bar_inset;
+    let avatar = seg_h - 2.0 * t.bar_inset;
     let mut widths = [0.0f32; 6];
-    for i in 0..n {
+    for (i, w) in widths.iter_mut().enumerate().take(n) {
         let label = if i == 5 { user.unwrap_or_default() } else { BUTTONS[i] };
-        let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), t.font(t.body_size), t.text));
-        widths[i] = g.size().x + 2.0 * t.button_pad + if i == 5 { avatar + t.gap / 3.0 } else { 0.0 };
+        let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), t.text));
+        *w = g.size().x + 2.0 * t.bar_item_pad + if i == 5 { avatar + t.gap / 4.0 - t.bar_item_pad / 2.0 } else { 0.0 };
     }
-    let mut right = bar_rect.right() - t.margin;
+    let total: f32 = widths.iter().take(n).sum::<f32>() + 2.0 * t.bar_inset;
+    let bar =
+        Rect::from_center_size(pos2(area.center().x, area.top() + t.bar_top + t.bar_h / 2.0), vec2(total, t.bar_h));
+    ui.painter().add(t.shadow(0.6).as_shape(bar, t.bar_h / 2.0));
+    ui.painter().rect_filled(bar, t.bar_h / 2.0, t.bar_fill);
+    ui.painter().rect_stroke(bar, t.bar_h / 2.0, egui::Stroke::new(1.0, t.bar_stroke), egui::StrokeKind::Inside);
     let mut rects = [Rect::NOTHING; 6];
-    for i in (0..n).rev() {
-        rects[i] =
-            Rect::from_center_size(pos2(right - widths[i] / 2.0, bar_rect.center().y), vec2(widths[i], t.button_h));
-        right -= widths[i] + t.gap;
+    let mut x = bar.left() + t.bar_inset;
+    for i in 0..n {
+        rects[i] = Rect::from_min_size(pos2(x, bar.top() + t.bar_inset), vec2(widths[i], seg_h));
+        x += widths[i];
     }
     for (i, rect) in rects.iter().take(n).enumerate() {
-        let label = BUTTONS[i];
         let resp = ui.interact(*rect, ui.id().with(("topbar", i)), Sense::click());
-        let fill = if resp.hovered() { t.surface_hi.gamma_multiply(1.3) } else { t.surface_hi };
-        ui.painter().rect_filled(*rect, t.radius, fill);
+        let a = widgets::focus_amount(ui, t, resp.id, focused == Some(i));
+        let rest = if i == 0 {
+            t.glass_hi
+        } else if resp.hovered() {
+            t.glass
+        } else {
+            Color32::TRANSPARENT
+        };
+        let ink = widgets::plate(ui, t, *rect, seg_h / 2.0, rest, a, t.pill_focus_scale);
+        let ink = if i == 0 || a > 0.5 { ink } else { t.text.gamma_multiply(0.8) };
         if i == 5 {
             let name = user.unwrap_or_default();
-            let c = pos2(rect.left() + t.button_pad / 2.0 + avatar / 2.0, rect.center().y);
-            ui.painter().circle_filled(c, avatar / 2.0, t.accent);
+            let c = pos2(rect.left() + t.bar_inset + avatar / 2.0, rect.center().y);
+            ui.painter().circle_filled(c, avatar / 2.0, t.glass_hi.lerp_to_gamma(t.focus_ink, a));
             let initial = name.chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_default();
-            ui.painter().text(c, Align2::CENTER_CENTER, initial, t.font(t.small_size), t.accent_text);
-            let tx = rect.left() + t.button_pad / 2.0 + avatar + t.gap / 3.0;
-            ui.painter().text(pos2(tx, rect.center().y), Align2::LEFT_CENTER, name, t.font(t.body_size), t.text);
+            ui.painter().text(c, Align2::CENTER_CENTER, initial, t.font_w(t.small_size, Weight::SemiBold), t.text);
+            let tx = c.x + avatar / 2.0 + t.gap / 4.0;
+            ui.painter().text(pos2(tx, rect.center().y), Align2::LEFT_CENTER, name, font.clone(), ink);
         } else {
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, t.font(t.body_size), t.text);
-        }
-        if focused == Some(i) {
-            focus_ring(ui, t, *rect);
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, BUTTONS[i], font.clone(), ink);
         }
         out.xs.push(rect.center().x);
         if resp.hovered() {
@@ -458,15 +595,7 @@ pub fn centered_row<R>(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui) -> 
 
 /// A button of a fixed width (the show page's season drop-down and its entries).
 pub fn button_width(ui: &mut Ui, t: &Theme, label: &str, focused: bool, primary: bool, width: f32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, t.button_h), Sense::click());
-    let (fill, ink) = if primary { (t.accent, t.accent_text) } else { (t.surface_hi, t.text) };
-    let fill = if resp.hovered() && !primary { t.surface_hi.gamma_multiply(1.3) } else { fill };
-    ui.painter().rect_filled(rect, t.radius, fill);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, t.font(t.body_size), ink);
-    if focused {
-        focus_ring(ui, t, rect);
-    }
-    resp
+    widgets::pill_button_width(ui, t, label, focused, primary, width)
 }
 
 /// `backdrop` with an explicit height (the show page hero).
@@ -632,38 +761,7 @@ pub fn row_favourites(
     kind: CardKind,
     focus: Option<usize>,
 ) -> RowOut {
-    let t = cx.theme;
-    let mut out = RowOut { clicked: None, hovered: None, xs: vec![] };
-    ui.add_space(t.row_gap / 2.0);
-    heading(ui, t, heading_text);
-    ui.add_space(t.gap / 3.0);
-    egui::ScrollArea::horizontal()
-        .id_salt(id)
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = cx.theme.gap;
-                for (i, it) in items.iter().enumerate() {
-                    let r = card_with_heart(ui, cx, it, kind, focus == Some(i));
-                    out.xs.push(r.rect.center().x);
-                    if focus == Some(i) {
-                        r.scroll_to_me(None);
-                        for next in items.iter().skip(i + 1).take(2) {
-                            if let Some(u) = card_image_url(cx, next, kind, ui.ctx().pixels_per_point()) {
-                                cx.images.prefetch(&u);
-                            }
-                        }
-                    }
-                    if r.hovered() {
-                        out.hovered = Some(i);
-                    }
-                    if r.clicked() {
-                        out.clicked = Some(i);
-                    }
-                }
-            });
-        });
-    out
+    row_impl(ui, cx, id, heading_text, items, kind, focus, true)
 }
 
 /// A vertical drop marker between grid cards (R-F4-2): an accent bar at `x`, spanning `[top, top + height]`.
@@ -802,6 +900,292 @@ pub fn thumb_card(ui: &mut Ui, cx: &mut Cx, item: &Item, focused: bool) -> Respo
         );
     }
     resp
+}
+
+// ---------- Apple TV hero (D1) ----------
+
+/// Paints `tex` over `r` like CSS `cover`: fills the rect, keeps the aspect, crops the overflow (centred).
+pub fn paint_cover(ui: &Ui, tex: egui::TextureId, r: Rect) {
+    let n = ui.ctx().tex_manager().read().meta(tex).map(|m| vec2(m.size[0] as f32, m.size[1] as f32));
+    let n = n.filter(|n| n.x > 0.0 && n.y > 0.0).unwrap_or(r.size());
+    let (img_aspect, box_aspect) = (n.x / n.y, r.width() / r.height());
+    let uv = if img_aspect > box_aspect {
+        let w = box_aspect / img_aspect;
+        Rect::from_min_max(pos2((1.0 - w) / 2.0, 0.0), pos2((1.0 + w) / 2.0, 1.0))
+    } else {
+        let h = img_aspect / box_aspect;
+        // Keep the top of the picture (faces and titles sit high in backdrops).
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, h))
+    };
+    ui.painter().image(tex, r, uv, Color32::WHITE);
+}
+
+/// A gradient quad: `from` colour on one side, `to` on the other (`horizontal` = left→right, else top→bottom).
+pub fn gradient(ui: &Ui, r: Rect, from: Color32, to: Color32, horizontal: bool) {
+    let mut m = egui::Mesh::default();
+    let (a, b, c, d) = if horizontal { (from, to, to, from) } else { (from, from, to, to) };
+    m.colored_vertex(r.left_top(), a);
+    m.colored_vertex(r.right_top(), b);
+    m.colored_vertex(r.right_bottom(), c);
+    m.colored_vertex(r.left_bottom(), d);
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    ui.painter().add(m);
+}
+
+/// Badges from an item's media streams, in Apple's order: 4K/HD, Dolby Vision/HDR, Dolby Atmos/7.1/5.1, CC, AD.
+/// Reads Jellyfin's stream display titles ("4K HEVC Dolby Vision", "English - Dolby TrueHD Atmos 7.1").
+pub fn media_badges(item: &Item) -> Vec<&'static str> {
+    let streams: Vec<_> = item
+        .media_streams
+        .iter()
+        .chain(item.media_sources.first().map(|m| m.media_streams.as_slice()).unwrap_or_default())
+        .collect();
+    let text = |k: StreamKind| -> Vec<String> {
+        streams
+            .iter()
+            .filter(|s| s.kind == k)
+            .map(|s| {
+                format!(
+                    "{} {} {}",
+                    s.display_title.as_deref().unwrap_or(""),
+                    s.title.as_deref().unwrap_or(""),
+                    s.codec.as_deref().unwrap_or("")
+                )
+                .to_uppercase()
+            })
+            .collect()
+    };
+    let video = text(StreamKind::Video);
+    let audio = text(StreamKind::Audio);
+    let any = |v: &[String], keys: &[&str]| v.iter().any(|s| keys.iter().any(|k| s.contains(k)));
+    let mut out = vec![];
+    if any(&video, &["4K", "2160"]) {
+        out.push("4K");
+    } else if any(&video, &["1080", "720", " HD"]) {
+        out.push("HD");
+    }
+    if any(&video, &["DOLBY VISION", "DOVI"]) {
+        out.push("Dolby Vision");
+    } else if any(&video, &["HDR"]) {
+        out.push("HDR");
+    }
+    if any(&audio, &["ATMOS"]) {
+        out.push("Dolby Atmos");
+    } else if any(&audio, &["7.1"]) {
+        out.push("7.1");
+    } else if any(&audio, &["5.1"]) {
+        out.push("5.1");
+    }
+    if streams.iter().any(|s| s.kind == StreamKind::Subtitle) {
+        out.push("CC");
+    }
+    if any(&audio, &["DESCRIPTION", "DESCRIPTIVE"]) {
+        out.push("AD");
+    }
+    out
+}
+
+/// A row of outlined badges starting at `at` (left, vertical centre). Returns the right edge.
+pub fn badges(ui: &Ui, t: &Theme, at: egui::Pos2, labels: &[&str]) -> f32 {
+    let font = t.font_w(t.small_size, Weight::SemiBold);
+    let ink = t.text.gamma_multiply(0.85);
+    let mut x = at.x;
+    for l in labels {
+        let g = ui.fonts(|f| f.layout_no_wrap(l.to_string(), font.clone(), ink));
+        let r = Rect::from_min_size(pos2(x, at.y - t.badge_h / 2.0), vec2(g.size().x + 2.0 * t.badge_pad, t.badge_h));
+        ui.painter().rect_stroke(r, t.radius / 3.0, egui::Stroke::new(t.badge_stroke, ink), egui::StrokeKind::Inside);
+        ui.painter().galley(r.center() - g.size() / 2.0, g, ink);
+        x = r.right() + t.badge_pad;
+    }
+    x
+}
+
+/// The hero's title line for an item: a series name over an episode, else the item's name.
+pub fn hero_title(item: &Item) -> String {
+    match (&item.kind, &item.series_name) {
+        (ItemKind::Episode, Some(s)) => s.clone(),
+        _ => item.name.clone(),
+    }
+}
+
+/// The hero's metadata line: "S1, E3 · Name · 45m" for episodes; year · rating · runtime · genres otherwise.
+pub fn hero_meta(item: &Item) -> String {
+    let mut parts: Vec<String> = vec![];
+    if item.kind == ItemKind::Episode {
+        if let (Some(s), Some(e)) = (item.parent_index_number, item.index_number) {
+            parts.push(format!("S{s}, E{e}"));
+        }
+        parts.push(item.name.clone());
+    } else if let Some(y) = item.production_year {
+        parts.push(y.to_string());
+    }
+    if let Some(r) = item.official_rating.as_ref().filter(|r| !r.is_empty()) {
+        parts.push(r.clone());
+    }
+    if let Some(ticks) = item.run_time_ticks.filter(|t| *t > 0) {
+        parts.push(runtime(ticks_to_secs(ticks)));
+    }
+    if item.kind != ItemKind::Episode && !item.genres.is_empty() {
+        parts.push(item.genres.iter().take(2).cloned().collect::<Vec<_>>().join(", "));
+    }
+    parts.join("  ·  ")
+}
+
+/// Full-bleed hero (Home, details): backdrop art fading into the page, title logo (or the title), metadata,
+/// badges, overview, then the Play/Resume pill and a round "more" button. `focus` = the focused button
+/// (0 = Play, 1 = more). The rows below start over the faded bottom (`hero_full_h - hero_fade_h * 0.6`).
+pub fn hero(ui: &mut Ui, cx: &mut Cx, item: &Item, focus: Option<usize>) -> RowOut {
+    let t = cx.theme;
+    let mut out = RowOut { clicked: None, hovered: None, xs: vec![] };
+    let top = ui.cursor().top();
+    let full = Rect::from_min_max(
+        pos2(ui.max_rect().left() - t.margin, top),
+        pos2(ui.max_rect().right() + t.margin, top + t.hero_full_h),
+    );
+    let advance = t.hero_full_h - t.hero_fade_h * 0.6;
+    ui.allocate_exact_size(vec2(ui.available_width(), advance), Sense::hover());
+    let ppp = ui.ctx().pixels_per_point();
+    let w = image_width_bucket(full.width(), ppp);
+    let bg_url = cx.client.as_ref().and_then(|c| c.image_url(item, ImageKind::Backdrop, w));
+    match bg_url.as_deref().and_then(|u| cx.images.get(u)) {
+        Some(tex) => paint_cover(ui, tex, full),
+        None => {
+            ui.painter().rect_filled(full, 0.0, t.surface);
+        }
+    }
+    // Legibility without blur: dark from the left, a little at the top (under the tab bar), fade to bg below.
+    let left = Rect::from_min_max(full.min, pos2(full.left() + full.width() * 0.6, full.bottom()));
+    gradient(ui, left, t.bg.gamma_multiply(0.75), Color32::TRANSPARENT, true);
+    let top_band = Rect::from_min_size(full.min, vec2(full.width(), t.topbar_h * 1.6));
+    gradient(ui, top_band, t.scrim.gamma_multiply(0.6), Color32::TRANSPARENT, false);
+    let fade = Rect::from_min_max(pos2(full.left(), full.bottom() - t.hero_fade_h), full.max);
+    gradient(ui, fade, Color32::TRANSPARENT, t.bg, false);
+
+    // Text block, laid out bottom-up from just above where the rows begin.
+    let x0 = full.left() + t.margin;
+    let bottom = top + advance - t.row_gap;
+    let overview = item.overview.clone().unwrap_or_default();
+    let ov = ui.fonts(|f| {
+        let mut job = egui::text::LayoutJob::single_section(
+            overview,
+            egui::TextFormat { font_id: t.font(t.body_size), color: t.text.gamma_multiply(0.85), ..Default::default() },
+        );
+        job.wrap = egui::text::TextWrapping { max_width: t.hero_text_w, max_rows: 3, ..Default::default() };
+        f.layout_job(job)
+    });
+    let pills_top = bottom - t.pill_h;
+    let ov_top = pills_top - t.gap - ov.size().y;
+    let badge_list = media_badges(item);
+    let badge_y = ov_top - t.gap / 2.0 - t.badge_h / 2.0;
+    let meta_top = if badge_list.is_empty() {
+        ov_top - t.gap / 2.0 - t.body_size * 1.3
+    } else {
+        badge_y - t.badge_h / 2.0 - t.gap / 3.0 - t.body_size * 1.3
+    };
+    let title_bottom = meta_top - t.gap / 2.0;
+    ui.painter().galley(pos2(x0, ov_top), ov, t.text);
+    if !badge_list.is_empty() {
+        badges(ui, t, pos2(x0, badge_y), &badge_list);
+    }
+    let meta = hero_meta(item);
+    ui.painter().text(pos2(x0, meta_top), Align2::LEFT_TOP, meta, t.font_w(t.body_size, Weight::Medium), t.muted);
+    let logo_box = Rect::from_min_max(pos2(x0, title_bottom - t.hero_logo_h), pos2(x0 + t.hero_logo_w, title_bottom));
+    let logo =
+        if item.kind == ItemKind::Episode { None } else { logo_url(cx, item, image_width_bucket(t.hero_logo_w, ppp)) };
+    match logo.as_deref().and_then(|u| cx.images.get(u)) {
+        Some(tex) => paint_fit(ui, tex, logo_box, Align2::LEFT_BOTTOM),
+        None => {
+            let g = ui.fonts(|f| {
+                let mut job = egui::text::LayoutJob::single_section(
+                    hero_title(item),
+                    egui::TextFormat { font_id: t.font(t.hero_title_size), color: t.text, ..Default::default() },
+                );
+                job.wrap = egui::text::TextWrapping { max_width: t.hero_text_w, max_rows: 2, ..Default::default() };
+                f.layout_job(job)
+            });
+            ui.painter().galley(pos2(x0, title_bottom - g.size().y), g, t.text);
+        }
+    }
+
+    // Buttons.
+    let label = if resume_fraction(item).is_some() { "Resume" } else { "Play" };
+    let row = Rect::from_min_size(pos2(x0, pills_top), vec2(t.hero_text_w, t.pill_h));
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+            let r = widgets::play_pill(ui, t, label, focus == Some(0));
+            let m = widgets::round_button(ui, t, Icon::More, focus == Some(1));
+            for (i, r) in [r, m].iter().enumerate() {
+                out.xs.push(r.rect.center().x);
+                if r.hovered() {
+                    out.hovered = Some(i);
+                }
+                if r.clicked() {
+                    out.clicked = Some(i);
+                }
+            }
+        },
+    );
+    out
+}
+
+#[cfg(test)]
+mod d1_tests {
+    use super::*;
+    use crate::api::MediaStream;
+
+    fn stream(kind: StreamKind, display: &str) -> MediaStream {
+        MediaStream { kind, display_title: Some(display.into()), ..Default::default() }
+    }
+
+    #[test]
+    fn badges_follow_the_streams() {
+        let item = Item {
+            media_streams: vec![
+                stream(StreamKind::Video, "4K HEVC Dolby Vision"),
+                stream(StreamKind::Audio, "English - Dolby TrueHD Atmos 7.1"),
+                stream(StreamKind::Audio, "English - AAC Stereo - Audio Description"),
+                stream(StreamKind::Subtitle, "English - SUBRIP"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(media_badges(&item), vec!["4K", "Dolby Vision", "Dolby Atmos", "CC", "AD"]);
+    }
+
+    #[test]
+    fn badges_hd_hdr_surround_and_none() {
+        let item = Item {
+            media_streams: vec![stream(StreamKind::Video, "1080p HEVC HDR10"), stream(StreamKind::Audio, "EAC3 5.1")],
+            ..Default::default()
+        };
+        assert_eq!(media_badges(&item), vec!["HD", "HDR", "5.1"]);
+        assert!(media_badges(&Item::default()).is_empty());
+    }
+
+    #[test]
+    fn hero_meta_lines() {
+        let ep = Item {
+            kind: ItemKind::Episode,
+            name: "Pilot".into(),
+            series_name: Some("Show".into()),
+            parent_index_number: Some(1),
+            index_number: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(hero_title(&ep), "Show");
+        assert!(hero_meta(&ep).starts_with("S1, E3  ·  Pilot"));
+        let film = Item {
+            kind: ItemKind::Movie,
+            name: "Film".into(),
+            production_year: Some(2020),
+            genres: vec!["Drama".into(), "War".into(), "History".into()],
+            ..Default::default()
+        };
+        assert_eq!(hero_title(&film), "Film");
+        assert_eq!(hero_meta(&film), "2020  ·  Drama, War");
+    }
 }
 
 /// D20: how a server is shown — its name; the address only when it has no name.

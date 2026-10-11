@@ -1470,6 +1470,60 @@ impl Client {
         Ok(page.items.into_iter().next())
     }
 
+    /// RR8 / P-USER-4: `next_up` with the web's two options — `rewatching` also lists episodes the user has started
+    /// rewatching, `cutoff_days` > 0 drops shows not watched for that many days.
+    pub fn next_up_with(&self, limit: usize, rewatching: bool, cutoff_days: u32) -> Result<Vec<Item>> {
+        let uid = self.user_id()?;
+        let path = next_up_path(uid, limit, rewatching, cutoff_days, now_unix_secs());
+        let page: Page = self.get_json(&path)?;
+        Ok(page.items)
+    }
+
+    /// RR8 / P-USER-4: `playback_plan` that can ask for fMP4 HLS segments instead of MPEG-TS.
+    pub fn playback_plan_with(
+        &self,
+        id: &str,
+        max_kbps: u32,
+        force_transcode: bool,
+        fmp4: bool,
+    ) -> Result<PlaybackPlan> {
+        let uid = self.user_id()?;
+        let path = format!("/Items/{id}/PlaybackInfo?userId={uid}");
+        let raw: serde_json::Value = self.post_json(&path, &transcode_body_with(max_kbps, force_transcode, fmp4))?;
+        plan_from_json(&raw, &self.base, self.session.as_ref().map(|s| s.token.as_str()).unwrap_or(""))
+    }
+
+    /// RR8 / P-USER-1: set the user's profile picture (`POST /Users/{id}/Images/Primary`, base64 body with the
+    /// image's content type). Anything that is not a png / jpeg / gif / webp is refused before it is sent.
+    pub fn set_user_image(&self, user_id: &str, bytes: &[u8]) -> Result<()> {
+        let Some(kind) = image_content_type(bytes) else {
+            return Err(ApiError::Decode("That file is not a picture (png, jpeg, gif or webp).".into()));
+        };
+        let mut resp = self
+            .agent
+            .post(&self.url(&format!("/Users/{user_id}/Images/Primary")))
+            .header("Authorization", &self.auth_header())
+            .header("Content-Type", kind)
+            .send(base64_encode(bytes).as_bytes())
+            .map_err(net)?;
+        check_status(&mut resp)
+    }
+
+    /// RR8 / P-USER-1: remove the user's profile picture (`DELETE /Users/{id}/Images/Primary`).
+    pub fn delete_user_image(&self, user_id: &str) -> Result<()> {
+        self.delete_ok(&format!("/Users/{user_id}/Images/Primary"))
+    }
+
+    /// RR8 / P-USER-2: up to `limit` random movies and shows that have a backdrop, for the screensaver.
+    pub fn backdrop_items(&self, limit: usize) -> Result<Vec<Item>> {
+        let uid = self.user_id()?;
+        let path = format!(
+            "/Items?userId={uid}&Recursive=true&IncludeItemTypes=Movie,Series&ImageTypes=Backdrop&SortBy=Random&Limit={limit}&Fields={CARD_FIELDS}"
+        );
+        let page: Page = self.get_json(&path)?;
+        Ok(page.items)
+    }
+
     /// RR6 / P-ITEM-16: the other parts of a multi-part film (`GET /Videos/{id}/AdditionalParts`), in order.
     pub fn additional_parts(&self, id: &str) -> Result<Vec<Item>> {
         let uid = self.user_id()?;
@@ -1490,6 +1544,66 @@ impl Client {
         let v: serde_json::Value = self.get_json(&format!("/Items/{person_id}?userId={uid}"))?;
         let field = |k: &str| v.get(k).and_then(|d| d.as_str()).map(str::to_string).filter(|d| !d.is_empty());
         Ok((field("PremiereDate"), field("EndDate")))
+    }
+}
+
+/// RR8 / P-USER-4: the `/Shows/NextUp` path. `now_secs` is the Unix time used for the cutoff date.
+pub fn next_up_path(uid: &str, limit: usize, rewatching: bool, cutoff_days: u32, now_secs: i64) -> String {
+    let mut path = format!("/Shows/NextUp?userId={uid}&Limit={limit}&Fields={CARD_FIELDS}");
+    if rewatching {
+        path.push_str("&enableRewatching=true");
+    }
+    if cutoff_days > 0 {
+        path.push_str(&format!("&nextUpDateCutoff={}", date_days_ago(now_secs, cutoff_days)));
+    }
+    path
+}
+
+fn now_unix_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// RR8: the UTC date `days` before Unix time `now_secs`, as `YYYY-MM-DD`.
+pub fn date_days_ago(now_secs: i64, days: u32) -> String {
+    let z = now_secs.div_euclid(86_400) - i64::from(days) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// RR8: standard base64 with padding.
+pub fn base64_encode(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n =
+            (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        out.push(A[(n >> 18) as usize & 63] as char);
+        out.push(A[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { A[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { A[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// RR8: the content type of a picture from its first bytes (png, jpeg, gif, webp); None for anything else.
+pub fn image_content_type(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if b.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if b.len() >= 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
     }
 }
 
@@ -1617,6 +1731,11 @@ pub struct PlaybackPlan {
 /// Otherwise a simple profile: direct play mkv/mp4 with h264/hevc + aac/ac3/opus, transcode to HLS ts h264 + aac.
 /// `force_transcode` with no cap uses 20 Mbit/s.
 pub fn transcode_body(max_kbps: u32, force_transcode: bool) -> serde_json::Value {
+    transcode_body_with(max_kbps, force_transcode, false)
+}
+
+/// RR8 / P-USER-4: `transcode_body`; with `fmp4` the HLS transcode uses fMP4 segments (container `mp4`) instead of ts.
+pub fn transcode_body_with(max_kbps: u32, force_transcode: bool, fmp4: bool) -> serde_json::Value {
     if max_kbps == 0 && !force_transcode {
         return serde_json::json!({});
     }
@@ -1635,7 +1754,7 @@ pub fn transcode_body(max_kbps: u32, force_transcode: bool) -> serde_json::Value
             ],
             "TranscodingProfiles": [
                 {
-                    "Type": "Video", "Container": "ts", "Protocol": "hls", "Context": "Streaming",
+                    "Type": "Video", "Container": if fmp4 { "mp4" } else { "ts" }, "Protocol": "hls", "Context": "Streaming",
                     "VideoCodec": "h264", "AudioCodec": "aac", "MaxAudioChannels": "2",
                     "BreakOnNonKeyFrames": true
                 }

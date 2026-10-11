@@ -465,6 +465,11 @@ impl Screen for Person {
         "person"
     }
 
+    /// NAV: this screen's part of the toolbar breadcrumb.
+    fn crumbs(&self) -> Vec<String> {
+        vec![self.name.clone()]
+    }
+
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
         match key {
             Key::Enter => self.enter(cx),

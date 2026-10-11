@@ -534,6 +534,15 @@ impl Screen for ShowPage {
         "show"
     }
 
+    /// NAV: "Drift Rebels › Season 2" in the toolbar.
+    fn crumbs(&self) -> Vec<String> {
+        if self.episodes.is_empty() {
+            vec![self.series.name.clone()]
+        } else {
+            vec![self.series.name.clone(), self.season_label(self.open_season)]
+        }
+    }
+
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
         if self.error.is_some() {
             return match key {

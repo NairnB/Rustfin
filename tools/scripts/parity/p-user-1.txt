@@ -1,7 +1,10 @@
-# P-USER-1 parity tour (G12): Account tab — profile picture and password change (current + new + repeat).
+# P-USER-1 parity tour (G12, RR8): Account tab — profile picture (change by path, remove) and password change.
+# Puts the profile back as it was: the picture is removed at the end.
 wait-screen connect
 wait 2500
 idle
+key down 10
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin
@@ -12,10 +15,30 @@ type view-pass-1
 key enter
 wait-screen home
 idle
-key up
-key right 2
-key enter
+click 130 1038
+idle
+click 130 879
 wait-screen settings
 idle
 shot p-user-1
+key enter
+idle
+key enter
+idle
+type tools/scripts/fixture/avatar.png
+idle
+shot p-user-1-form
+key down
+key down
+key enter
+idle
+wait 1500
+idle
+shot p-user-1-set
+key down
+key enter
+idle
+wait 1500
+idle
+shot p-user-1-removed
 quit

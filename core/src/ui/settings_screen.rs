@@ -8,7 +8,7 @@ use crate::api::{image_width_bucket, ApiError, Client, Result, SegmentKind};
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::{parse_hex_colour, sub_colour_index, Key, SubFont, SubShadow, SubSize, SubWeight, SUB_COLOURS};
-use crate::settings::{DateFormat, HomeSection, SubMode, SubPrefs};
+use crate::settings::{DateFormat, HomeSection, Screensaver, SubMode, SubPrefs};
 use egui::{pos2, vec2, Rect, Sense};
 
 const G_TABS: usize = 0;
@@ -31,6 +31,16 @@ const BITRATE_LABELS: [&str; 7] = ["Auto", "1.5 Mbps", "3 Mbps", "5 Mbps", "10 M
 const BITRATE_KBPS: [u32; 7] = [0, 1500, 3000, 5000, 10000, 20000, 40000];
 const SKIP_BACK: [(&str, u32); 4] = [("5 s", 5), ("10 s", 10), ("15 s", 15), ("30 s", 30)];
 const SKIP_FORWARD: [(&str, u32); 4] = [("10 s", 10), ("15 s", 15), ("30 s", 30), ("60 s", 60)];
+/// P-USER-4: days before an unwatched show drops out of Next up (0 = never).
+const NEXT_UP_DAYS: [(&str, u32); 5] =
+    [("No limit", 0), ("30 days", 30), ("90 days", 90), ("180 days", 180), ("365 days", 365)];
+/// P-USER-2: idle minutes before the screensaver.
+const SAVER_MINUTES: [(&str, u32); 6] =
+    [("1 minute", 1), ("3 minutes", 3), ("5 minutes", 5), ("10 minutes", 10), ("15 minutes", 15), ("30 minutes", 30)];
+/// Playback rows before the auto-skip toggles: audio, bitrate, auto-play, skip back, skip forward, fMP4, rewatching, days.
+const PLAYBACK_FIXED: usize = 8;
+/// A picture bigger than this is refused before it is read in full.
+const MAX_PICTURE_BYTES: u64 = 10 << 20;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -84,6 +94,15 @@ enum Dd {
     SubMode,
     SubText,
     SubBack,
+    NextUpDays,
+    SaverMode,
+    SaverMinutes,
+}
+
+/// Why a picture change failed: our own check (plain words) or the server.
+enum PicError {
+    Local(String),
+    Api(ApiError),
 }
 
 pub struct SettingsScreen {
@@ -99,6 +118,13 @@ pub struct SettingsScreen {
     pw_busy: bool,
     pw_error: Option<String>,
     pw_ok: bool,
+    // Account: profile picture (P-USER-1). `pic_rev` busts the cached avatar after a change.
+    pic_editing: bool,
+    pic_path: String,
+    pic_busy: bool,
+    pic_error: Option<String>,
+    pic_ok: Option<&'static str>,
+    pic_rev: u32,
 
     // Playback + Display dropdowns
     audio_lang: widgets::DropdownState,
@@ -106,6 +132,9 @@ pub struct SettingsScreen {
     skip_back: widgets::DropdownState,
     skip_forward: widgets::DropdownState,
     date_format: widgets::DropdownState,
+    next_up_days: widgets::DropdownState,
+    saver_mode: widgets::DropdownState,
+    saver_minutes: widgets::DropdownState,
 
     // Subtitles (G5): a draft until Save; `chip` is the focused chip within a chip row.
     subs: SubPrefs,
@@ -147,11 +176,20 @@ pub fn screen() -> Box<dyn Screen> {
         pw_busy: false,
         pw_error: None,
         pw_ok: false,
+        pic_editing: false,
+        pic_path: String::new(),
+        pic_busy: false,
+        pic_error: None,
+        pic_ok: None,
+        pic_rev: 0,
         audio_lang: widgets::DropdownState::default(),
         bitrate: widgets::DropdownState::default(),
         skip_back: widgets::DropdownState::default(),
         skip_forward: widgets::DropdownState::default(),
         date_format: widgets::DropdownState::default(),
+        next_up_days: widgets::DropdownState::default(),
+        saver_mode: widgets::DropdownState::default(),
+        saver_minutes: widgets::DropdownState::default(),
         subs: SubPrefs::default(),
         lang_draft: String::new(),
         subs_loaded: false,
@@ -187,11 +225,13 @@ fn toggle_auto_skip(cx: &mut Cx, kind: SegmentKind) {
 impl SettingsScreen {
     fn content_len(&self) -> usize {
         match Tab::ALL[self.tab] {
-            Tab::Account => usize::from(self.pw_editing) * 5 + usize::from(!self.pw_editing),
+            Tab::Account if self.pw_editing => 5,
+            Tab::Account if self.pic_editing => 4,
+            Tab::Account => 3,
             Tab::Home => HomeSection::ALL.len(),
-            Tab::Playback => 5 + SegmentKind::SKIPPABLE.len(),
+            Tab::Playback => PLAYBACK_FIXED + SegmentKind::SKIPPABLE.len(),
             Tab::Subtitles => 13,
-            Tab::Display => 4,
+            Tab::Display => 6,
             Tab::QuickConnect => 2,
             Tab::Server => 2 + usize::from(self.admin),
             Tab::Tmdb => usize::from(self.tmdb_editing) * 2 + usize::from(!self.tmdb_editing),
@@ -228,6 +268,18 @@ impl SettingsScreen {
         }
         if !self.sub_mode.open {
             self.sub_mode.highlighted = mode_index(self.subs.mode);
+        }
+        if !self.next_up_days.open {
+            self.next_up_days.highlighted =
+                NEXT_UP_DAYS.iter().position(|&(_, d)| d == cx.settings.next_up_days).unwrap_or(0);
+        }
+        if !self.saver_mode.open {
+            self.saver_mode.highlighted =
+                Screensaver::ALL.iter().position(|&m| m == cx.settings.screensaver).unwrap_or(0);
+        }
+        if !self.saver_minutes.open {
+            self.saver_minutes.highlighted =
+                SAVER_MINUTES.iter().position(|&(_, m)| m == cx.settings.screensaver_minutes).unwrap_or(1);
         }
         if !self.sub_text.open {
             self.sub_text.highlighted = sub_colour_index(&self.subs.style.text_colour).unwrap_or(SUB_COLOURS.len());
@@ -287,6 +339,9 @@ impl SettingsScreen {
             Dd::SkipBack => cx.settings.skip_back_seconds = SKIP_BACK[i].1,
             Dd::SkipForward => cx.settings.skip_forward_seconds = SKIP_FORWARD[i].1,
             Dd::Date => cx.settings.date_format = DateFormat::ALL[i],
+            Dd::NextUpDays => cx.settings.next_up_days = NEXT_UP_DAYS[i].1,
+            Dd::SaverMode => cx.settings.screensaver = Screensaver::ALL[i],
+            Dd::SaverMinutes => cx.settings.screensaver_minutes = SAVER_MINUTES[i].1,
             Dd::SubMode | Dd::SubText | Dd::SubBack => {}
         }
         cx.save_settings();
@@ -334,6 +389,21 @@ impl SettingsScreen {
                 self.sub_back = s;
                 ev
             }
+            Dd::NextUpDays => {
+                let (s, ev) = widgets::dropdown_key(self.next_up_days, key, NEXT_UP_DAYS.len());
+                self.next_up_days = s;
+                ev
+            }
+            Dd::SaverMode => {
+                let (s, ev) = widgets::dropdown_key(self.saver_mode, key, Screensaver::ALL.len());
+                self.saver_mode = s;
+                ev
+            }
+            Dd::SaverMinutes => {
+                let (s, ev) = widgets::dropdown_key(self.saver_minutes, key, SAVER_MINUTES.len());
+                self.saver_minutes = s;
+                ev
+            }
         };
         if let Some(widgets::DropdownEvent::Pick(i)) = ev {
             self.apply_pick(cx, dd, i);
@@ -352,6 +422,8 @@ impl SettingsScreen {
                     Some(Dd::SkipBack)
                 } else if self.skip_forward.open {
                     Some(Dd::SkipForward)
+                } else if self.next_up_days.open {
+                    Some(Dd::NextUpDays)
                 } else {
                     None
                 }
@@ -367,7 +439,17 @@ impl SettingsScreen {
                     None
                 }
             }
-            Tab::Display => self.date_format.open.then_some(Dd::Date),
+            Tab::Display => {
+                if self.date_format.open {
+                    Some(Dd::Date)
+                } else if self.saver_mode.open {
+                    Some(Dd::SaverMode)
+                } else if self.saver_minutes.open {
+                    Some(Dd::SaverMinutes)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -376,6 +458,9 @@ impl SettingsScreen {
         match Tab::ALL[self.tab] {
             Tab::Account if self.pw_editing => {
                 self.cancel_password();
+            }
+            Tab::Account if self.pic_editing => {
+                self.cancel_picture();
             }
             Tab::Tmdb if self.tmdb_editing => {
                 self.tmdb_editing = false;
@@ -431,14 +516,28 @@ impl SettingsScreen {
                         4 => self.cancel_password(),
                         _ => {}
                     }
+                } else if self.pic_editing {
+                    match i {
+                        0 => self.set_content(1),
+                        1 => cx.shell.pick_file = true,
+                        2 => self.upload_picture(cx),
+                        3 => self.cancel_picture(),
+                        _ => {}
+                    }
                 } else {
-                    self.pw_editing = true;
-                    self.pw_current.clear();
-                    self.pw_new.clear();
-                    self.pw_repeat.clear();
-                    self.pw_error = None;
-                    self.pw_ok = false;
-                    self.set_content(0);
+                    match i {
+                        0 => self.start_picture(),
+                        1 => self.remove_picture(cx),
+                        _ => {
+                            self.pw_editing = true;
+                            self.pw_current.clear();
+                            self.pw_new.clear();
+                            self.pw_repeat.clear();
+                            self.pw_error = None;
+                            self.pw_ok = false;
+                            self.set_content(0);
+                        }
+                    }
                 }
             }
             Tab::Home => {
@@ -460,8 +559,17 @@ impl SettingsScreen {
                 }
                 3 => self.skip_back.open = true,
                 4 => self.skip_forward.open = true,
+                5 => {
+                    cx.settings.prefer_fmp4 = !cx.settings.prefer_fmp4;
+                    cx.save_settings();
+                }
+                6 => {
+                    cx.settings.next_up_rewatching = !cx.settings.next_up_rewatching;
+                    cx.save_settings();
+                }
+                7 => self.next_up_days.open = true,
                 n => {
-                    if let Some(&kind) = SegmentKind::SKIPPABLE.get(n - 5) {
+                    if let Some(&kind) = SegmentKind::SKIPPABLE.get(n - PLAYBACK_FIXED) {
                         toggle_auto_skip(cx, kind);
                     }
                 }
@@ -496,6 +604,8 @@ impl SettingsScreen {
                     cx.settings.backdrops = !cx.settings.backdrops;
                     cx.save_settings();
                 }
+                4 => self.saver_mode.open = true,
+                5 => self.saver_minutes.open = true,
                 _ => {}
             },
             Tab::QuickConnect => match i {
@@ -555,6 +665,61 @@ impl SettingsScreen {
 
     fn adj_pos(&mut self, delta: f32) {
         self.subs.style.position = (self.subs.style.position + delta).clamp(0.0, 150.0);
+    }
+
+    fn start_picture(&mut self) {
+        self.pic_editing = true;
+        self.pic_path.clear();
+        self.pic_error = None;
+        self.pic_ok = None;
+        self.set_content(0);
+    }
+
+    fn cancel_picture(&mut self) {
+        self.pic_editing = false;
+        self.pic_path.clear();
+        self.pic_error = None;
+        self.set_content(0);
+    }
+
+    /// P-USER-1: read the file named in the path field and send it as the profile picture.
+    fn upload_picture(&mut self, cx: &mut Cx) {
+        let path = self.pic_path.trim().trim_matches('"').to_string();
+        if path.is_empty() {
+            self.pic_error = Some("Type or browse to a picture file first.".to_string());
+            return;
+        }
+        let (user_id, _) = Self::signed_in_user(cx);
+        let client = cx.api();
+        self.pic_busy = true;
+        self.pic_error = None;
+        self.pic_ok = None;
+        cx.spawn("picture", move || -> std::result::Result<&'static str, PicError> {
+            let len = std::fs::metadata(&path)
+                .map_err(|e| PicError::Local(format!("Could not read that file ({e}).")))?
+                .len();
+            if len > MAX_PICTURE_BYTES {
+                return Err(PicError::Local("That picture is bigger than 10 MB.".to_string()));
+            }
+            let bytes =
+                std::fs::read(&path).map_err(|e| PicError::Local(format!("Could not read that file ({e}).")))?;
+            match client.set_user_image(&user_id, &bytes) {
+                Err(ApiError::Decode(m)) => Err(PicError::Local(m)),
+                Err(e) => Err(PicError::Api(e)),
+                Ok(()) => Ok("Picture changed."),
+            }
+        });
+    }
+
+    fn remove_picture(&mut self, cx: &mut Cx) {
+        let (user_id, _) = Self::signed_in_user(cx);
+        let client = cx.api();
+        self.pic_busy = true;
+        self.pic_error = None;
+        self.pic_ok = None;
+        cx.spawn("picture", move || -> std::result::Result<&'static str, PicError> {
+            client.delete_user_image(&user_id).map(|()| "Picture removed.").map_err(PicError::Api)
+        });
     }
 
     fn cancel_password(&mut self) {
@@ -648,6 +813,7 @@ impl SettingsScreen {
             } else {
                 let ppp = ui.ctx().pixels_per_point();
                 let url = cx.api().user_image_url(&user_id, image_width_bucket(t.avatar_size, ppp));
+                let url = format!("{url}&v={}", self.pic_rev);
                 if let Some(tex) = cx.images.get(&url) {
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
                     ui.painter().image(tex, avatar, uv, egui::Color32::WHITE);
@@ -663,8 +829,86 @@ impl SettingsScreen {
             });
         });
         ui.add_space(t.gap);
-        parts::heading(ui, t, "Password");
-        ui.add_space(t.gap / 3.0);
+        if !self.pw_editing {
+            parts::heading(ui, t, "Picture");
+            ui.add_space(t.gap / 3.0);
+            if self.pic_editing {
+                let f0 = self.focused(0);
+                let r = parts::text_field(ui, t, &mut self.pic_path, "Path to a picture file", f0, false);
+                xs.push(r.rect.center().x);
+                if r.clicked() {
+                    self.set_content(0);
+                }
+                ui.add_space(t.gap / 2.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                    let f1 = self.focused(1);
+                    let r = parts::button(ui, t, "Browse…", f1, false);
+                    xs.push(r.rect.center().x);
+                    if r.hovered() {
+                        self.set_content(1);
+                    }
+                    if r.clicked() {
+                        cx.shell.pick_file = true;
+                    }
+                    let label = if self.pic_busy { "Uploading…" } else { "Upload" };
+                    let f2 = self.focused(2);
+                    let r = parts::button(ui, t, label, f2, true);
+                    xs.push(r.rect.center().x);
+                    if r.hovered() {
+                        self.set_content(2);
+                    }
+                    if r.clicked() {
+                        self.upload_picture(cx);
+                    }
+                    let f3 = self.focused(3);
+                    let r = parts::button(ui, t, "Cancel", f3, false);
+                    xs.push(r.rect.center().x);
+                    if r.hovered() {
+                        self.set_content(3);
+                    }
+                    if r.clicked() {
+                        self.cancel_picture();
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                    let f0 = self.focused(0);
+                    let r = parts::button(ui, t, "Change picture", f0, false);
+                    xs.push(r.rect.center().x);
+                    if r.hovered() {
+                        self.set_content(0);
+                    }
+                    if r.clicked() {
+                        self.start_picture();
+                    }
+                    let label = if self.pic_busy { "Removing…" } else { "Remove picture" };
+                    let f1 = self.focused(1);
+                    let r = parts::button(ui, t, label, f1, false);
+                    xs.push(r.rect.center().x);
+                    if r.hovered() {
+                        self.set_content(1);
+                    }
+                    if r.clicked() {
+                        self.remove_picture(cx);
+                    }
+                });
+            }
+            if let Some(e) = &self.pic_error {
+                ui.add_space(t.gap / 2.0);
+                parts::error_line(ui, t, e);
+            }
+            if let Some(m) = self.pic_ok {
+                ui.add_space(t.gap / 2.0);
+                parts::muted(ui, t, m);
+            }
+            ui.add_space(t.gap);
+        }
+        if !self.pic_editing {
+            parts::heading(ui, t, "Password");
+            ui.add_space(t.gap / 3.0);
+        }
         if self.pw_editing {
             let f0 = self.focused(0);
             let r = parts::text_field(ui, t, &mut self.pw_current, "Current password", f0, true);
@@ -709,12 +953,12 @@ impl SettingsScreen {
                     self.cancel_password();
                 }
             });
-        } else {
-            let f0 = self.focused(0);
-            let r = parts::button(ui, t, "Change password", f0, false);
+        } else if !self.pic_editing {
+            let f2 = self.focused(2);
+            let r = parts::button(ui, t, "Change password", f2, false);
             xs.push(r.rect.center().x);
             if r.hovered() {
-                self.set_content(0);
+                self.set_content(2);
             }
             if r.clicked() {
                 self.pw_editing = true;
@@ -828,15 +1072,50 @@ impl SettingsScreen {
             self.skip_forward.open = false;
             self.apply_pick(cx, Dd::SkipForward, i);
         }
+        // RR8 / P-USER-4: fMP4 HLS and the Next up options.
+        ui.add_space(t.gap / 3.0);
+        let out = widgets::toggle(ui, t, "Prefer fMP4-HLS media container", cx.settings.prefer_fmp4, self.focused(5));
+        xs.push(out.x);
+        if out.hovered {
+            self.set_content(5);
+        }
+        if out.clicked {
+            cx.settings.prefer_fmp4 = !cx.settings.prefer_fmp4;
+            cx.save_settings();
+        }
+        ui.add_space(t.gap / 3.0);
+        let label = "Show episodes I've started rewatching in Next up";
+        let out = widgets::toggle(ui, t, label, cx.settings.next_up_rewatching, self.focused(6));
+        xs.push(out.x);
+        if out.hovered {
+            self.set_content(6);
+        }
+        if out.clicked {
+            cx.settings.next_up_rewatching = !cx.settings.next_up_rewatching;
+            cx.save_settings();
+        }
+        ui.add_space(t.gap / 3.0);
+        let days: Vec<String> = NEXT_UP_DAYS.iter().map(|(l, _)| l.to_string()).collect();
+        let f7 = self.focused(7);
+        let out = widgets::dropdown(ui, t, &mut self.next_up_days, "Next up window", &days, f7);
+        xs.push(out.button_x);
+        if out.button_hovered {
+            self.set_content(7);
+        }
+        if let Some(i) = out.item_clicked {
+            self.next_up_days.highlighted = i;
+            self.next_up_days.open = false;
+            self.apply_pick(cx, Dd::NextUpDays, i);
+        }
         // G10 / P-PLAY-11: auto-skip per segment kind.
         for (n, kind) in SegmentKind::SKIPPABLE.into_iter().enumerate() {
             ui.add_space(t.gap / 3.0);
             let on = cx.settings.auto_skip.contains(&kind);
             let label = format!("Skip {} automatically", kind.label());
-            let out = widgets::toggle(ui, t, &label, on, self.focused(5 + n));
+            let out = widgets::toggle(ui, t, &label, on, self.focused(PLAYBACK_FIXED + n));
             xs.push(out.x);
             if out.hovered {
-                self.set_content(5 + n);
+                self.set_content(PLAYBACK_FIXED + n);
             }
             if out.clicked {
                 toggle_auto_skip(cx, kind);
@@ -1081,6 +1360,33 @@ impl SettingsScreen {
             cx.settings.backdrops = !cx.settings.backdrops;
             cx.save_settings();
         }
+        // RR8 / P-USER-2: screensaver.
+        ui.add_space(t.gap / 3.0);
+        let modes: Vec<String> = Screensaver::ALL.iter().map(|m| m.label().to_string()).collect();
+        let f4 = self.focused(4);
+        let out = widgets::dropdown(ui, t, &mut self.saver_mode, "Screensaver", &modes, f4);
+        xs.push(out.button_x);
+        if out.button_hovered {
+            self.set_content(4);
+        }
+        if let Some(i) = out.item_clicked {
+            self.saver_mode.highlighted = i;
+            self.saver_mode.open = false;
+            self.apply_pick(cx, Dd::SaverMode, i);
+        }
+        ui.add_space(t.gap / 3.0);
+        let mins: Vec<String> = SAVER_MINUTES.iter().map(|(l, _)| l.to_string()).collect();
+        let f5 = self.focused(5);
+        let out = widgets::dropdown(ui, t, &mut self.saver_minutes, "Start after", &mins, f5);
+        xs.push(out.button_x);
+        if out.button_hovered {
+            self.set_content(5);
+        }
+        if let Some(i) = out.item_clicked {
+            self.saver_minutes.highlighted = i;
+            self.saver_minutes.open = false;
+            self.apply_pick(cx, Dd::SaverMinutes, i);
+        }
         xs
     }
 
@@ -1315,6 +1621,31 @@ impl Screen for SettingsScreen {
                         self.pw_error = Some("The current password is wrong.".to_string());
                     }
                     Err(e) => self.pw_error = Some(e.to_string()),
+                }
+            }
+            "picked-file" => {
+                if let Ok(p) = payload.downcast::<String>() {
+                    self.pic_path = *p;
+                    if self.pic_editing {
+                        self.set_content(2);
+                    }
+                }
+            }
+            "picture" => {
+                self.pic_busy = false;
+                let Ok(r) = payload.downcast::<std::result::Result<&'static str, PicError>>() else { return };
+                match *r {
+                    Ok(msg) => {
+                        self.pic_rev += 1;
+                        self.pic_ok = Some(msg);
+                        self.pic_error = None;
+                        self.pic_editing = false;
+                        self.pic_path.clear();
+                        self.set_content(0);
+                    }
+                    Err(PicError::Api(ApiError::Unauthorized)) => cx.signed_out(),
+                    Err(PicError::Api(e)) => self.pic_error = Some(e.to_string()),
+                    Err(PicError::Local(m)) => self.pic_error = Some(m),
                 }
             }
             "authorize" => {

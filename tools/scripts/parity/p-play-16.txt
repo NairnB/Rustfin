@@ -2,6 +2,8 @@
 wait-screen connect
 wait 2500
 idle
+key down 10
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin
@@ -14,9 +16,7 @@ wait-screen home
 idle
 
 # Search → Night Shift Stories show page.
-key up
-key right
-key enter
+key search
 wait-screen search
 idle
 type Night Shift

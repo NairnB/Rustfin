@@ -1,14 +1,25 @@
 # args: --screen gallery
-# W0 widget gallery tour: the top widgets, the dropdown open, then the dialog.
+# W0 widget gallery tour: the top widgets, the dropdown open, then the dialog. `wait 300` lets the
+# 200 ms focus animation settle before each shot.
 wait-screen gallery
 idle
 shot gallery
+key down 2
+key right
+idle
+wait 300
+shot gallery-focus-chips
+key left
+key up 2
+idle
 key enter
 idle
+wait 300
 shot gallery-dropdown-open
 key back
 key down 4
 key enter
 idle
+wait 300
 shot gallery-dialog
 quit

@@ -372,6 +372,9 @@ pub struct ShellRequests {
     pub toggle_fullscreen: bool,
     /// Set while a screen wants fullscreen (the player); None = leave as it is.
     pub fullscreen: Option<bool>,
+    /// RR8 / P-USER-1: open the shell's file picker; the chosen path comes back to the top screen as `picked-file`
+    /// (a `String`). A shell without a picker ignores it — screens keep a typed path field as well.
+    pub pick_file: bool,
 }
 
 /// A player that does nothing (tests, render shots).

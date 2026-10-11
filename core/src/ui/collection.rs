@@ -70,6 +70,11 @@ impl Screen for ItemGrid {
         self.name
     }
 
+    /// NAV: this screen's part of the toolbar breadcrumb.
+    fn crumbs(&self) -> Vec<String> {
+        vec![self.title.to_string()]
+    }
+
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
         match key {
             Key::Enter => {
@@ -293,7 +298,20 @@ impl Screen for Collection {
         "collection"
     }
 
+    /// NAV: this screen's part of the toolbar breadcrumb.
+    fn crumbs(&self) -> Vec<String> {
+        vec![self.item.name.clone()]
+    }
+
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
+        // BRIEF-coverflow: Info opens Poster Flow on the collection, in its current order.
+        if key == Key::Info && !self.dropdown.open {
+            let v = self.shown();
+            if !v.is_empty() {
+                cx.push(super::posterflow::items(v, 0));
+            }
+            return true;
+        }
         if self.dropdown.open {
             let (state, ev) = widgets::dropdown_key(self.dropdown, key, SORTS.len());
             self.dropdown = state;

@@ -4,7 +4,7 @@
 #   tools/package/mac.sh <out-dir> [preset-server]
 # plain build: no server filled in.  preset build: <preset-server> (e.g. http://10.0.0.20:8096) pre-filled on the Connect screen.
 set -euo pipefail
-export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"   # ssh sessions skip the login profile
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=$1 SERVER=${2:-}
 VER=$(grep -m1 '^version' "$ROOT/Cargo.toml" | cut -d'"' -f2)

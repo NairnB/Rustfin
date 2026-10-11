@@ -4,6 +4,8 @@
 wait-screen connect
 wait 2500
 idle
+key down 10
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin
@@ -16,9 +18,7 @@ wait-screen home
 idle
 
 # Reach Search: Up to the top bar, Right to Search, Enter.
-key up
-key right
-key enter
+key search
 wait-screen search
 idle
 
