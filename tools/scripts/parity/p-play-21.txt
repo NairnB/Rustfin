@@ -1,0 +1,39 @@
+# RR4 parity tour: P-PLAY-21 trickplay thumbnail above the seek bar (Amber Tide, OSD up, bar focused, pause first, then one 30 s skip right: the film is 40 s, so a playing seek could end it).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right
+key enter
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3000
+
+key right
+key enter
+key up
+key right
+wait 1500
+idle
+shot p-play-21
+quit

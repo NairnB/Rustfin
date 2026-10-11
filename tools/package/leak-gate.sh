@@ -26,7 +26,10 @@ case "$MODE" in
     ALLOW='^$'
     WORDS="$WORDS|l[e]wis|g[r]een|c[r]aig|d[o]uglas|m[a]rjory|l[i]am|c[a]rys|a[t]hena|o[p]encode|d[e]epseek|s[e]at"
     WORDS="$WORDS|t[a]ilscale|ts\.n[e]t|d[u]id|3[e]bcf9d0"
-    WORDS="$WORDS|-----B[E]GIN|g[h]p_|s[k]-[A-Za-z0-9]{8}|A[K]IA[A-Z0-9]{8}|T[U]NNEL_TOKEN" ;;
+    WORDS="$WORDS|-----B[E]GIN|g[h]p_|s[k]-[A-Za-z0-9]{8}|A[K]IA[A-Z0-9]{8}|T[U]NNEL_TOKEN"
+    # jf-real's public-domain titles: the films are free but their TMDB posters/backdrops may not be, so public
+    # files may show only the Blender open movies (CC BY) or jf-test titles (pit crew, 11 Oct 2026).
+    WORDS="$WORDS|b[o]nanza|h[i]s girl friday|living d[e]ad|the g[e]neral \\(?1926" ;;
   *) echo "mode must be plain, preset or public" >&2; exit 2 ;;
 esac
 hits=0

@@ -4,14 +4,19 @@ pub mod admin;
 pub mod gen_admin;
 pub mod item_edit;
 pub mod models;
+pub mod trickplay;
 
 pub use models::*;
+pub use trickplay::{TrickplayCell, TrickplayInfo};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+// TV web route: sync XHR stands in for ureq
+#[cfg(target_arch = "wasm32")]
+use crate::webhttp as ureq;
 
 /// R-API-5
 #[derive(Debug, Clone, PartialEq)]
@@ -1464,6 +1469,28 @@ impl Client {
         let page: Page = self.get_json(&path)?;
         Ok(page.items.into_iter().next())
     }
+
+    /// RR6 / P-ITEM-16: the other parts of a multi-part film (`GET /Videos/{id}/AdditionalParts`), in order.
+    pub fn additional_parts(&self, id: &str) -> Result<Vec<Item>> {
+        let uid = self.user_id()?;
+        let page: Page = self.get_json(&format!("/Videos/{id}/AdditionalParts?userId={uid}"))?;
+        Ok(page.items)
+    }
+
+    /// RR6 / P-ITEM-17: the still of one chapter (`/Items/{id}/Images/Chapter/{index}`); `tag` is the chapter's
+    /// `ImageTag`, so the URL changes when the picture does. `width_px` is already bucketed.
+    pub fn chapter_image_url(&self, item_id: &str, index: usize, tag: &str, width_px: u32) -> String {
+        format!("{}/Items/{item_id}/Images/Chapter/{index}?maxWidth={width_px}&quality=90&tag={tag}", self.base)
+    }
+
+    /// RR6 / P-PPL-1: a person's `(PremiereDate, EndDate)` = born, died (ISO strings as the server sends them).
+    /// `Item` has no end date, so this reads the two fields from the raw answer.
+    pub fn person_dates(&self, person_id: &str) -> Result<(Option<String>, Option<String>)> {
+        let uid = self.user_id()?;
+        let v: serde_json::Value = self.get_json(&format!("/Items/{person_id}?userId={uid}"))?;
+        let field = |k: &str| v.get(k).and_then(|d| d.as_str()).map(str::to_string).filter(|d| !d.is_empty());
+        Ok((field("PremiereDate"), field("EndDate")))
+    }
 }
 
 /// G7: the server calls `(index into the current entries, newIndex to send)` that move the entry at `from` to `to`
@@ -1621,6 +1648,21 @@ pub fn transcode_body(max_kbps: u32, force_transcode: bool) -> serde_json::Value
             ]
         }
     })
+}
+
+impl Client {
+    /// RR4 / P-PLAY-21: the item's trickplay resolution to draw seek-bar thumbnails from (`/Items/{id}?Fields=Trickplay`).
+    /// None when the item has none (or the server does not know trickplay).
+    pub fn trickplay_info(&self, item_id: &str) -> Result<Option<TrickplayInfo>> {
+        let uid = self.user_id()?;
+        let raw: serde_json::Value = self.get_json(&format!("/Items/{item_id}?userId={uid}&Fields=Trickplay"))?;
+        Ok(raw.get("Trickplay").and_then(trickplay::pick))
+    }
+
+    /// RR4 / P-PLAY-21: URL of tile sheet `sheet` at `width` px per thumbnail (fetched by the image loader).
+    pub fn trickplay_sheet_url(&self, item_id: &str, width: u32, sheet: u32) -> String {
+        format!("{}/Videos/{item_id}/Trickplay/{width}/{sheet}.jpg?MediaSourceId={item_id}", self.base)
+    }
 }
 
 /// G6: read a PlaybackInfo answer into a `PlaybackPlan`.

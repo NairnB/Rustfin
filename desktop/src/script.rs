@@ -117,6 +117,8 @@ fn key(s: &str) -> Option<Key> {
         "previous" => Key::Previous,
         "chapters" => Key::Chapters,
         "stats" => Key::Stats,
+        "queue" => Key::Queue,
+        "delete" => Key::Delete,
         "volumeup" => Key::VolumeUp,
         "volumedown" => Key::VolumeDown,
         _ => return None,
@@ -145,6 +147,16 @@ pub struct Runner {
 impl Runner {
     pub fn new(cmds: Vec<Cmd>, started: Instant) -> Runner {
         Runner { cmds, pc: 0, since: Instant::now(), idle_frames: 0, bench: vec![], started }
+    }
+
+    /// The current step acts on the next frame (keys, text, shots, bench…, or `idle` once nothing is loading);
+    /// only waits can sleep between frames.
+    pub fn acts_now(&self, app_idle: bool) -> bool {
+        match self.cmds.get(self.pc) {
+            Some(Cmd::Idle) => app_idle,
+            Some(Cmd::WaitScreen(_) | Cmd::Wait(_)) => false,
+            _ => true,
+        }
     }
 
     /// Called once per frame with the app's state; returns what to do this frame.

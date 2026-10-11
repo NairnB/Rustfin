@@ -167,6 +167,8 @@ struct Shell {
     first_poster: bool,
     /// Where scripted mouse commands last put the pointer (points).
     pointer: egui::Pos2,
+    /// Tour mode: when the next frame is due (None = at once).
+    wake: Option<Instant>,
 }
 
 /// `--playtest`: drive the mpv player directly against a throwaway server (packet P1).
@@ -365,6 +367,22 @@ impl Shell {
             shoot_png(&g.gl, size.width, size.height, &path);
         }
         g.surface.swap_buffers(&g.ctx).expect("swap");
+        // Tour mode draws flat out (no vsync). Draw again at once only when something can change: script input,
+        // a step that acts now, an egui animation, video; otherwise poll every 16 ms while loading, else 33 ms.
+        if let Some(r) = &self.runner {
+            let input = !step.keys.is_empty() || step.text.is_some() || step.mouse.is_some();
+            let now_needed = input
+                || r.acts_now(self.app.is_idle())
+                || self.app.shows_video()
+                || g.egui.egui_ctx.has_requested_repaint();
+            self.wake = if now_needed {
+                None
+            } else if !self.app.is_idle() {
+                Some(Instant::now() + Duration::from_millis(16))
+            } else {
+                Some(Instant::now() + Duration::from_millis(33))
+            };
+        }
         if step.quit {
             self.app.shutdown(&mut self.player);
             self.player.stop();
@@ -457,6 +475,7 @@ fn map_key(k: &WKey, typing: bool) -> Option<Key> {
         WKey::Named(NamedKey::Backspace) if !typing => Key::Back,
         WKey::Named(NamedKey::Space) if !typing => Key::PlayPause,
         WKey::Named(NamedKey::MediaPlayPause) => Key::PlayPause,
+        WKey::Named(NamedKey::Delete) if !typing => Key::Delete,
         WKey::Character(c) if !typing => match c.as_str() {
             "i" => Key::Info,
             "f" => Key::Fullscreen,
@@ -465,6 +484,7 @@ fn map_key(k: &WKey, typing: bool) -> Option<Key> {
             "p" => Key::Previous,
             "c" => Key::Chapters,
             "s" => Key::Stats,
+            "q" => Key::Queue,
             "+" | "=" => Key::VolumeUp,
             "-" => Key::VolumeDown,
             _ => return None,
@@ -492,7 +512,8 @@ impl ApplicationHandler for Shell {
         let Some(g) = self.gfx.as_mut() else { return };
         let typing = g.egui.egui_ctx.wants_keyboard_input();
         let r = g.egui.on_window_event(&g.window, &ev);
-        if r.repaint {
+        // Not for RedrawRequested itself: egui answers "repaint" to it, and every frame would order the next one.
+        if r.repaint && !matches!(ev, WindowEvent::RedrawRequested) {
             g.window.request_redraw();
         }
         match ev {
@@ -520,9 +541,15 @@ impl ApplicationHandler for Shell {
             _ => {}
         }
     }
-    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if let Some(g) = &self.gfx {
-            g.window.request_redraw();
+            match self.wake {
+                Some(t) if Instant::now() < t => el.set_control_flow(ControlFlow::WaitUntil(t)),
+                _ => {
+                    el.set_control_flow(ControlFlow::Poll);
+                    g.window.request_redraw();
+                }
+            }
         }
     }
 }
@@ -565,6 +592,7 @@ fn main() {
         first_frame: true,
         first_poster: false,
         pointer: egui::Pos2::ZERO,
+        wake: None,
     };
     el.run_app(&mut shell).expect("run");
 }

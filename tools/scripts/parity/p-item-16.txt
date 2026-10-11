@@ -1,0 +1,33 @@
+# RR6 parity tour: P-ITEM-16 "Additional parts" row on the item page of the two-part film "Harbour Crossing".
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right
+key enter
+wait-screen search
+idle
+type Harbour Crossing
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 2500
+idle
+key down
+wait 800
+idle
+shot p-item-16
+quit

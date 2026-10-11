@@ -80,6 +80,8 @@ pub struct Theme {
     pub form_breakpoint: f32,
     // player OSD volume bar (G4, P-PLAY-19)
     pub volume_bar_w: f32,
+    /// RR4 / P-PLAY-21: on-screen width of the seek-bar trickplay thumbnail.
+    pub trickplay_w: f32,
     // library views (G11): A–Z bar, list rows, filters dialog
     pub az_w: f32,
     pub az_h: f32,
@@ -101,6 +103,8 @@ pub struct Theme {
     pub up_next_countdown: f32,
     /// G10: how far the skip-segment button lifts above the bottom margin while the OSD is showing.
     pub skip_lift: f32,
+    /// RR3: width of the play queue side panel.
+    pub queue_w: f32,
 }
 
 impl Theme {
@@ -172,6 +176,7 @@ impl Theme {
             form_label_w: 240.0,
             form_breakpoint: 900.0,
             volume_bar_w: 320.0,
+            trickplay_w: 320.0,
             az_w: 36.0,
             az_h: 28.0,
             list_thumb_h: 72.0,
@@ -188,6 +193,7 @@ impl Theme {
             search_debounce: 0.3,
             up_next_countdown: 10.0,
             skip_lift: 200.0,
+            queue_w: 640.0,
         }
     }
 

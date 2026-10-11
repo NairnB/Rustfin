@@ -1,5 +1,64 @@
 //! Remote-style focus movement (SPEC §7, R-NAV-1/2). Pure logic, no egui. Bodies are packet C3.
 use crate::platform::Key;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+type Layout = Vec<(usize, usize)>;
+
+thread_local! {
+    /// Last focused index of each group, per screen layout (the `(len, cols)` of every group). Screens rebuild their
+    /// groups every frame, so the memory lives here, keyed by the layout rather than by an id they would have to keep.
+    static MEMORY: RefCell<HashMap<Layout, Vec<Option<usize>>>> = RefCell::new(HashMap::new());
+}
+
+fn layout(groups: &[Group]) -> Layout {
+    groups.iter().map(|g| (g.len, g.cols)).collect()
+}
+
+fn remember(groups: &[Group], f: Focus) {
+    MEMORY.with(|m| {
+        let mut m = m.borrow_mut();
+        let slots = m.entry(layout(groups)).or_insert_with(|| vec![None; groups.len()]);
+        slots[f.group] = Some(f.index);
+    });
+}
+
+fn remembered(groups: &[Group], group: usize) -> Option<usize> {
+    MEMORY.with(|m| {
+        let i = m.borrow().get(&layout(groups))?.get(group).copied().flatten()?;
+        (i < groups[group].len).then_some(i)
+    })
+}
+
+/// A `cols == 1` group whose next (`right`) or previous item sits to the side of `index` — a row of buttons stored as a list.
+fn beside(g: &Group, index: usize, right: bool) -> bool {
+    if g.cols > 1 || g.xs.len() != g.len {
+        return false;
+    }
+    if right {
+        index + 1 < g.len && g.xs[index + 1] > g.xs[index] + 1.0
+    } else {
+        index > 0 && g.xs[index - 1] < g.xs[index] - 1.0
+    }
+}
+
+/// A group that is one row of two or more items.
+fn is_row(g: &Group) -> bool {
+    g.len > 1 && rows_of(g) == 1
+}
+
+/// Where focus lands when it enters group `gi` from `src` (item `src_index`) with no `remembered` index:
+/// a lone control (field) above or below a row goes to the row's first item, otherwise the nearest x in `[start, end]`.
+fn enter(groups: &[Group], gi: usize, src: &Group, src_index: usize, start: usize, end: usize) -> usize {
+    if let Some(i) = remembered(groups, gi) {
+        return i;
+    }
+    let tg = &groups[gi];
+    if src.len == 1 && is_row(tg) {
+        return start;
+    }
+    nearest(tg, start, end, x_of(src, src_index))
+}
 
 /// One focus group on a screen: a row (`cols == len`), a grid (`cols` per row) or a vertical list (`cols == 1`).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -23,6 +82,9 @@ pub struct Focus {
 ///   from the last row → the next non-empty group, first row, item with the nearest x.
 /// - Up: previous row; from the first row → the previous non-empty group, its **last** row, nearest x.
 /// - No group in that direction → unchanged. Empty groups are skipped.
+/// - Entering a group by Up/Down lands on the item last focused there (UXP1); with none remembered, a lone control
+///   (field) goes to the first item of a row, else the nearest x. Memory is per screen layout, see `MEMORY`.
+/// - A group with `cols == 1` whose items sit side by side (rising x) also moves with Left/Right.
 /// - An invalid `f` (group out of range, index ≥ len) is first clamped to the nearest valid focus.
 pub fn move_focus(groups: &[Group], f: Focus, key: Key) -> Focus {
     let Some(cur) = clamp(groups, f) else {
@@ -30,16 +92,17 @@ pub fn move_focus(groups: &[Group], f: Focus, key: Key) -> Focus {
     };
     let g = &groups[cur.group];
     let cols = cols_of(g);
+    remember(groups, cur);
     match key {
         Key::Left => {
-            if cur.index % cols > 0 {
+            if cur.index % cols > 0 || beside(g, cur.index, false) {
                 Focus { index: cur.index - 1, ..cur }
             } else {
                 cur
             }
         }
         Key::Right => {
-            if cur.index % cols + 1 < cols && cur.index + 1 < g.len {
+            if (cur.index % cols + 1 < cols && cur.index + 1 < g.len) || beside(g, cur.index, true) {
                 Focus { index: cur.index + 1, ..cur }
             } else {
                 cur
@@ -55,7 +118,7 @@ pub fn move_focus(groups: &[Group], f: Focus, key: Key) -> Focus {
                     Some(gi) => {
                         let tg = &groups[gi];
                         let end = cols_of(tg).min(tg.len) - 1;
-                        Focus { group: gi, index: nearest(tg, 0, end, x_of(g, cur.index)) }
+                        Focus { group: gi, index: enter(groups, gi, g, cur.index, 0, end) }
                     }
                     None => cur,
                 }
@@ -69,7 +132,7 @@ pub fn move_focus(groups: &[Group], f: Focus, key: Key) -> Focus {
                     Some(gi) => {
                         let tg = &groups[gi];
                         let start = (rows_of(tg) - 1) * cols_of(tg);
-                        Focus { group: gi, index: nearest(tg, start, tg.len - 1, x_of(g, cur.index)) }
+                        Focus { group: gi, index: enter(groups, gi, g, cur.index, start, tg.len - 1) }
                     }
                     None => cur,
                 }

@@ -1,5 +1,5 @@
 # P-PPL-1 person page (photo, biography, birth/death): connect → sign in as viewer → Ember Rising → cast →
-# Ada Quill → person page header.
+# Rowan Pike (born 1950, died 2020, has a biography) → person page header.
 wait-screen connect
 wait 2500
 idle
@@ -27,8 +27,10 @@ key enter
 wait-screen movie
 idle
 key down
+key right
 key enter
 wait-screen person
+wait 1500
 idle
 shot p-ppl-1
 

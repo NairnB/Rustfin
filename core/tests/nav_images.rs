@@ -47,7 +47,7 @@ fn between_groups_keeps_nearest_x_and_skips_empty() {
     assert_eq!(move_focus(&g, f(0, 1), Down), f(2, 1));
     assert_eq!(move_focus(&g, f(2, 1), Up), f(0, 1), "empty group skipped going up");
     assert_eq!(move_focus(&g, f(2, 6), Down), f(3, 3), "into a grid: first row, nearest x");
-    assert_eq!(move_focus(&g, f(3, 1), Up), f(2, 1));
+    assert_eq!(move_focus(&g, f(3, 1), Up), f(2, 6), "UXP1: the row remembers its last focus (6), not nearest x");
     assert_eq!(move_focus(&g, f(3, 9), Down), f(3, 9));
 }
 

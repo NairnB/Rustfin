@@ -4,10 +4,10 @@
 use crate::api::Client;
 use crate::images::{cache_key, DiskCache, Lru};
 use crate::tasks::Pool;
+use crate::time::Instant;
 use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Instant;
 
 const MAX_INFLIGHT: usize = 6;
 const MAX_TEXTURES: usize = 1500;

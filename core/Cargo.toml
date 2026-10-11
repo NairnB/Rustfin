@@ -10,5 +10,16 @@ egui.workspace = true
 getrandom = "0.3"
 serde.workspace = true
 serde_json.workspace = true
-ureq.workspace = true
 image.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq.workspace = true
+
+# TV web route (tv/web): the browser has no sockets, threads or clock, so on wasm32 HTTP goes through
+# synchronous XHR (core/src/webhttp.rs), jobs run on the page's thread (tasks.rs) and time comes from web-time.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["XmlHttpRequest"] }
+web-time = "1"

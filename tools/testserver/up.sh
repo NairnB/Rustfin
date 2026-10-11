@@ -13,6 +13,7 @@ docker volume create jf-media >/dev/null
 docker run --rm -v jf-media:/media -v "$HERE/make-media.sh:/make-media.sh:ro" --entrypoint bash $IMG /make-media.sh
 docker run --rm -v jf-media:/media -v "$HERE/make-bulk.sh:/make-bulk.sh:ro" --entrypoint bash $IMG /make-bulk.sh
 docker run --rm -v jf-media:/media -v "$HERE/make-saga.sh:/make-saga.sh:ro" --entrypoint bash $IMG /make-saga.sh
+EXTRAS=$(docker run --rm -v jf-media:/media -v "$HERE/make-extras.sh:/make-extras.sh:ro" --entrypoint bash $IMG /make-extras.sh)
 if ! docker ps --format '{{.Names}}' | grep -qx $NAME; then
   docker rm -f $NAME >/dev/null 2>&1 || true
   PUB=(); [ "${JF_TEST_PUBLISH:-}" = 1 ] && PUB=(-p 127.0.0.1:8096:8096 -p 127.0.0.1:7359:7359/udp)
@@ -41,5 +42,31 @@ if J http://$NAME:8096/System/Info/Public | grep -q '"StartupWizardCompleted":fa
   IDS=$(J "http://$NAME:8096/Items?userId=$U&Recursive=true&IncludeItemTypes=Movie&searchTerm=Star%20Drift%20-" -H "$A" \
         | grep -oE '"Name":"Star Drift - [^"]*","ServerId":"[0-9a-f]+","Id":"[0-9a-f]{32}"' | grep -oE '[0-9a-f]{32}"$' | tr -d '"' | paste -sd, -)
   J -X POST "http://$NAME:8096/Collections?Name=Star%20Drift%20Saga&Ids=$IDS" -H "$A" >/dev/null
+  # trickplay tile sheets for the Movies library (RR4 / P-PLAY-21)
+  "$HERE/trickplay.sh" >/dev/null
+fi
+# round-2 extras (multi-part film, chapters, a person with dates): chapter images on for Movies, then rescan if new
+AUTH='MediaBrowser Client="setup", Device="setup", DeviceId="setup", Version="1"'
+TOK=$(J -X POST http://$NAME:8096/Users/AuthenticateByName -H "Authorization: $AUTH" -d '{"Username":"tester","Pw":"test-pass-1"}' | sed -E 's/.*"AccessToken":"([^"]+)".*/\1/')
+A="Authorization: $AUTH, Token=\"$TOK\""
+VF=$(J http://$NAME:8096/Library/VirtualFolders -H "$A")
+OPTS=$(echo "$VF" | grep -oP '"Name":"Movies".*?"LibraryOptions":\K\{.*?\}(?=,"ItemId")' | head -1)
+if echo "$OPTS" | grep -q '"EnableChapterImageExtraction":false'; then
+  ID=$(echo "$VF" | grep -oP '"Name":"Movies".*?"ItemId":"\K[0-9a-f]+' | head -1)
+  OPTS=$(echo "$OPTS" | sed 's/"EnableChapterImageExtraction":false/"EnableChapterImageExtraction":true/; s/"ExtractChapterImagesDuringLibraryScan":false/"ExtractChapterImagesDuringLibraryScan":true/')
+  J -X POST http://$NAME:8096/Library/VirtualFolders/LibraryOptions -H "$A" -d "{\"Id\":\"$ID\",\"LibraryOptions\":$OPTS}" >/dev/null || true
+  EXTRAS=${EXTRAS:-chapters}
+fi
+if [ -n "$EXTRAS" ]; then
+  J -X POST http://$NAME:8096/Library/Refresh -H "$A" >/dev/null
+  sleep 30
+  TID=$(J http://$NAME:8096/ScheduledTasks -H "$A" | grep -oP '"Key":"RefreshChapterImages","Id":"\K[0-9a-f]+' | head -1)
+  [ -n "$TID" ] && { J -X POST "http://$NAME:8096/ScheduledTasks/Running/$TID" -H "$A" >/dev/null; sleep 20; }
+fi
+# P-PPL-1: Rowan Pike (a director in the saga films) gets born / died dates and a biography, once
+PID=$(J "http://$NAME:8096/Persons?searchTerm=Rowan%20Pike" -H "$A" | grep -oE '"Id":"[0-9a-f]{32}"' | head -1 | grep -oE '[0-9a-f]{32}' || true)
+if [ -n "$PID" ] && ! J "http://$NAME:8096/Items/$PID" -H "$A" | grep -q '"EndDate"'; then
+  BODY=$(J "http://$NAME:8096/Items/$PID" -H "$A" | sed 's/^{/{"Overview":"A made-up director who spent forty years making quiet films about harbours and the people who leave them.","PremiereDate":"1950-03-02T00:00:00.0000000Z","EndDate":"2020-07-01T00:00:00.0000000Z",/; s/"LockData":false/"LockData":true/')
+  J -X POST "http://$NAME:8096/Items/$PID" -H "$A" -d "$BODY" >/dev/null || true
 fi
 echo "http://$NAME:8096"

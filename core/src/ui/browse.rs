@@ -78,7 +78,10 @@ fn seed() -> u64 {
     let mut b = [0u8; 8];
     let _ = getrandom::fill(&mut b);
     u64::from_le_bytes(b)
-        ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+        ^ crate::time::SystemTime::now()
+            .duration_since(crate::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
 }
 
 /// P-ITEM-21: looks up the playable children of `items` in the background; `finish_shuffle` plays them.

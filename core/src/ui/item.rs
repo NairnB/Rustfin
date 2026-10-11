@@ -19,14 +19,15 @@ const G_BTN: usize = 1;
 const G_LIST: usize = 2;
 const G_CHIPS: usize = 3;
 const G_CHAPTERS: usize = 4;
-const G_PEOPLE: usize = 5;
-const G_SPECIALS: usize = 6;
-const G_SIMILAR: usize = 7;
-const G_INFO: usize = 8;
-const G_LINKS: usize = 9;
-const G_RETRY: usize = 10;
-const G_POS: usize = 11;
-const G_STORY: usize = 12;
+const G_PARTS: usize = 5;
+const G_PEOPLE: usize = 6;
+const G_SPECIALS: usize = 7;
+const G_SIMILAR: usize = 8;
+const G_INFO: usize = 9;
+const G_LINKS: usize = 10;
+const G_RETRY: usize = 11;
+const G_POS: usize = 12;
+const G_STORY: usize = 13;
 /// P-ITEM-2: an overview longer than this many lines is cut with a More / Less button.
 const OVERVIEW_LINES: usize = 6;
 
@@ -129,6 +130,8 @@ pub struct ItemScreen {
     // G8: trailers, extras, similar items, media info and the version choice.
     trailers: Vec<Item>,
     specials: Vec<Item>,
+    /// RR6 (P-ITEM-16): the other parts of a multi-part film.
+    parts: Vec<Item>,
     similar: Vec<Item>,
     media_info: Vec<SourceInfo>,
     version: usize,
@@ -185,6 +188,7 @@ pub fn screen_in(item: Item, place: Option<String>) -> Box<dyn Screen> {
                 next_ep: None,
                 trailers: vec![],
                 specials: vec![],
+                parts: vec![],
                 similar: vec![],
                 media_info: vec![],
                 version: 0,
@@ -532,6 +536,9 @@ impl ItemScreen {
             cx.spawn("specials", move || client.special_features(&id));
             let id = self.item.id.clone();
             let client = cx.api();
+            cx.spawn("parts", move || client.additional_parts(&id));
+            let id = self.item.id.clone();
+            let client = cx.api();
             cx.spawn("similar", move || client.similar(&id, 12));
         }
         match self.kind {
@@ -594,6 +601,14 @@ impl ItemScreen {
         if let Some(ep) = ep {
             cx.push(player::screen(ep, PlayOptions::default()));
         }
+    }
+
+    /// RR6 (P-ITEM-16): a multi-part film plays as a queue (this part, then the others), starting at `start`
+    /// (0 = the film's own first part); each part reports its own progress.
+    fn play_parts(&mut self, cx: &mut Cx, start: usize, opts: PlayOptions) {
+        let mut queue = vec![self.current().clone()];
+        queue.extend(self.parts.iter().cloned());
+        cx.push(player::screen_queue_at(queue, start, opts));
     }
 
     // G4 (P-ITEM-17): play from a chapter by reusing the resume position (avoids widening `PlayOptions`).
@@ -691,7 +706,11 @@ impl ItemScreen {
             Action::Play { from_start } => {
                 let item = self.current().clone();
                 let opts = self.play_options(from_start);
-                cx.push(player::screen(item, opts));
+                if self.parts.is_empty() {
+                    cx.push(player::screen(item, opts));
+                } else {
+                    self.play_parts(cx, 0, opts);
+                }
             }
             Action::PlayNext => self.play_next_episode(cx),
             Action::ToggleWatched => self.toggle_watched(cx),
@@ -868,6 +887,14 @@ impl ItemScreen {
             let secs = super::player::chapter_rows(&self.current().chapters).get(self.focus.index).map(|(s, _)| *s);
             if let Some(s) = secs {
                 self.do_action(cx, Action::PlayChapter(s));
+            }
+            return true;
+        }
+        // RR6 (P-ITEM-16): Enter on a part plays the film from that part.
+        if self.focus.group == G_PARTS {
+            if self.focus.index < self.parts.len() {
+                let opts = self.play_options(true);
+                self.play_parts(cx, self.focus.index + 1, opts);
             }
             return true;
         }
@@ -1271,6 +1298,21 @@ impl ItemScreen {
         out.clicked
     }
 
+    // RR6 (P-ITEM-16): "Additional parts" row; click or Enter plays the film from that part.
+    fn draw_parts_row(&mut self, ui: &mut egui::Ui, cx: &mut Cx, xs: &mut Vec<f32>) -> Option<usize> {
+        if self.parts.is_empty() {
+            return None;
+        }
+        let focus = (self.focus.group == G_PARTS).then_some(self.focus.index);
+        let pointer_moved = ui.input(|i| i.pointer.is_moving());
+        let out = parts::row(ui, cx, "rr6-parts", "Additional parts", &self.parts, CardKind::Thumb, focus);
+        *xs = out.xs;
+        if let (true, Some(i)) = (pointer_moved, out.hovered) {
+            self.focus = Focus { group: G_PARTS, index: i };
+        }
+        out.clicked
+    }
+
     // G8 (P-ITEM-18): the technical facts of the chosen version. Path only for admins.
     fn draw_media_info(&mut self, ui: &mut egui::Ui, cx: &mut Cx, xs: &mut Vec<f32>) {
         let Some(id) = self.source().map(|m| m.id.clone()) else { return };
@@ -1301,8 +1343,9 @@ impl ItemScreen {
         }
     }
 
-    // G4 (P-ITEM-17): a "Chapters" row on movie/episode pages (name + time; Enter plays from the chapter).
-    // Always drawn so the "No chapters" state is visible in the render shots.
+    // G4 / RR6 (P-ITEM-17): a "Chapters" row on movie/episode pages: a 16:9 still per chapter (the server's chapter
+    // image) with time + name under it; Enter plays from the chapter. Always drawn so the "No chapters" state is
+    // visible in the render shots.
     fn draw_chapters(&mut self, ui: &mut egui::Ui, cx: &mut Cx, chapter_xs: &mut Vec<f32>) -> Option<Action> {
         let t = cx.theme;
         let rows = super::player::chapter_rows(&self.current().chapters);
@@ -1313,18 +1356,64 @@ impl ItemScreen {
             parts::muted(ui, t, "No chapters");
             return None;
         }
+        // same order as `chapter_rows` (stable sort by start); the original index is what the image URL wants
+        let mut order: Vec<(usize, &crate::api::Chapter)> = self.current().chapters.iter().enumerate().collect();
+        order.sort_by_key(|(_, c)| c.start_position_ticks);
+        let id = self.current().id.clone();
+        let size = CardKind::Thumb.size(t);
+        let w = image_width_bucket(size.x, ui.ctx().pixels_per_point());
         let mut act = None;
-        for (i, (secs, label)) in rows.iter().enumerate() {
-            let focused = self.focus.group == G_CHAPTERS && self.focus.index == i;
-            let r = parts::button(ui, t, label, focused, false);
-            chapter_xs.push(r.rect.center().x);
-            if r.hovered() {
-                self.focus = Focus { group: G_CHAPTERS, index: i };
-            }
-            if r.clicked() {
-                act = Some(Action::PlayChapter(*secs));
-            }
-            ui.add_space(t.gap / 3.0);
+        let mut hovered = None;
+        egui::ScrollArea::horizontal()
+            .id_salt("chapters")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.gap;
+                    for (i, ((secs, label), (orig, ch))) in rows.iter().zip(order.iter()).enumerate() {
+                        let focused = self.focus.group == G_CHAPTERS && self.focus.index == i;
+                        let (rect, resp) =
+                            ui.allocate_exact_size(egui::vec2(size.x, size.y + t.card_label_h), egui::Sense::click());
+                        let img = egui::Rect::from_min_size(rect.min, size);
+                        let tex = ch
+                            .image_tag
+                            .as_deref()
+                            .and_then(|tag| cx.client.as_ref().map(|c| c.chapter_image_url(&id, *orig, tag, w)))
+                            .and_then(|u| cx.images.get(&u));
+                        match tex {
+                            Some(tex) => {
+                                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                                ui.painter().image(tex, img, uv, egui::Color32::WHITE);
+                            }
+                            None => {
+                                ui.painter().rect_filled(img, t.radius, t.skeleton);
+                            }
+                        }
+                        if focused {
+                            parts::focus_ring(ui, t, img);
+                            resp.scroll_to_me(None);
+                        }
+                        parts::label_line(
+                            ui,
+                            t,
+                            egui::pos2(rect.left(), img.bottom() + 6.0),
+                            size.x,
+                            label,
+                            t.body_size,
+                            t.text,
+                        );
+                        chapter_xs.push(rect.center().x);
+                        if resp.hovered() {
+                            hovered = Some(i);
+                        }
+                        if resp.clicked() {
+                            act = Some(Action::PlayChapter(*secs));
+                        }
+                    }
+                });
+            });
+        if let Some(i) = hovered {
+            self.focus = Focus { group: G_CHAPTERS, index: i };
         }
         act
     }
@@ -1813,6 +1902,8 @@ impl ItemScreen {
         let mut similar_xs: Vec<f32> = vec![];
         let mut info_xs: Vec<f32> = vec![];
         let mut play_special: Option<Item> = None;
+        let mut play_part: Option<usize> = None;
+        let mut part_xs: Vec<f32> = vec![];
         let mut pos_xs: Vec<f32> = vec![];
         let mut story_xs: Vec<f32> = vec![];
 
@@ -1828,6 +1919,10 @@ impl ItemScreen {
                     if act.is_none() {
                         act = a;
                     }
+                }
+                // RR6 (P-ITEM-16): the other parts of a multi-part film.
+                if !self.picker_open() {
+                    play_part = self.draw_parts_row(ui, cx, &mut part_xs);
                 }
                 push_person = self.draw_people(ui, cx, &mut people_xs);
                 // G8: extras, more like this, media info.
@@ -1869,7 +1964,7 @@ impl ItemScreen {
             }
         }
 
-        let mut groups = vec![Group::default(); 13];
+        let mut groups = vec![Group::default(); 14];
         match self.kind {
             ItemKind::Movie | ItemKind::Episode => {
                 let n = btn_xs.len();
@@ -1882,9 +1977,10 @@ impl ItemScreen {
                     groups[G_LIST] = Group { len: list_xs.len(), cols: 1, xs: list_xs };
                 } else {
                     // G4 (P-ITEM-17)
-                    groups[G_CHAPTERS] = Group { len: chapter_xs.len(), cols: 1, xs: chapter_xs };
+                    groups[G_CHAPTERS] = Group { len: chapter_xs.len(), cols: chapter_xs.len(), xs: chapter_xs };
                 }
                 groups[G_CHIPS] = Group { len: chip_xs.len(), cols: chip_xs.len(), xs: chip_xs };
+                groups[G_PARTS] = Group { len: part_xs.len(), cols: part_xs.len(), xs: part_xs };
                 groups[G_PEOPLE] = Group { len: people_xs.len(), cols: people_xs.len(), xs: people_xs };
                 groups[G_SPECIALS] = Group { len: special_xs.len(), cols: special_xs.len(), xs: special_xs };
                 groups[G_SIMILAR] = Group { len: similar_xs.len(), cols: similar_xs.len(), xs: similar_xs };
@@ -1926,6 +2022,10 @@ impl ItemScreen {
         }
         if let Some(it) = push_item {
             cx.push(super::item::screen(it));
+        }
+        if let Some(i) = play_part {
+            let opts = self.play_options(true);
+            self.play_parts(cx, i + 1, opts);
         }
         if let Some(it) = play_special {
             cx.push(player::screen(it, PlayOptions { from_start: true, ..Default::default() }));
@@ -2105,11 +2205,12 @@ impl Screen for ItemScreen {
                 }
             }
             // G8: the extras. A failed extra is left out quietly; only Unauthorized matters.
-            "trailers" | "specials" | "similar" => {
+            "trailers" | "specials" | "similar" | "parts" => {
                 let Ok(r) = payload.downcast::<Result<Vec<Item>>>() else { return };
                 match (*r, tag) {
                     (Ok(v), "trailers") => self.trailers = v,
                     (Ok(v), "specials") => self.specials = v,
+                    (Ok(v), "parts") => self.parts = v,
                     (Ok(v), _) => self.similar = v,
                     (Err(ApiError::Unauthorized), _) => cx.signed_out(),
                     (Err(_), _) => {}

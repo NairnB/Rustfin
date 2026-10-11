@@ -4,7 +4,7 @@ use super::parts;
 use super::widgets;
 use crate::api::{
     secs_to_ticks, ticks_to_secs, ApiError, Chapter, Item, ItemKind, MediaStream, PlaybackInfo, PlaybackPlan,
-    ProgressReport, Result, Segment, SegmentKind, StreamKind,
+    ProgressReport, Result, Segment, SegmentKind, StreamKind, TrickplayInfo,
 };
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
@@ -13,6 +13,7 @@ use crate::platform::{
     SubWeight, SUB_COLOURS,
 };
 use crate::playreq::build_plan;
+use crate::queue::Queue;
 use crate::repeat::{end_action, EndAction, Repeat};
 use crate::settings::SubPrefs;
 use std::any::Any;
@@ -119,6 +120,7 @@ type PanelGroup = (usize, Vec<f32>, Option<usize>, Option<usize>);
 const B_PLAY: usize = 1;
 const B_VOL_MUTE: usize = 0;
 const B_VOL_BAR: usize = 1;
+const B_VOL_QUEUE: usize = 2;
 
 /// G10 / P-PLAY-11: the segment (with a button to offer) that `pos` is inside, as an index into `segments`.
 /// `Unknown` segments have nothing to offer and never count. The first match wins.
@@ -195,6 +197,23 @@ pub fn stats_rows(
     v
 }
 
+/// RR3: the buttons of the queue panel.
+#[derive(Clone, Copy)]
+enum QueueAct {
+    MoveUp,
+    MoveDown,
+    Remove,
+    Close,
+}
+
+/// RR3: how a queue row reads — "S1E3 · Name" for an episode, the name otherwise.
+pub fn queue_row_label(item: &Item) -> String {
+    match (&item.kind, item.parent_index_number, item.index_number) {
+        (ItemKind::Episode, Some(s), Some(e)) => format!("S{s}E{e} · {}", item.name),
+        _ => item.name.clone(),
+    }
+}
+
 #[derive(Clone)]
 enum Action {
     Seek(f64),
@@ -213,6 +232,7 @@ enum Action {
     OpenAspect,
     OpenRepeat,
     ToggleStats,
+    OpenQueue,
     PickQuality(u32),
     PickSpeed(f64),
     PickAspect(Aspect),
@@ -261,8 +281,15 @@ pub struct PlayerScreen {
     prev: Option<Item>,
     prev_known: bool,
     prev_loading: bool,
-    /// G9: when set, next/previous come from this list (shuffle, play all) instead of the series order.
-    queue: Option<Vec<Item>>,
+    /// G9 / RR3 (P-PLAY-22): the play queue. Explicit (shuffle, play all) it decides next/previous; for a single
+    /// episode it is the season, and the server's next episode still takes over past its end.
+    queue: Option<Queue<Item>>,
+    queue_explicit: bool,
+    queue_open: bool,
+    /// The queue row the Move / Remove buttons act on (the last focused row).
+    queue_sel: usize,
+    /// Scroll the focused queue row into view on the next frame (set by keys and on open).
+    queue_scroll: bool,
     up_next: Option<Item>,
     up_next_deadline: Option<f64>,
     handling_end: bool,
@@ -270,6 +297,8 @@ pub struct PlayerScreen {
     // G10 / P-PLAY-11: media segments of the playing item, and the ones already auto-skipped
     segments: Vec<Segment>,
     auto_skipped: Vec<usize>,
+    // RR4 / P-PLAY-21: trickplay info of the playing item (None = no thumbnails)
+    trickplay: Option<TrickplayInfo>,
     // G4: volume (0.0..1.0), mute, fullscreen, chapters list, keys help
     volume: f32,
     muted: bool,
@@ -298,8 +327,16 @@ pub fn screen(item: Item, opts: PlayOptions) -> Box<dyn Screen> {
 /// G9 (P-TV-10, P-LIB-23): plays the first of `items`, then continues through the rest in order instead of the
 /// series' next episode. An empty list opens nothing, so callers check first.
 pub fn screen_queue(items: Vec<Item>, opts: PlayOptions) -> Box<dyn Screen> {
-    let mut p = new_player(items.first().cloned().unwrap_or_default(), opts);
-    p.queue = Some(items);
+    screen_queue_at(items, 0, opts)
+}
+
+/// RR6 (P-ITEM-16): like `screen_queue` but starts at `start` (a multi-part film opened at its second part still
+/// has part 1 before it). Out of range → the first item.
+pub fn screen_queue_at(items: Vec<Item>, start: usize, opts: PlayOptions) -> Box<dyn Screen> {
+    let start = if start < items.len() { start } else { 0 };
+    let mut p = new_player(items.get(start).cloned().unwrap_or_default(), opts);
+    p.queue = Some(Queue::new(items, start));
+    p.queue_explicit = true;
     Box::new(p)
 }
 
@@ -341,12 +378,17 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         prev_known: false,
         prev_loading: false,
         queue: None,
+        queue_explicit: false,
+        queue_open: false,
+        queue_sel: 0,
+        queue_scroll: false,
         up_next: None,
         up_next_deadline: None,
         handling_end: false,
         pending_end: false,
         segments: vec![],
         auto_skipped: vec![],
+        trickplay: None,
         volume: 1.0,
         muted: false,
         fullscreen: false,
@@ -368,8 +410,8 @@ impl PlayerScreen {
     /// The queue neighbour of the current item (`step` = 1 next, -1 previous); `None` outside a queue.
     fn queue_neighbour(&self, step: isize) -> Option<Option<Item>> {
         let q = self.queue.as_ref()?;
-        let pos = q.iter().position(|i| i.id == self.item.id)? as isize + step;
-        Some(usize::try_from(pos).ok().and_then(|p| q.get(p)).cloned())
+        let at = if step > 0 { q.next(Repeat::Off) } else { q.previous() };
+        Some(at.and_then(|i| q.get(i)).cloned())
     }
 
     fn source(&self) -> Option<&crate::api::MediaSource> {
@@ -413,6 +455,7 @@ impl PlayerScreen {
             || self.speed_open
             || self.aspect_open
             || self.repeat_open
+            || self.queue_open
     }
 
     fn close_menus(&mut self) {
@@ -423,6 +466,7 @@ impl PlayerScreen {
         self.speed_open = false;
         self.aspect_open = false;
         self.repeat_open = false;
+        self.queue_open = false;
     }
 
     fn quality_labels(&self) -> Vec<String> {
@@ -570,9 +614,11 @@ impl PlayerScreen {
             return;
         }
         if let Some(n) = self.queue_neighbour(1) {
-            self.next = n;
-            self.next_known = true;
-            return;
+            if n.is_some() || self.queue_explicit {
+                self.next = n;
+                self.next_known = true;
+                return;
+            }
         }
         if self.item.kind != ItemKind::Episode || self.item.series_id.is_none() {
             self.next_known = true;
@@ -590,9 +636,11 @@ impl PlayerScreen {
             return;
         }
         if let Some(p) = self.queue_neighbour(-1) {
-            self.prev = p;
-            self.prev_known = true;
-            return;
+            if p.is_some() || self.queue_explicit {
+                self.prev = p;
+                self.prev_known = true;
+                return;
+            }
         }
         if self.item.kind != ItemKind::Episode || self.item.series_id.is_none() {
             self.prev_known = true;
@@ -629,6 +677,7 @@ impl PlayerScreen {
                 self.pending_end = false;
                 self.segments = vec![];
                 self.auto_skipped = vec![];
+                self.trickplay = None;
                 self.up_next = None;
                 self.up_next_deadline = None;
                 self.next = None;
@@ -653,8 +702,14 @@ impl PlayerScreen {
                 cx.player.set_secondary_subtitle(None);
                 cx.player.set_speed(self.speed);
                 cx.player.set_aspect(self.aspect);
+                self.sync_queue(cx);
                 self.ensure_next(cx);
                 self.ensure_prev(cx);
+                {
+                    let id = self.item.id.clone();
+                    let client = cx.api();
+                    cx.spawn("trickplay", move || client.trickplay_info(&id).map(|t| (id, t)));
+                }
                 match fixture_segments() {
                     Some(fixture) => self.segments = fixture,
                     None => {
@@ -734,7 +789,12 @@ impl PlayerScreen {
             EndAction::UpNext => self.begin_up_next(cx),
             EndAction::Replay => self.replay(cx),
             EndAction::Restart => {
-                let first = self.queue.as_ref().and_then(|q| q.first()).filter(|f| f.id != self.item.id).cloned();
+                let first = self
+                    .queue
+                    .as_ref()
+                    .and_then(|q| q.next(Repeat::All).and_then(|i| q.get(i)))
+                    .filter(|f| f.id != self.item.id)
+                    .cloned();
                 match first {
                     Some(first) => {
                         self.next = Some(first);
@@ -809,6 +869,107 @@ impl PlayerScreen {
         self.loading = true;
         let id = prev.id.clone();
         self.fetch_plan(cx, "previnfo", id, false);
+    }
+
+    /// RR3: make the queue's current item the one now playing; a single episode with no queue (or one from another
+    /// season) gets its season as the default queue.
+    fn sync_queue(&mut self, cx: &mut Cx) {
+        let id = self.item.id.clone();
+        if let Some(q) = &mut self.queue {
+            if let Some(i) = q.items().iter().position(|x| x.id == id) {
+                q.jump(i);
+                return;
+            }
+            if self.queue_explicit {
+                return;
+            }
+            self.queue = None;
+        }
+        if let (ItemKind::Episode, Some(series), Some(season)) =
+            (&self.item.kind, self.item.series_id.clone(), self.item.season_id.clone())
+        {
+            let client = cx.api();
+            cx.spawn("season", move || client.episodes(&series, Some(&season)).map(|v| (id, v)));
+        }
+    }
+
+    /// RR3: the queue changed under the current item; work out next again.
+    fn queue_changed(&mut self, cx: &mut Cx) {
+        self.next = None;
+        self.next_known = false;
+        self.ensure_next(cx);
+    }
+
+    /// RR3: jump to queue item `i` — report stopped, then start it.
+    fn queue_jump(&mut self, cx: &mut Cx, i: usize) {
+        let Some(q) = &self.queue else { return };
+        if i == q.current_index() {
+            self.close_menus();
+            self.focus = Focus { group: G_BTN, index: B_PLAY };
+            return;
+        }
+        let Some(item) = q.get(i).cloned() else { return };
+        self.close_menus();
+        self.focus = Focus { group: G_BTN, index: B_PLAY };
+        self.next = Some(item);
+        self.play_next(cx);
+    }
+
+    /// The Move / Remove / Close buttons of the queue panel, for the selected row.
+    fn queue_actions(&self) -> Vec<(&'static str, QueueAct)> {
+        let mut v = vec![];
+        if let Some(q) = &self.queue {
+            if q.can_move_up(self.queue_sel) {
+                v.push(("Move up", QueueAct::MoveUp));
+            }
+            if q.can_move_down(self.queue_sel) {
+                v.push(("Move down", QueueAct::MoveDown));
+            }
+            if q.is_upcoming(self.queue_sel) {
+                v.push(("Remove", QueueAct::Remove));
+            }
+        }
+        v.push(("Close", QueueAct::Close));
+        v
+    }
+
+    fn queue_act(&mut self, cx: &mut Cx, a: QueueAct) {
+        let sel = self.queue_sel;
+        let from_list = self.focus.group == G_LIST;
+        let Some(q) = &mut self.queue else { return };
+        match a {
+            QueueAct::MoveUp => {
+                if q.move_up(sel) {
+                    self.queue_sel = sel - 1;
+                    if from_list {
+                        self.focus.index = sel - 1;
+                    }
+                    self.queue_changed(cx);
+                }
+            }
+            QueueAct::MoveDown => {
+                if q.move_down(sel) {
+                    self.queue_sel = sel + 1;
+                    if from_list {
+                        self.focus.index = sel + 1;
+                    }
+                    self.queue_changed(cx);
+                }
+            }
+            QueueAct::Remove => {
+                if q.remove(sel) {
+                    self.queue_sel = sel.min(q.len() - 1);
+                    if from_list {
+                        self.focus.index = self.queue_sel;
+                    }
+                    self.queue_changed(cx);
+                }
+            }
+            QueueAct::Close => {
+                self.close_menus();
+                self.focus = Focus { group: G_BTN, index: B_PLAY };
+            }
+        }
     }
 
     /// G10: skip the segment `i` — to its end; credits with a next episode go straight to it.
@@ -1046,6 +1207,17 @@ impl PlayerScreen {
                 self.osd_last_input = cx.now;
             }
             Action::ToggleStats => self.stats_open = !self.stats_open,
+            Action::OpenQueue => {
+                if let Some(at) = self.queue.as_ref().map(|q| q.current_index()) {
+                    self.close_menus();
+                    self.queue_open = true;
+                    self.queue_sel = at;
+                    self.queue_scroll = true;
+                    self.focus = Focus { group: G_LIST, index: at };
+                    self.osd_visible = true;
+                    self.osd_last_input = cx.now;
+                }
+            }
             Action::PickQuality(kbps) => {
                 self.close_menus();
                 self.focus = Focus { group: G_BTN, index: B_PLAY };
@@ -1080,11 +1252,19 @@ impl PlayerScreen {
             }
         } else if self.focus.group == G_VOL && self.focus.index == B_VOL_MUTE {
             self.do_action(cx, Action::ToggleMute);
+        } else if self.focus.group == G_VOL && self.focus.index == B_VOL_QUEUE {
+            self.do_action(cx, Action::OpenQueue);
         }
     }
 
     fn pick_current(&mut self, cx: &mut Cx) {
-        if self.audio_open {
+        if self.queue_open {
+            if self.focus.group == G_LIST {
+                self.queue_jump(cx, self.focus.index);
+            } else if let Some((_, a)) = self.queue_actions().get(self.focus.index).copied() {
+                self.queue_act(cx, a);
+            }
+        } else if self.audio_open {
             if let Some(idx) = self.audio_entries().get(self.focus.index).map(|(_, i)| *i) {
                 self.pick_audio(cx, idx);
             }
@@ -1158,6 +1338,8 @@ impl PlayerScreen {
         let buttons = self.buttons(play_label);
         let audio_open = self.audio_open;
         let subtitle_open = self.subtitle_open;
+        let queue_open = self.queue_open;
+        let has_queue = self.queue.as_ref().is_some_and(|q| q.len() > 1);
         let chapters_open =
             self.chapters_open || self.quality_open || self.speed_open || self.aspect_open || self.repeat_open;
         let focus_bar = self.focus.group == G_BAR;
@@ -1189,6 +1371,8 @@ impl PlayerScreen {
 
         let mut bar_xs = vec![];
         let mut seek_click: Option<f32> = None;
+        let mut bar_hover: Option<f32> = None;
+        let mut bar_rect = egui::Rect::NOTHING;
         let mut btn_xs = vec![];
         let mut btn_clicked: Option<usize> = None;
         let mut btn_hovered: Option<usize> = None;
@@ -1221,6 +1405,10 @@ impl PlayerScreen {
                     parts::focus_ring(ui, t, rect);
                 }
                 bar_xs.push(rect.center().x);
+                bar_rect = rect;
+                if resp.hovered() {
+                    bar_hover = resp.hover_pos().map(|p| ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
+                }
                 if resp.clicked() {
                     if let Some(p) = resp.interact_pointer_pos() {
                         seek_click = Some(((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
@@ -1286,16 +1474,31 @@ impl PlayerScreen {
                     }
                 }
                 ui.label(egui::RichText::new(pct_label).size(t.body_size).color(t.muted));
+                if has_queue {
+                    let r = parts::button(ui, t, "Queue", focus_vol && self.focus.index == B_VOL_QUEUE, false);
+                    vol_xs.push(r.rect.center().x);
+                    if r.hovered() {
+                        vol_hovered = Some(B_VOL_QUEUE);
+                    }
+                    if r.clicked() {
+                        vol_clicked = Some(B_VOL_QUEUE);
+                    }
+                }
             });
         }
 
         if let Some(rel) = seek_click {
             cx.player.seek(rel as f64 * dur);
         }
+        if bar_hover.is_some() || focus_bar {
+            self.draw_trickplay(ui, cx, bar_rect, bottom_rect.top(), bar_hover.unwrap_or(frac), dur);
+        }
 
         let mut groups = vec![Group::default(); GROUP_COUNT];
         if subtitle_open {
             self.draw_sub_panel(ui, cx, &mut groups);
+        } else if queue_open {
+            self.draw_queue(ui, cx, &mut groups);
         } else if audio_open || chapters_open {
             let (list_xs, list_hovered, list_action) = self.draw_picker(ui, cx);
             groups[G_LIST] = Group { len: list_xs.len(), cols: 1, xs: list_xs };
@@ -1327,8 +1530,40 @@ impl PlayerScreen {
         if let Some(i) = vol_clicked {
             if i == B_VOL_MUTE {
                 self.do_action(cx, Action::ToggleMute);
+            } else if i == B_VOL_QUEUE {
+                self.do_action(cx, Action::OpenQueue);
             }
         }
+    }
+
+    /// RR4 / P-PLAY-21: the trickplay thumbnail for the position `frac` along the seek bar, above the bar. Nothing
+    /// when the item has no trickplay or its tile sheet has not loaded yet.
+    fn draw_trickplay(&self, ui: &mut egui::Ui, cx: &mut Cx, bar: egui::Rect, bottom: f32, frac: f32, dur: f64) {
+        let (Some(info), Some(client)) = (&self.trickplay, cx.client.as_ref()) else { return };
+        let secs = frac as f64 * dur;
+        let Some(cell) = info.locate(secs) else { return };
+        let url = client.trickplay_sheet_url(&self.item.id, info.width, cell.sheet);
+        let Some(tex) = cx.images.get(&url) else { return };
+        let t = cx.theme;
+        let (sheet_w, sheet_h) = info.sheet_size();
+        let uv = egui::Rect::from_min_max(
+            egui::pos2(cell.x as f32 / sheet_w as f32, cell.y as f32 / sheet_h as f32),
+            egui::pos2((cell.x + info.width) as f32 / sheet_w as f32, (cell.y + info.height) as f32 / sheet_h as f32),
+        );
+        let size = egui::vec2(t.trickplay_w, t.trickplay_w * info.height as f32 / info.width as f32);
+        let screen = ui.ctx().screen_rect();
+        let x = (bar.left() + bar.width() * frac - size.x / 2.0)
+            .clamp(screen.left() + t.margin, (screen.right() - t.margin - size.x).max(screen.left() + t.margin));
+        let rect = egui::Rect::from_min_size(egui::pos2(x, bottom - t.gap - size.y), size);
+        ui.painter().rect_filled(rect.expand(t.gap / 4.0), t.radius, t.scrim);
+        ui.painter().image(tex, rect, uv, egui::Color32::WHITE);
+        ui.painter().text(
+            egui::pos2(rect.center().x, rect.bottom() - t.gap / 4.0),
+            egui::Align2::CENTER_BOTTOM,
+            parts::clock(secs),
+            t.font(t.body_size),
+            t.text,
+        );
     }
 
     fn draw_picker(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> (Vec<f32>, Option<usize>, Option<Action>) {
@@ -1390,6 +1625,113 @@ impl PlayerScreen {
             clicked.and_then(|i| self.chapter_entries().get(i).map(|(secs, _)| Action::SeekChapter(*secs)))
         };
         (xs, hovered, action)
+    }
+
+    /// The queue side panel (P-PLAY-22): played items greyed at the top, the current one marked, upcoming below.
+    /// Fills G_BTN (Move / Remove / Close for the selected row) and G_LIST (the rows); applies hover and click.
+    fn draw_queue(&mut self, ui: &mut egui::Ui, cx: &mut Cx, groups: &mut [Group]) {
+        let t = cx.theme;
+        let Some(q) = self.queue.clone() else { return };
+        if self.focus.group == G_LIST {
+            self.queue_sel = self.focus.index;
+        }
+        self.queue_sel = self.queue_sel.min(q.len().saturating_sub(1));
+        let acts = self.queue_actions();
+        if self.focus.group == G_BTN {
+            self.focus.index = self.focus.index.min(acts.len() - 1);
+        }
+        let screen = ui.ctx().screen_rect();
+        let bottom_h = t.button_h * 3.0 + t.gap * 2.0;
+        let panel_h = (screen.height() - 3.0 * t.margin - bottom_h).max(0.0);
+        let list_h = (panel_h - t.button_h * 2.0 - t.gap * 4.0).max(0.0);
+        let focus = self.focus;
+        let scroll = self.queue_scroll;
+        let mut act_xs = vec![];
+        let mut act_hover = None;
+        let mut act_click = None;
+        let mut row_xs = vec![];
+        let mut row_hover = None;
+        let mut row_click = None;
+        egui::Area::new(egui::Id::new("player-queue"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-t.margin, t.margin))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::NONE.fill(t.surface).corner_radius(t.radius).inner_margin(t.gap).show(ui, |ui| {
+                    ui.set_width(t.queue_w);
+                    ui.set_height(panel_h);
+                    parts::heading(ui, t, &format!("Queue · {} of {}", q.current_index() + 1, q.len()));
+                    ui.add_space(t.gap / 2.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                        for (i, (label, _)) in acts.iter().enumerate() {
+                            let r = parts::button(ui, t, label, focus.group == G_BTN && focus.index == i, false);
+                            act_xs.push(r.rect.center().x);
+                            if r.hovered() {
+                                act_hover = Some(i);
+                            }
+                            if r.clicked() {
+                                act_click = Some(i);
+                            }
+                        }
+                    });
+                    ui.add_space(t.gap / 2.0);
+                    egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = t.gap / 4.0;
+                        for (i, item) in q.items().iter().enumerate() {
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), t.button_h),
+                                egui::Sense::click(),
+                            );
+                            let current = i == q.current_index();
+                            let ink = if q.is_played(i) { t.muted } else { t.text };
+                            if current || resp.hovered() {
+                                ui.painter().rect_filled(rect, t.radius, t.surface_hi);
+                            }
+                            let label =
+                                if current { format!("▶ {}", queue_row_label(item)) } else { queue_row_label(item) };
+                            ui.painter().with_clip_rect(rect).text(
+                                rect.left_center() + egui::vec2(t.gap / 2.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                t.font(t.body_size),
+                                ink,
+                            );
+                            let focused = focus.group == G_LIST && focus.index == i;
+                            if focused {
+                                parts::focus_ring(ui, t, rect);
+                                if scroll {
+                                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                                }
+                            }
+                            row_xs.push(rect.center().x);
+                            if resp.hovered() {
+                                row_hover = Some(i);
+                            }
+                            if resp.clicked() {
+                                row_click = Some(i);
+                            }
+                        }
+                    });
+                });
+            });
+        self.queue_scroll = false;
+        groups[G_BTN] = Group { len: act_xs.len(), cols: act_xs.len(), xs: act_xs };
+        groups[G_LIST] = Group { len: row_xs.len(), cols: 1, xs: row_xs };
+        if let Some(i) = act_hover {
+            self.focus = Focus { group: G_BTN, index: i };
+        }
+        if let Some(i) = row_hover {
+            self.focus = Focus { group: G_LIST, index: i };
+            self.queue_sel = i;
+        }
+        if let Some(i) = act_click {
+            if let Some((_, a)) = acts.get(i).copied() {
+                self.queue_act(cx, a);
+            }
+        }
+        if let Some(i) = row_click {
+            self.queue_jump(cx, i);
+        }
     }
 
     /// The subtitle panel (P-PLAY-6/7/8/9): primary and secondary track lists, sync offset, size, position,
@@ -1559,6 +1901,7 @@ impl PlayerScreen {
             "N  Next episode",
             "P  Previous episode",
             "C  Chapters",
+            "Q  Queue",
             "S  Stats",
             "i  Keys",
         ];
@@ -1693,8 +2036,20 @@ impl Screen for PlayerScreen {
                     self.pick_current(cx);
                     true
                 }
+                Key::Queue if self.queue_open => {
+                    self.close_menus();
+                    self.focus = Focus { group: G_BTN, index: B_PLAY };
+                    true
+                }
+                Key::Delete if self.queue_open => {
+                    if self.focus.group == G_LIST {
+                        self.queue_act(cx, QueueAct::Remove);
+                    }
+                    true
+                }
                 Key::Up | Key::Down | Key::Left | Key::Right => {
                     self.focus = move_focus(&self.groups, self.focus, key);
+                    self.queue_scroll = self.queue_open;
                     true
                 }
                 _ => false,
@@ -1756,6 +2111,11 @@ impl Screen for PlayerScreen {
             }
             Key::Chapters => {
                 self.do_action(cx, Action::OpenChapters);
+                show(self, cx);
+                return true;
+            }
+            Key::Queue => {
+                self.do_action(cx, Action::OpenQueue);
                 show(self, cx);
                 return true;
             }
@@ -1893,6 +2253,26 @@ impl Screen for PlayerScreen {
                         self.loading = false;
                         self.build_error = Some(e.to_string());
                     }
+                }
+            }
+            "season" => {
+                let Ok(r) = payload.downcast::<Result<(String, Vec<Item>)>>() else { return };
+                match *r {
+                    Ok((id, items)) if id == self.item.id && self.queue.is_none() => {
+                        if let Some(at) = items.iter().position(|x| x.id == id) {
+                            self.queue = Some(Queue::new(items, at));
+                        }
+                    }
+                    Err(ApiError::Unauthorized) => cx.signed_out(),
+                    _ => {}
+                }
+            }
+            "trickplay" => {
+                let Ok(r) = payload.downcast::<Result<(String, Option<TrickplayInfo>)>>() else { return };
+                match *r {
+                    Ok((id, info)) if id == self.item.id => self.trickplay = info,
+                    Err(ApiError::Unauthorized) => cx.signed_out(),
+                    _ => {}
                 }
             }
             "segments" => {

@@ -28,6 +28,9 @@ pub enum Key {
     Forward,
     /// NAV: jump to Search (Cmd/Ctrl+F).
     Search,
+    /// RR3: Q = play queue panel, Delete = remove the selected queue item.
+    Queue,
+    Delete,
     Text(char),
 }
 

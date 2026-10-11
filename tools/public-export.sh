@@ -15,6 +15,9 @@ for p in "${ALLOW[@]}"; do
   if git cat-file -e "$REF:$p" 2>/dev/null; then present+=("$p"); else echo "note: $p not in $REF (skipped)"; fi
 done
 git archive --format=tar "$REF" -- "${present[@]}" | tar -x -C "$OUT"
+# Private test infrastructure inside allowed folders: jf-real names public-domain titles whose TMDB art may not be free.
+DENY=(tools/testserver/real tools/scripts/real)
+for p in "${DENY[@]}"; do rm -rf "${OUT:?}/${p:?}"; done
 echo "exported $(find "$OUT" -type f | wc -l) files from $(git rev-parse --short "$REF")"
 "$ROOT/tools/package/leak-gate.sh" "$OUT" public
 ( cd "$OUT" && find . -type f | sort | sed 's#^\./##' | awk -F/ '{d=$0; sub(/\/[^/]*$/,"",d); if (NF==1) d="."; c[d]++} END {for (k in c) printf "%4d  %s/\n", c[k], k}' | sort -k2 )

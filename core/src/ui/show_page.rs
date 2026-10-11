@@ -458,8 +458,8 @@ fn air_date(ep: &Item) -> Option<(i32, u32, u32)> {
 
 /// Today's UTC date as `(year, month, day)`.
 pub fn today() -> (i32, u32, u32) {
-    let days = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let days = crate::time::SystemTime::now()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map(|d| (d.as_secs() / 86_400) as i64)
         .unwrap_or(0);
     civil_from_days(days)
@@ -495,7 +495,10 @@ fn seed() -> u64 {
     let mut b = [0u8; 8];
     let _ = getrandom::fill(&mut b);
     u64::from_le_bytes(b)
-        ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+        ^ crate::time::SystemTime::now()
+            .duration_since(crate::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
 }
 
 /// P-TV-10: the unplayed episodes (all of them when none is unplayed) in a random order from `seed`

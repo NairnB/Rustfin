@@ -5,6 +5,9 @@ use crate::images::cache_key;
 use std::cmp::Ordering;
 use std::path::PathBuf;
 use std::time::Duration;
+// TV web route: sync XHR stands in for ureq
+#[cfg(target_arch = "wasm32")]
+use crate::webhttp as ureq;
 
 /// Cache lifetime (R-F5-2): a cached response is reused only while it is younger than 7 days.
 const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);

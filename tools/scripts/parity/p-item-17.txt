@@ -1,4 +1,4 @@
-# G4 parity tour: P-ITEM-17 chapters row on the item page. Test items have no chapters → "No chapters".
+# G4 / RR6 parity tour: P-ITEM-17 chapters row on the item page: "Three Rooms" has 3 chapters with stills.
 wait-screen connect
 wait 2500
 idle
@@ -18,12 +18,13 @@ key right
 key enter
 wait-screen search
 idle
-type Amber
+type Three Rooms
 wait 600
 idle
 key down
 key enter
 wait-screen movie
+wait 2500
 idle
 shot p-item-17
 quit

@@ -99,12 +99,24 @@ fn views_and_library_paging() {
     let movies = view(&c, "Movies");
     assert_eq!(movies.collection_type.as_deref(), Some("movies"));
     let p = c.library_page(&movies.id, 0, 100).unwrap();
-    assert_eq!(p.total_record_count, 6);
+    assert_eq!(p.total_record_count, 8); // 6 generated + Harbour Crossing and Three Rooms (RR6 extras)
     let names: Vec<_> = p.items.iter().map(|i| i.name.as_str()).collect();
-    assert_eq!(names, ["Amber Tide", "Blue Harbour", "Copper Sky", "Distant Signal", "Echo Valley", "First Light"]);
+    assert_eq!(
+        names,
+        [
+            "Amber Tide",
+            "Blue Harbour",
+            "Copper Sky",
+            "Distant Signal",
+            "Echo Valley",
+            "First Light",
+            "Harbour Crossing (2016)",
+            "Three Rooms"
+        ]
+    );
     let p2 = c.library_page(&movies.id, 2, 2).unwrap();
     assert_eq!(p2.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["Copper Sky", "Distant Signal"]);
-    assert_eq!(p2.total_record_count, 6);
+    assert_eq!(p2.total_record_count, 8);
     let arch = c.library_page(&view(&c, "Archive").id, 400, 100).unwrap();
     assert_eq!((arch.total_record_count, arch.items.len()), (500, 100));
     assert_eq!(arch.items[0].name, "Archive Film 401");
@@ -118,9 +130,10 @@ fn latest_and_item_detail() {
     let Some(u) = url() else { return };
     let c = signed(&u);
     let latest = c.latest(&view(&c, "Movies").id, 20).unwrap();
-    assert!(!latest.is_empty() && latest.len() <= 6);
+    assert!(!latest.is_empty() && latest.len() <= 8);
     assert!(latest.iter().all(|i| i.kind == ItemKind::Movie));
-    let m = c.item(&latest[0].id).unwrap();
+    let amber = latest.iter().find(|i| i.name == "Amber Tide").expect("Amber Tide in latest");
+    let m = c.item(&amber.id).unwrap();
     assert_eq!(m.overview.as_deref(), Some("A short generated test film."));
     assert!(!m.media_sources.is_empty());
     assert!(m.run_time_ticks.unwrap_or(0) > 30 * 10_000_000);

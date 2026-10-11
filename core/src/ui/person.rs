@@ -49,6 +49,8 @@ pub struct Person {
     person_id: String,
     name: String,
     person: Option<Item>,
+    /// RR6 (P-PPL-1): born / died as the server sends them (`Item` has no end date).
+    dates: (Option<String>, Option<String>),
     server_items: Vec<Item>,
     loading: bool,
     loaded: u8,
@@ -63,11 +65,36 @@ pub struct Person {
     started: bool,
 }
 
+/// RR6 / P-PPL-1: the dates line under a person's name. Born and died → "1950 – 2020 · aged 70"; born only →
+/// "Born 1950"; died only → "Died 2020". Dates are the server's ISO strings; only the leading `YYYY-MM-DD` is read.
+pub fn life_line(born: Option<&str>, died: Option<&str>) -> Option<String> {
+    fn ymd(s: &str) -> Option<(i32, u32, u32)> {
+        let s = s.trim().get(..10).unwrap_or(s.trim());
+        let mut it = s.split('-');
+        let y = it.next()?.parse().ok()?;
+        let m = it.next().and_then(|m| m.parse().ok()).unwrap_or(1);
+        let d = it.next().and_then(|d| d.parse().ok()).unwrap_or(1);
+        Some((y, m, d))
+    }
+    let b = born.and_then(ymd);
+    let d = died.and_then(ymd);
+    match (b, d) {
+        (Some(b), Some(d)) => {
+            let age = d.0 - b.0 - i32::from((d.1, d.2) < (b.1, b.2));
+            Some(format!("{} \u{2013} {} \u{b7} aged {age}", b.0, d.0))
+        }
+        (Some(b), None) => Some(format!("Born {}", b.0)),
+        (None, Some(d)) => Some(format!("Died {}", d.0)),
+        (None, None) => None,
+    }
+}
+
 pub fn screen(person_id: String, name: String) -> Box<dyn Screen> {
     Box::new(Person {
         person_id,
         name,
         person: None,
+        dates: (None, None),
         server_items: vec![],
         loading: true,
         loaded: 0,
@@ -94,6 +121,9 @@ impl Person {
         let id = self.person_id.clone();
         let client = cx.api();
         cx.spawn("person-items", move || client.person_items(&id));
+        let id = self.person_id.clone();
+        let client = cx.api();
+        cx.spawn("person-dates", move || client.person_dates(&id));
     }
 
     /// Load the TMDB filmography once (R-F5-2): no key → a hint, bad key → its own message. Blocking TMDB
@@ -201,9 +231,10 @@ impl Person {
                 ui.add_space(t.gap / 2.0);
                 parts::title(ui, t, &self.name);
                 if let Some(p) = &self.person {
-                    if let Some(born) = p.premiere_date.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    let born = self.dates.0.as_deref().or(p.premiere_date.as_deref());
+                    if let Some(line) = life_line(born, self.dates.1.as_deref()) {
                         ui.add_space(t.gap / 4.0);
-                        parts::muted(ui, t, &format!("Born {born}"));
+                        parts::muted(ui, t, &line);
                     }
                     if let Some(ov) = p.overview.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                         ui.add_space(t.gap / 2.0);
@@ -455,6 +486,14 @@ impl Screen for Person {
 
     fn on_done(&mut self, cx: &mut Cx, tag: &'static str, payload: Box<dyn std::any::Any + Send>) {
         match tag {
+            "person-dates" => {
+                let Ok(r) = payload.downcast::<Result<(Option<String>, Option<String>)>>() else { return };
+                match *r {
+                    Ok(d) => self.dates = d,
+                    Err(ApiError::Unauthorized) => cx.signed_out(),
+                    Err(_) => {}
+                }
+            }
             "person" => {
                 let Ok(r) = payload.downcast::<Result<Item>>() else { return };
                 match *r {

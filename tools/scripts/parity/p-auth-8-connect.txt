@@ -9,8 +9,7 @@ idle
 key down
 key down
 key down
-key right
-key right
+key right 3
 key enter
 wait-screen connect
 wait 2500
