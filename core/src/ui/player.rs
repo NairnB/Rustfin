@@ -8,7 +8,10 @@ use crate::api::{
 };
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
-use crate::platform::{Aspect, Key, PlayRequest, PlayerState, PlayerStats, SubColour, SubSize, SubStyle};
+use crate::platform::{
+    sub_colour_index, Aspect, Key, PlayRequest, PlayerState, PlayerStats, SubFont, SubShadow, SubSize, SubStyle,
+    SubWeight, SUB_COLOURS,
+};
 use crate::playreq::build_plan;
 use crate::repeat::{end_action, EndAction, Repeat};
 use crate::settings::SubPrefs;
@@ -101,10 +104,17 @@ const G_BTN: usize = 1;
 const G_VOL: usize = 2;
 const G_LIST: usize = 3;
 const G_SUB_OFFSET: usize = 4;
-const G_SUB_SIZE: usize = 5;
-const G_SUB_POS: usize = 6;
-const G_SUB_COLOUR: usize = 7;
-const G_SUB_BG: usize = 8;
+const G_SUB_POS: usize = 5;
+const G_SUB_SIZE: usize = 6;
+const G_SUB_FONT: usize = 7;
+const G_SUB_WEIGHT: usize = 8;
+const G_SUB_SHADOW: usize = 9;
+const G_SUB_TEXT: usize = 10;
+const G_SUB_BACK: usize = 11;
+const GROUP_COUNT: usize = 12;
+
+/// One subtitle-panel focus group as drawn: (group, x of each entry, hovered entry, clicked entry).
+type PanelGroup = (usize, Vec<f32>, Option<usize>, Option<usize>);
 
 const B_PLAY: usize = 1;
 const B_VOL_MUTE: usize = 0;
@@ -274,6 +284,8 @@ pub struct PlayerScreen {
     // G5: subtitle offset (seconds) and appearance (P-PLAY-8, P-PLAY-9)
     sub_delay: f64,
     sub_style: SubStyle,
+    /// P-PLAY-7: the secondary subtitle (a `MediaStream.Index`), None = off.
+    sec_subtitle: Option<i32>,
     focus: Focus,
     groups: Vec<Group>,
     started: bool,
@@ -345,6 +357,7 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         settings_kbps: 0,
         sub_delay: 0.0,
         sub_style: SubStyle::default(),
+        sec_subtitle: None,
         focus: Focus { group: G_BTN, index: B_PLAY },
         groups: vec![],
         started: false,
@@ -630,12 +643,14 @@ impl PlayerScreen {
                 self.muted = cx.player.muted();
                 self.sub_delay = 0.0;
                 self.sub_style = cx.settings.subtitles.style.clone();
+                self.sec_subtitle = None;
                 self.osd_visible = false;
                 self.osd_last_input = cx.now;
                 self.focus = Focus { group: G_BTN, index: B_PLAY };
                 cx.player.load(&req);
                 cx.player.set_sub_style(&self.sub_style);
                 cx.player.set_sub_delay(0.0);
+                cx.player.set_secondary_subtitle(None);
                 cx.player.set_speed(self.speed);
                 cx.player.set_aspect(self.aspect);
                 self.ensure_next(cx);
@@ -902,51 +917,55 @@ impl PlayerScreen {
         cx.player.set_sub_style(&self.sub_style);
     }
 
-    fn set_sub_size(&mut self, cx: &mut Cx, size: SubSize) {
-        self.sub_style.size = size;
-        cx.player.set_sub_style(&self.sub_style);
+    fn pick_secondary(&mut self, cx: &mut Cx, val: Option<i32>) {
+        self.sec_subtitle = val;
+        cx.player.set_secondary_subtitle(val);
     }
 
-    fn set_sub_colour(&mut self, cx: &mut Cx, colour: SubColour) {
-        self.sub_style.colour = colour;
-        cx.player.set_sub_style(&self.sub_style);
-    }
-
-    fn toggle_sub_bg(&mut self, cx: &mut Cx) {
-        self.sub_style.background = !self.sub_style.background;
+    /// Enter or a click on entry `i` of subtitle-panel group `group`.
+    fn sub_choice(&mut self, cx: &mut Cx, group: usize, i: usize) {
+        let delta = if i == 0 { -1.0 } else { 1.0 };
+        match group {
+            // Two columns side by side: even entries pick the primary track, odd ones the secondary.
+            G_LIST => {
+                if let Some(v) = self.subtitle_entries().get(i / 2).map(|(_, v)| *v) {
+                    if i.is_multiple_of(2) {
+                        self.pick_subtitle(cx, v);
+                    } else {
+                        self.pick_secondary(cx, v);
+                    }
+                }
+                return;
+            }
+            G_SUB_OFFSET => {
+                self.adj_sub_delay(cx, 0.1 * delta as f64);
+                return;
+            }
+            G_SUB_SIZE => {
+                self.sub_style.size = match i {
+                    0 => SubSize::Small,
+                    1 => SubSize::Medium,
+                    2 => SubSize::Large,
+                    _ => SubSize::ExtraLarge,
+                }
+            }
+            G_SUB_POS => self.adj_sub_pos(cx, 5.0 * delta),
+            G_SUB_FONT => self.sub_style.font = SubFont::ALL[i.min(SubFont::ALL.len() - 1)],
+            G_SUB_WEIGHT => self.sub_style.weight = SubWeight::ALL[i.min(SubWeight::ALL.len() - 1)],
+            G_SUB_SHADOW => self.sub_style.shadow = SubShadow::ALL[i.min(SubShadow::ALL.len() - 1)],
+            G_SUB_TEXT => self.sub_style.text_colour = SUB_COLOURS[i.min(SUB_COLOURS.len() - 1)].1.to_string(),
+            G_SUB_BACK => {
+                self.sub_style.back_colour =
+                    i.checked_sub(1).map(|c| SUB_COLOURS[c.min(SUB_COLOURS.len() - 1)].1.to_string())
+            }
+            _ => return,
+        }
         cx.player.set_sub_style(&self.sub_style);
     }
 
     /// Enter in the subtitle panel acts on the focused control.
     fn sub_panel_enter(&mut self, cx: &mut Cx) {
-        match self.focus.group {
-            G_LIST => {
-                if let Some(v) = self.subtitle_entries().get(self.focus.index).map(|(_, v)| *v) {
-                    self.pick_subtitle(cx, v);
-                }
-            }
-            G_SUB_OFFSET => {
-                self.adj_sub_delay(cx, if self.focus.index == 0 { -0.1 } else { 0.1 });
-            }
-            G_SUB_SIZE => {
-                let size = match self.focus.index {
-                    0 => SubSize::Small,
-                    1 => SubSize::Medium,
-                    2 => SubSize::Large,
-                    _ => SubSize::ExtraLarge,
-                };
-                self.set_sub_size(cx, size);
-            }
-            G_SUB_POS => {
-                self.adj_sub_pos(cx, if self.focus.index == 0 { -5.0 } else { 5.0 });
-            }
-            G_SUB_COLOUR => {
-                let colour = if self.focus.index == 0 { SubColour::White } else { SubColour::Yellow };
-                self.set_sub_colour(cx, colour);
-            }
-            G_SUB_BG => self.toggle_sub_bg(cx),
-            _ => {}
-        }
+        self.sub_choice(cx, self.focus.group, self.focus.index);
     }
 
     fn report_now(&mut self, cx: &mut Cx) {
@@ -1274,7 +1293,7 @@ impl PlayerScreen {
             cx.player.seek(rel as f64 * dur);
         }
 
-        let mut groups = vec![Group::default(); 9];
+        let mut groups = vec![Group::default(); GROUP_COUNT];
         if subtitle_open {
             self.draw_sub_panel(ui, cx, &mut groups);
         } else if audio_open || chapters_open {
@@ -1373,8 +1392,9 @@ impl PlayerScreen {
         (xs, hovered, action)
     }
 
-    /// The subtitle panel (P-PLAY-6/8/9): track list, sync offset, size, position, colour, background box.
-    /// Fills the subtitle focus groups (G_LIST, G_SUB_OFFSET … G_SUB_BG) and applies hover/click.
+    /// The subtitle panel (P-PLAY-6/7/8/9): primary and secondary track lists, sync offset, size, position,
+    /// font, weight, shadow, text colour and background colour. Fills the subtitle focus groups
+    /// (G_LIST … G_SUB_BACK) and applies hover/click.
     fn draw_sub_panel(&mut self, ui: &mut egui::Ui, cx: &mut Cx, groups: &mut [Group]) {
         let t = cx.theme;
         let screen = ui.ctx().screen_rect();
@@ -1387,33 +1407,34 @@ impl PlayerScreen {
             SubSize::Large => 2,
             SubSize::ExtraLarge => 3,
         };
-        let colour_idx = match self.sub_style.colour {
-            SubColour::White => 0,
-            SubColour::Yellow => 1,
-        };
         let focus = self.focus;
         let off_label = format!("{:.1} s", self.sub_delay);
         let pos_label = format!("{:.0}", self.sub_style.position);
-        let bg_on = self.sub_style.background;
+        let sec_idx = entries.iter().position(|(_, v)| *v == self.sec_subtitle).unwrap_or(0);
+        let pri_idx = match self.subtitle {
+            Some(v) => entries.iter().position(|(_, e)| *e == v),
+            None => None,
+        };
+        let colour_names: Vec<String> = SUB_COLOURS.iter().map(|(n, _)| n.to_string()).collect();
+        let mut back_names = vec!["None".to_string()];
+        back_names.extend(colour_names.iter().cloned());
+        let text_sel: Vec<bool> =
+            (0..SUB_COLOURS.len()).map(|i| sub_colour_index(&self.sub_style.text_colour) == Some(i)).collect();
+        let back_sel: Vec<bool> = std::iter::once(self.sub_style.back_colour.is_none())
+            .chain(
+                (0..SUB_COLOURS.len())
+                    .map(|i| self.sub_style.back_colour.as_deref().and_then(sub_colour_index) == Some(i)),
+            )
+            .collect();
+        let font_names: Vec<String> = SubFont::ALL.iter().map(|f| f.label().to_string()).collect();
+        let font_sel: Vec<bool> = SubFont::ALL.iter().map(|f| *f == self.sub_style.font).collect();
+        let weight_names: Vec<String> = SubWeight::ALL.iter().map(|f| f.label().to_string()).collect();
+        let weight_sel: Vec<bool> = SubWeight::ALL.iter().map(|f| *f == self.sub_style.weight).collect();
+        let shadow_names: Vec<String> = SubShadow::ALL.iter().map(|f| f.label().to_string()).collect();
+        let shadow_sel: Vec<bool> = SubShadow::ALL.iter().map(|f| *f == self.sub_style.shadow).collect();
 
-        let mut list_xs = vec![];
-        let mut list_hover = None;
-        let mut list_click = None;
-        let mut off_xs = vec![];
-        let mut off_hover = None;
-        let mut off_click = None;
-        let mut size_xs = vec![];
-        let mut size_hover = None;
-        let mut size_click = None;
-        let mut pos_xs = vec![];
-        let mut pos_hover = None;
-        let mut pos_click = None;
-        let mut colour_xs = vec![];
-        let mut colour_hover = None;
-        let mut colour_click = None;
-        let mut bg_x = 0.0;
-        let mut bg_hover = false;
-        let mut bg_click = false;
+        // (group, xs, hovered, clicked) per focus group, filled while drawing.
+        let mut found: Vec<PanelGroup> = vec![];
 
         let area = egui::Area::new(egui::Id::new("player-sub-panel"))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -1422,141 +1443,106 @@ impl PlayerScreen {
             ui.vertical_centered(|ui| {
                 parts::heading(ui, t, "Subtitles");
                 ui.add_space(t.gap / 3.0);
-                for (i, (label, _)) in entries.iter().enumerate() {
-                    let focused = focus.group == G_LIST && focus.index == i;
-                    let r = parts::button_width(ui, t, label, focused, false, t.dropdown_w);
-                    list_xs.push(r.rect.center().x);
-                    if r.hovered() {
-                        list_hover = Some(i);
+                // Two lists side by side: the primary track, and the secondary one shown above it.
+                let mut cols: [Vec<(f32, bool, bool)>; 2] = [vec![], vec![]];
+                ui.horizontal(|ui| {
+                    for (c, (title, current)) in
+                        [("Primary", pri_idx), ("Secondary", Some(sec_idx))].into_iter().enumerate()
+                    {
+                        ui.vertical(|ui| {
+                            parts::muted(ui, t, title);
+                            for (i, (label, _)) in entries.iter().enumerate() {
+                                let focused = focus.group == G_LIST && focus.index == i * 2 + c;
+                                let label = if current == Some(i) { format!("• {label}") } else { label.clone() };
+                                let r = parts::button_width(ui, t, &label, focused, false, t.dropdown_w);
+                                cols[c].push((r.rect.center().x, r.hovered(), r.clicked()));
+                                ui.add_space(t.gap / 3.0);
+                            }
+                        });
                     }
-                    if r.clicked() {
-                        list_click = Some(i);
+                });
+                let (mut xs, mut hover, mut click) = (vec![], None, None);
+                for i in 0..entries.len() {
+                    for (c, col) in cols.iter().enumerate() {
+                        let (x, h, k) = col[i];
+                        xs.push(x);
+                        if h {
+                            hover = Some(i * 2 + c);
+                        }
+                        if k {
+                            click = Some(i * 2 + c);
+                        }
                     }
+                }
+                found.push((G_LIST, xs, hover, click));
+                ui.add_space(t.gap / 3.0);
+                for (group, label, value) in
+                    [(G_SUB_OFFSET, "Offset", off_label.clone()), (G_SUB_POS, "Position", pos_label.clone())]
+                {
+                    let mut xs = vec![];
+                    let mut hover = None;
+                    let mut click = None;
+                    ui.horizontal(|ui| {
+                        parts::muted(ui, t, label);
+                        ui.add_space(t.gap);
+                        let focused = focus.group == group && focus.index == 0;
+                        let r = parts::button(ui, t, "-", focused, false);
+                        xs.push(r.rect.center().x);
+                        if r.hovered() {
+                            hover = Some(0);
+                        }
+                        if r.clicked() {
+                            click = Some(0);
+                        }
+                        ui.label(egui::RichText::new(&value).size(t.body_size).color(t.text));
+                        let focused = focus.group == group && focus.index == 1;
+                        let r = parts::button(ui, t, "+", focused, false);
+                        xs.push(r.rect.center().x);
+                        if r.hovered() {
+                            hover = Some(1);
+                        }
+                        if r.clicked() {
+                            click = Some(1);
+                        }
+                    });
+                    found.push((group, xs, hover, click));
                     ui.add_space(t.gap / 3.0);
                 }
-                ui.add_space(t.gap / 3.0);
-                ui.horizontal(|ui| {
-                    parts::muted(ui, t, "Offset");
-                    ui.add_space(t.gap);
-                    let focused = focus.group == G_SUB_OFFSET && focus.index == 0;
-                    let r = parts::button(ui, t, "-", focused, false);
-                    off_xs.push(r.rect.center().x);
-                    if r.hovered() {
-                        off_hover = Some(0);
-                    }
-                    if r.clicked() {
-                        off_click = Some(0);
-                    }
-                    ui.label(egui::RichText::new(&off_label).size(t.body_size).color(t.text));
-                    let focused = focus.group == G_SUB_OFFSET && focus.index == 1;
-                    let r = parts::button(ui, t, "+", focused, false);
-                    off_xs.push(r.rect.center().x);
-                    if r.hovered() {
-                        off_hover = Some(1);
-                    }
-                    if r.clicked() {
-                        off_click = Some(1);
-                    }
-                });
-                ui.add_space(t.gap / 3.0);
-                let labels = ["S".to_string(), "M".to_string(), "L".to_string(), "XL".to_string()];
-                let selected = [size_idx == 0, size_idx == 1, size_idx == 2, size_idx == 3];
-                let out = widgets::chips(ui, t, &labels, &selected, (focus.group == G_SUB_SIZE).then_some(focus.index));
-                size_xs = out.xs;
-                size_hover = out.hovered;
-                size_click = out.clicked;
-                ui.add_space(t.gap / 3.0);
-                ui.horizontal(|ui| {
-                    parts::muted(ui, t, "Position");
-                    ui.add_space(t.gap);
-                    let focused = focus.group == G_SUB_POS && focus.index == 0;
-                    let r = parts::button(ui, t, "-", focused, false);
-                    pos_xs.push(r.rect.center().x);
-                    if r.hovered() {
-                        pos_hover = Some(0);
-                    }
-                    if r.clicked() {
-                        pos_click = Some(0);
-                    }
-                    ui.label(egui::RichText::new(&pos_label).size(t.body_size).color(t.text));
-                    let focused = focus.group == G_SUB_POS && focus.index == 1;
-                    let r = parts::button(ui, t, "+", focused, false);
-                    pos_xs.push(r.rect.center().x);
-                    if r.hovered() {
-                        pos_hover = Some(1);
-                    }
-                    if r.clicked() {
-                        pos_click = Some(1);
-                    }
-                });
-                ui.add_space(t.gap / 3.0);
-                let labels = ["White".to_string(), "Yellow".to_string()];
-                let selected = [colour_idx == 0, colour_idx == 1];
-                let out =
-                    widgets::chips(ui, t, &labels, &selected, (focus.group == G_SUB_COLOUR).then_some(focus.index));
-                colour_xs = out.xs;
-                colour_hover = out.hovered;
-                colour_click = out.clicked;
-                ui.add_space(t.gap / 3.0);
-                let out = widgets::toggle(ui, t, "Background box", bg_on, focus.group == G_SUB_BG);
-                bg_x = out.x;
-                bg_hover = out.hovered;
-                bg_click = out.clicked;
+                let size_labels = ["S".to_string(), "M".to_string(), "L".to_string(), "XL".to_string()];
+                let size_sel: Vec<bool> = (0..4).map(|i| size_idx == i).collect();
+                let rows: [(usize, &str, &[String], &[bool]); 6] = [
+                    (G_SUB_SIZE, "Size", &size_labels, &size_sel),
+                    (G_SUB_FONT, "Font", &font_names, &font_sel),
+                    (G_SUB_WEIGHT, "Weight", &weight_names, &weight_sel),
+                    (G_SUB_SHADOW, "Shadow", &shadow_names, &shadow_sel),
+                    (G_SUB_TEXT, "Text", &colour_names, &text_sel),
+                    (G_SUB_BACK, "Background", &back_names, &back_sel),
+                ];
+                for (group, label, labels, selected) in rows {
+                    ui.horizontal(|ui| {
+                        parts::muted(ui, t, label);
+                        ui.add_space(t.gap);
+                        let out =
+                            widgets::chips(ui, t, labels, selected, (focus.group == group).then_some(focus.index));
+                        found.push((group, out.xs, out.hovered, out.clicked));
+                    });
+                    ui.add_space(t.gap / 3.0);
+                }
             });
         });
 
-        groups[G_LIST] = Group { len: list_xs.len(), cols: 1, xs: list_xs };
-        groups[G_SUB_OFFSET] = Group { len: off_xs.len(), cols: off_xs.len(), xs: off_xs };
-        groups[G_SUB_SIZE] = Group { len: size_xs.len(), cols: size_xs.len(), xs: size_xs };
-        groups[G_SUB_POS] = Group { len: pos_xs.len(), cols: pos_xs.len(), xs: pos_xs };
-        groups[G_SUB_COLOUR] = Group { len: colour_xs.len(), cols: colour_xs.len(), xs: colour_xs };
-        groups[G_SUB_BG] = Group { len: 1, cols: 1, xs: vec![bg_x] };
-
-        if let Some(i) = list_hover {
-            self.focus = Focus { group: G_LIST, index: i };
-        }
-        if let Some(i) = off_hover {
-            self.focus = Focus { group: G_SUB_OFFSET, index: i };
-        }
-        if let Some(i) = size_hover {
-            self.focus = Focus { group: G_SUB_SIZE, index: i };
-        }
-        if let Some(i) = pos_hover {
-            self.focus = Focus { group: G_SUB_POS, index: i };
-        }
-        if let Some(i) = colour_hover {
-            self.focus = Focus { group: G_SUB_COLOUR, index: i };
-        }
-        if bg_hover {
-            self.focus = Focus { group: G_SUB_BG, index: 0 };
-        }
-
-        if let Some(i) = list_click {
-            if let Some(v) = entries.get(i).map(|(_, v)| *v) {
-                self.pick_subtitle(cx, v);
+        let mut click = None;
+        for (group, xs, hover, clicked) in found {
+            if let Some(i) = hover {
+                self.focus = Focus { group, index: i };
             }
+            if let Some(i) = clicked {
+                click = Some((group, i));
+            }
+            groups[group] = Group { len: xs.len(), cols: if group == G_LIST { 2 } else { xs.len() }, xs };
         }
-        if let Some(i) = off_click {
-            self.adj_sub_delay(cx, if i == 0 { -0.1 } else { 0.1 });
-        }
-        if let Some(i) = size_click {
-            let size = match i {
-                0 => SubSize::Small,
-                1 => SubSize::Medium,
-                2 => SubSize::Large,
-                _ => SubSize::ExtraLarge,
-            };
-            self.set_sub_size(cx, size);
-        }
-        if let Some(i) = pos_click {
-            self.adj_sub_pos(cx, if i == 0 { -5.0 } else { 5.0 });
-        }
-        if let Some(i) = colour_click {
-            let colour = if i == 0 { SubColour::White } else { SubColour::Yellow };
-            self.set_sub_colour(cx, colour);
-        }
-        if bg_click {
-            self.toggle_sub_bg(cx);
+        if let Some((group, i)) = click {
+            self.sub_choice(cx, group, i);
         }
     }
 

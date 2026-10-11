@@ -7,7 +7,7 @@ use super::widgets;
 use crate::api::{image_width_bucket, ApiError, Client, Result, SegmentKind};
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
-use crate::platform::{Key, SubColour, SubSize};
+use crate::platform::{parse_hex_colour, sub_colour_index, Key, SubFont, SubShadow, SubSize, SubWeight, SUB_COLOURS};
 use crate::settings::{DateFormat, HomeSection, SubMode, SubPrefs};
 use egui::{pos2, vec2, Rect, Sense};
 
@@ -82,6 +82,8 @@ enum Dd {
     SkipForward,
     Date,
     SubMode,
+    SubText,
+    SubBack,
 }
 
 pub struct SettingsScreen {
@@ -110,6 +112,10 @@ pub struct SettingsScreen {
     lang_draft: String,
     subs_loaded: bool,
     sub_mode: widgets::DropdownState,
+    sub_text: widgets::DropdownState,
+    sub_back: widgets::DropdownState,
+    text_draft: String,
+    back_draft: String,
     chip: usize,
 
     // Quick Connect
@@ -148,6 +154,10 @@ pub fn screen() -> Box<dyn Screen> {
         lang_draft: String::new(),
         subs_loaded: false,
         sub_mode: widgets::DropdownState::default(),
+        sub_text: widgets::DropdownState::default(),
+        sub_back: widgets::DropdownState::default(),
+        text_draft: String::new(),
+        back_draft: String::new(),
         chip: 0,
         qc_code: String::new(),
         qc_busy: false,
@@ -177,7 +187,7 @@ impl SettingsScreen {
             Tab::Account => usize::from(self.pw_editing) * 5 + usize::from(!self.pw_editing),
             Tab::Home => HomeSection::ALL.len(),
             Tab::Playback => 5 + SegmentKind::SKIPPABLE.len(),
-            Tab::Subtitles => 8,
+            Tab::Subtitles => 13,
             Tab::Display => 4,
             Tab::QuickConnect => 2,
             Tab::Server => 2 + usize::from(self.admin),
@@ -216,6 +226,15 @@ impl SettingsScreen {
         if !self.sub_mode.open {
             self.sub_mode.highlighted = mode_index(self.subs.mode);
         }
+        if !self.sub_text.open {
+            self.sub_text.highlighted = sub_colour_index(&self.subs.style.text_colour).unwrap_or(SUB_COLOURS.len());
+        }
+        if !self.sub_back.open {
+            self.sub_back.highlighted = match &self.subs.style.back_colour {
+                None => 0,
+                Some(h) => sub_colour_index(h).map_or(SUB_COLOURS.len() + 1, |i| i + 1),
+            };
+        }
         if !self.date_format.open {
             self.date_format.highlighted =
                 DateFormat::ALL.iter().position(|&f| f == cx.settings.date_format).unwrap_or(0);
@@ -227,6 +246,36 @@ impl SettingsScreen {
             self.subs.mode = MODES[i];
             return;
         }
+        if dd == Dd::SubText {
+            match SUB_COLOURS.get(i) {
+                Some((_, hex)) => {
+                    self.subs.style.text_colour = hex.to_string();
+                    self.text_draft = hex.to_string();
+                }
+                // "Custom": use what is typed, or hand over to the field to type it.
+                None => match parse_hex_colour(&self.text_draft) {
+                    Some(h) => self.subs.style.text_colour = h,
+                    None => self.set_content(8),
+                },
+            }
+            return;
+        }
+        if dd == Dd::SubBack {
+            match i.checked_sub(1) {
+                None => self.subs.style.back_colour = None,
+                Some(c) => match SUB_COLOURS.get(c) {
+                    Some((_, hex)) => {
+                        self.subs.style.back_colour = Some(hex.to_string());
+                        self.back_draft = hex.to_string();
+                    }
+                    None => match parse_hex_colour(&self.back_draft) {
+                        Some(h) => self.subs.style.back_colour = Some(h),
+                        None => self.set_content(10),
+                    },
+                },
+            }
+            return;
+        }
         match dd {
             Dd::Audio => {
                 cx.settings.preferred_audio_language = if i == 0 { String::new() } else { LANGUAGES[i].into() }
@@ -235,7 +284,7 @@ impl SettingsScreen {
             Dd::SkipBack => cx.settings.skip_back_seconds = SKIP_BACK[i].1,
             Dd::SkipForward => cx.settings.skip_forward_seconds = SKIP_FORWARD[i].1,
             Dd::Date => cx.settings.date_format = DateFormat::ALL[i],
-            Dd::SubMode => {}
+            Dd::SubMode | Dd::SubText | Dd::SubBack => {}
         }
         cx.save_settings();
     }
@@ -272,6 +321,16 @@ impl SettingsScreen {
                 self.sub_mode = s;
                 ev
             }
+            Dd::SubText => {
+                let (s, ev) = widgets::dropdown_key(self.sub_text, key, SUB_COLOURS.len() + 1);
+                self.sub_text = s;
+                ev
+            }
+            Dd::SubBack => {
+                let (s, ev) = widgets::dropdown_key(self.sub_back, key, SUB_COLOURS.len() + 2);
+                self.sub_back = s;
+                ev
+            }
         };
         if let Some(widgets::DropdownEvent::Pick(i)) = ev {
             self.apply_pick(cx, dd, i);
@@ -294,7 +353,17 @@ impl SettingsScreen {
                     None
                 }
             }
-            Tab::Subtitles => self.sub_mode.open.then_some(Dd::SubMode),
+            Tab::Subtitles => {
+                if self.sub_mode.open {
+                    Some(Dd::SubMode)
+                } else if self.sub_text.open {
+                    Some(Dd::SubText)
+                } else if self.sub_back.open {
+                    Some(Dd::SubBack)
+                } else {
+                    None
+                }
+            }
             Tab::Display => self.date_format.open.then_some(Dd::Date),
             _ => None,
         }
@@ -322,7 +391,10 @@ impl SettingsScreen {
         if Tab::ALL[self.tab] == Tab::Subtitles {
             let n = match self.focus.index {
                 2 => SIZE_LABELS.len(),
-                3 | 4 => COLOUR_LABELS.len(),
+                3 => 2,
+                4 => SubFont::ALL.len(),
+                5 => SubWeight::ALL.len(),
+                6 => SubShadow::ALL.len(),
                 _ => return true,
             };
             self.chip = widgets::chips_key(self.chip, n, key).0;
@@ -396,10 +468,15 @@ impl SettingsScreen {
                 1 => self.set_content(2),
                 2 => self.subs.style.size = size_from(self.chip.min(SIZE_LABELS.len() - 1)),
                 3 => self.adj_pos(if self.chip == 0 { -5.0 } else { 5.0 }),
-                4 => self.subs.style.colour = colour_from(self.chip.min(COLOUR_LABELS.len() - 1)),
-                5 => self.subs.style.background = !self.subs.style.background,
-                6 => self.save_subs(cx),
-                7 => self.cancel_subs(cx),
+                4 => self.subs.style.font = SubFont::ALL[self.chip.min(SubFont::ALL.len() - 1)],
+                5 => self.subs.style.weight = SubWeight::ALL[self.chip.min(SubWeight::ALL.len() - 1)],
+                6 => self.subs.style.shadow = SubShadow::ALL[self.chip.min(SubShadow::ALL.len() - 1)],
+                7 => self.sub_text.open = true,
+                8 => self.set_content(9),
+                9 => self.sub_back.open = true,
+                10 => self.set_content(11),
+                11 => self.save_subs(cx),
+                12 => self.cancel_subs(cx),
                 _ => {}
             },
             Tab::Display => match i {
@@ -452,6 +529,7 @@ impl SettingsScreen {
         }
         self.subs = cx.settings.subtitles.clone();
         self.lang_draft = self.subs.language.clone();
+        self.sync_colour_drafts();
         self.subs_loaded = true;
     }
 
@@ -464,6 +542,12 @@ impl SettingsScreen {
     fn cancel_subs(&mut self, cx: &Cx) {
         self.subs = cx.settings.subtitles.clone();
         self.lang_draft = self.subs.language.clone();
+        self.sync_colour_drafts();
+    }
+
+    fn sync_colour_drafts(&mut self) {
+        self.text_draft = self.subs.style.text_colour.clone();
+        self.back_draft = self.subs.style.back_colour.clone().unwrap_or_default();
     }
 
     fn adj_pos(&mut self, delta: f32) {
@@ -832,50 +916,110 @@ impl SettingsScreen {
         }
         ui.add_space(t.gap / 3.0);
 
-        parts::muted(ui, t, "Colour");
-        let selected = [0, 1].map(|i| colour_index(self.subs.style.colour) == i);
-        let labels: Vec<String> = COLOUR_LABELS.iter().map(|s| s.to_string()).collect();
-        let chip = self.focused(4).then_some(self.chip);
-        let out = widgets::chips(ui, t, &labels, &selected, chip);
-        xs.push(out.xs.first().copied().unwrap_or_default());
-        if let Some(i) = out.hovered {
-            self.set_content(4);
-            self.chip = i;
+        // Font, weight, shadow: chip rows (P-PLAY-9).
+        let font_labels: Vec<String> = SubFont::ALL.iter().map(|f| f.label().to_string()).collect();
+        let font_sel: Vec<bool> = SubFont::ALL.iter().map(|f| *f == self.subs.style.font).collect();
+        let weight_labels: Vec<String> = SubWeight::ALL.iter().map(|f| f.label().to_string()).collect();
+        let weight_sel: Vec<bool> = SubWeight::ALL.iter().map(|f| *f == self.subs.style.weight).collect();
+        let shadow_labels: Vec<String> = SubShadow::ALL.iter().map(|f| f.label().to_string()).collect();
+        let shadow_sel: Vec<bool> = SubShadow::ALL.iter().map(|f| *f == self.subs.style.shadow).collect();
+        let rows: [(usize, &str, &[String], &[bool]); 3] = [
+            (4, "Font", &font_labels, &font_sel),
+            (5, "Weight", &weight_labels, &weight_sel),
+            (6, "Shadow", &shadow_labels, &shadow_sel),
+        ];
+        for (idx, label, labels, selected) in rows {
+            parts::muted(ui, t, label);
+            let chip = self.focused(idx).then_some(self.chip);
+            let out = widgets::chips(ui, t, labels, selected, chip);
+            xs.push(out.xs.first().copied().unwrap_or_default());
+            if let Some(i) = out.hovered {
+                self.set_content(idx);
+                self.chip = i;
+            }
+            if let Some(i) = out.clicked {
+                match idx {
+                    4 => self.subs.style.font = SubFont::ALL[i],
+                    5 => self.subs.style.weight = SubWeight::ALL[i],
+                    _ => self.subs.style.shadow = SubShadow::ALL[i],
+                }
+            }
+            ui.add_space(t.gap / 3.0);
         }
-        if let Some(i) = out.clicked {
-            self.subs.style.colour = colour_from(i);
+
+        // Text and background colour: a dropdown of the named colours plus Custom, and a #RRGGBB field.
+        let mut text_opts: Vec<String> = SUB_COLOURS.iter().map(|(n, _)| n.to_string()).collect();
+        text_opts.push("Custom".to_string());
+        let mut back_opts = vec!["None".to_string()];
+        back_opts.extend(text_opts.iter().cloned());
+        let f7 = self.focused(7);
+        let out = widgets::dropdown(ui, t, &mut self.sub_text, "Text colour", &text_opts, f7);
+        xs.push(out.button_x);
+        if out.button_hovered {
+            self.set_content(7);
+        }
+        if let Some(i) = out.item_clicked {
+            self.sub_text.highlighted = i;
+            self.sub_text.open = false;
+            self.apply_pick(cx, Dd::SubText, i);
         }
         ui.add_space(t.gap / 3.0);
-
-        let out = widgets::toggle(ui, t, "Background box", self.subs.style.background, self.focused(5));
-        xs.push(out.x);
-        if out.hovered {
-            self.set_content(5);
+        let f8 = self.focused(8);
+        let r = parts::text_field(ui, t, &mut self.text_draft, "Custom text colour (#RRGGBB)", f8, false);
+        xs.push(r.rect.center().x);
+        if r.clicked() {
+            self.set_content(8);
         }
-        if out.clicked {
-            self.subs.style.background = !self.subs.style.background;
+        if r.changed() {
+            if let Some(h) = parse_hex_colour(&self.text_draft) {
+                self.subs.style.text_colour = h;
+            }
+        }
+        ui.add_space(t.gap / 3.0);
+        let f9 = self.focused(9);
+        let out = widgets::dropdown(ui, t, &mut self.sub_back, "Background colour", &back_opts, f9);
+        xs.push(out.button_x);
+        if out.button_hovered {
+            self.set_content(9);
+        }
+        if let Some(i) = out.item_clicked {
+            self.sub_back.highlighted = i;
+            self.sub_back.open = false;
+            self.apply_pick(cx, Dd::SubBack, i);
+        }
+        ui.add_space(t.gap / 3.0);
+        let f10 = self.focused(10);
+        let r = parts::text_field(ui, t, &mut self.back_draft, "Custom background colour (#RRGGBB)", f10, false);
+        xs.push(r.rect.center().x);
+        if r.clicked() {
+            self.set_content(10);
+        }
+        if r.changed() {
+            if let Some(h) = parse_hex_colour(&self.back_draft) {
+                self.subs.style.back_colour = Some(h);
+            }
         }
         ui.add_space(t.gap / 3.0);
 
         let mut save = false;
         let mut cancel = false;
-        let (f6, f7) = (self.focused(6), self.focused(7));
+        let (f11, f12) = (self.focused(11), self.focused(12));
         let mut hover = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            let r = parts::button(ui, t, "Save subtitles", f6, true);
+            let r = parts::button(ui, t, "Save subtitles", f11, true);
             xs.push(r.rect.center().x);
             if r.hovered() {
-                hover = Some(6);
+                hover = Some(11);
             }
             save = r.clicked();
-            let r = parts::button(ui, t, "Cancel", f7, false);
+            let r = parts::button(ui, t, "Cancel", f12, false);
             if r.hovered() {
-                hover = Some(7);
+                hover = Some(12);
             }
             cancel = r.clicked();
         });
-        xs.push(xs[6]);
+        xs.push(xs[11]);
         if let Some(i) = hover {
             self.set_content(i);
         }
@@ -1076,7 +1220,6 @@ fn mask_tail(key: &str) -> String {
 const MODES: [SubMode; 4] = [SubMode::Default, SubMode::Always, SubMode::OnlyForced, SubMode::None];
 const MODE_LABELS: [&str; 4] = ["Default", "Always", "Only forced", "None"];
 const SIZE_LABELS: [&str; 4] = ["S", "M", "L", "XL"];
-const COLOUR_LABELS: [&str; 2] = ["White", "Yellow"];
 
 fn mode_index(m: SubMode) -> usize {
     MODES.iter().position(|&x| x == m).unwrap_or(0)
@@ -1097,21 +1240,6 @@ fn size_from(i: usize) -> SubSize {
         1 => SubSize::Medium,
         2 => SubSize::Large,
         _ => SubSize::ExtraLarge,
-    }
-}
-
-fn colour_index(c: SubColour) -> usize {
-    match c {
-        SubColour::White => 0,
-        SubColour::Yellow => 1,
-    }
-}
-
-fn colour_from(i: usize) -> SubColour {
-    if i == 0 {
-        SubColour::White
-    } else {
-        SubColour::Yellow
     }
 }
 

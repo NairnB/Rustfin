@@ -36,7 +36,7 @@ wait 400
 shot p-play-8
 
 # Offset +0.1 twice → the value shows 0.2 s.
-key down
+key down 3
 key right
 key enter
 key enter

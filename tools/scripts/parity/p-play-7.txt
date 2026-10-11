@@ -1,0 +1,42 @@
+# RR2 parity tour: P-PLAY-7 secondary subtitles (Secondary column of the Subtitles panel).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key up
+key right
+key enter
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3000
+
+# Open the Subtitles panel, move to the Secondary column and pick its last entry.
+key right 4
+key enter
+wait 400
+shot p-play-7-panel
+key right
+key down 2
+key enter
+wait 400
+shot p-play-7
+quit

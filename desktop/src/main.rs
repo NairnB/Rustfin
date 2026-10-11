@@ -23,7 +23,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WKey, NamedKey};
 use winit::window::{Window, WindowId};
@@ -165,6 +165,8 @@ struct Shell {
     started: Instant,
     first_frame: bool,
     first_poster: bool,
+    /// Where scripted mouse commands last put the pointer (points).
+    pointer: egui::Pos2,
 }
 
 /// `--playtest`: drive the mpv player directly against a throwaway server (packet P1).
@@ -279,6 +281,31 @@ impl Shell {
         }
         if let Some(t) = &step.text {
             g.egui.egui_winit.egui_input_mut().events.push(egui::Event::Text(t.clone()));
+        }
+        // Scripted mouse: pixels → points (ppp as below), fed to egui like real winit pointer events.
+        if let Some(m) = step.mouse {
+            let ppp = (size.height as f32 / 1080.0).max(0.75);
+            let input = g.egui.egui_winit.egui_input_mut();
+            let pos = self.pointer;
+            match m {
+                script::Mouse::Move(x, y) => {
+                    self.pointer = egui::pos2(x / ppp, y / ppp);
+                    input.events.push(egui::Event::PointerMoved(self.pointer));
+                }
+                script::Mouse::Press | script::Mouse::Release => input.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: m == script::Mouse::Press,
+                    modifiers: Default::default(),
+                }),
+                script::Mouse::Scroll(dx, dy) => input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(dx / ppp, dy / ppp),
+                    modifiers: Default::default(),
+                }),
+                script::Mouse::Back => self.keys.extend(mouse_key(MouseButton::Back)),
+                script::Mouse::Forward => self.keys.extend(mouse_key(MouseButton::Forward)),
+            }
         }
         let mut keys = std::mem::take(&mut self.keys);
         // Scripted Backspace while typing edits the text field instead of going Back.
@@ -446,6 +473,15 @@ fn map_key(k: &WKey, typing: bool) -> Option<Key> {
     })
 }
 
+/// Mouse side buttons: 4 = Back, 5 = Forward (like a browser).
+fn mouse_key(b: MouseButton) -> Option<Key> {
+    match b {
+        MouseButton::Back => Some(Key::Back),
+        MouseButton::Forward => Some(Key::Forward),
+        _ => None,
+    }
+}
+
 impl ApplicationHandler for Shell {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.gfx.is_none() {
@@ -476,6 +512,9 @@ impl ApplicationHandler for Shell {
                 if let Some(k) = map_key(&event.logical_key, typing) {
                     self.keys.push(k);
                 }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
+                self.keys.extend(mouse_key(button));
             }
             WindowEvent::RedrawRequested => self.frame(el),
             _ => {}
@@ -525,6 +564,7 @@ fn main() {
         started,
         first_frame: true,
         first_poster: false,
+        pointer: egui::Pos2::ZERO,
     };
     el.run_app(&mut shell).expect("run");
 }

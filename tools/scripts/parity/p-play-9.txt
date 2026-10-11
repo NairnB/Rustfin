@@ -1,4 +1,4 @@
-# G5 parity tour: P-PLAY-9 subtitle appearance (size, colour, position, background box).
+# G5 parity tour: P-PLAY-9 subtitle appearance (size, position, font, weight, shadow, text and background colour).
 wait-screen connect
 wait 2500
 idle
@@ -35,16 +35,24 @@ key enter
 wait 400
 shot p-play-9
 
-# Size → XL, colour → Yellow, background box on.
-key down
-key down
+# Size XL, font Serif, weight Bold, shadow Heavy, text Yellow, background Black.
+key down 5
 key right 3
 key enter
 key down
+key right 2
+key enter
 key down
 key right
 key enter
 key down
+key right 2
+key enter
+key down
+key right
+key enter
+key down
+key right 7
 key enter
 wait 400
 shot p-play-9-style

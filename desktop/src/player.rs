@@ -2,9 +2,7 @@
 //! current. Track mapping (R-PLAY-6) and the remaining polish are packet P1.
 use crate::mpv::{Mpv, END_FILE_REASON_EOF, END_FILE_REASON_ERROR};
 use crate::tracks;
-use jf_core::platform::{
-    Aspect, PlayRequest, Player, PlayerState, PlayerStats, SubColour, SubSize, SubStyle, TrackRef,
-};
+use jf_core::platform::{Aspect, PlayRequest, Player, PlayerState, PlayerStats, SubStyle, TrackRef};
 
 pub type GetProcFactory = Box<dyn Fn() -> Box<dyn Fn(&std::ffi::CStr) -> *const std::ffi::c_void>>;
 
@@ -206,30 +204,21 @@ impl Player for MpvPlayer {
             m.command(&["set", "sub-delay", &format!("{secs:.3}")]);
         }
     }
-    /// P-PLAY-9: map `SubStyle` to the mpv subtitle options. The default style leaves every option at its
-    /// mpv default (font-size 55, sub-pos 100, white, outline — no background box).
+    /// P-PLAY-9: set the mpv subtitle options from `SubStyle::mpv_options` (unit-tested in core). The default
+    /// style leaves every option at its mpv default.
     fn set_sub_style(&mut self, style: &SubStyle) {
         if let Some(m) = &self.mpv {
-            let font_size = match style.size {
-                SubSize::Small => "40",
-                SubSize::Medium => "55",
-                SubSize::Large => "70",
-                SubSize::ExtraLarge => "85",
-            };
-            m.command(&["set", "sub-font-size", font_size]);
-            let pos = style.position.clamp(0.0, 150.0);
-            m.command(&["set", "sub-pos", &format!("{pos}")]);
-            let colour = match style.colour {
-                SubColour::White => "#FFFFFF",
-                SubColour::Yellow => "#FFFF00",
-            };
-            m.command(&["set", "sub-color", colour]);
-            if style.background {
-                m.command(&["set", "sub-back-color", "#000000"]);
-                m.command(&["set", "sub-border-style", "3"]);
-            } else {
-                m.command(&["set", "sub-back-color", "0/0"]);
-                m.command(&["set", "sub-border-style", "0"]);
+            for (name, value) in style.mpv_options() {
+                m.command(&["set", name, &value]);
+            }
+        }
+    }
+    /// P-PLAY-7: mpv `secondary-sid`, mapped like `sid` (R-PLAY-6).
+    fn set_secondary_subtitle(&mut self, track: Option<TrackRef>) {
+        if let Some(m) = &self.mpv {
+            if let Some(req) = &self.req {
+                let sid = tracks::sid(req, track);
+                m.command(&["set", "secondary-sid", &sid]);
             }
         }
     }

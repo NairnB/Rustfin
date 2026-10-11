@@ -1,0 +1,35 @@
+# RR2 parity tour: P-PLAY-9 Settings › Subtitles tab (font, weight, shadow, text and background colour).
+wait-screen connect
+wait 2500
+idle
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right 2
+key enter
+wait-screen settings
+key right 3
+idle
+shot p-play-9-settings-tab
+key down 8
+key enter
+key down 2
+key enter
+key down
+idle
+type #336699
+key down
+key enter
+key down 2
+key enter
+wait 300
+shot p-play-9-settings
+quit

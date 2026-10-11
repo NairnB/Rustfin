@@ -1,7 +1,8 @@
 //! Scripted runs for render tests and benchmarks (SPEC §11 render, R-PERF-1). One command per line:
 //!   wait-screen <name>     wait until the top screen is <name> (60 s timeout → exit 4: slack for a busy build box)
 //!   idle                   wait until no loads are pending (then 3 more frames)
-//!   key <up|down|left|right|enter|back|space|backspace|info> [n]
+//!   key <up|down|left|right|enter|back|esc|space|backspace|info|forward|search> [n]
+//!                          (esc = Back, like the real Esc key)
 //!   type <text>            text into the focused field
 //!   wait <ms>
 //!   shot <name>            screenshot to <shots dir>/<name>.png
@@ -9,6 +10,11 @@
 //!   bench-keys <key> <n>   press <key> once per frame for n frames; print frame-time stats
 //!   mem                    print resident memory (Linux)
 //!   quit
+//! Mouse (x, y in screenshot pixels, top-left = 0 0):
+//!   move <x> <y>           move the pointer there (hover)
+//!   click <x> <y>          move, press, release the left button (three frames)
+//!   scroll <dx> <dy>       mouse wheel at the pointer, in pixels (dy < 0 = scroll down the page, like a wheel)
+//!   mouse <back|forward>   the mouse side buttons 4 / 5 (same path as a real mouse)
 use jf_core::platform::Key;
 use std::time::{Duration, Instant};
 
@@ -24,6 +30,18 @@ pub enum Cmd {
     BenchKeys(Key, usize),
     Mem,
     Quit,
+    Mouse(Mouse),
+}
+
+/// A pointer action for one frame (`click` expands to Move, Press, Release).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mouse {
+    Move(f32, f32),
+    Press,
+    Release,
+    Scroll(f32, f32),
+    Back,
+    Forward,
 }
 
 pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
@@ -36,7 +54,7 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
         let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
         let rest = rest.trim();
         let bad = || format!("script line {}: {line}", n + 1);
-        v.push(match cmd {
+        let c = match cmd {
             "wait-screen" => Cmd::WaitScreen(rest.into()),
             "idle" => Cmd::Idle,
             "key" => {
@@ -55,8 +73,27 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             }
             "mem" => Cmd::Mem,
             "quit" => Cmd::Quit,
+            "move" | "click" | "scroll" => {
+                let n: Vec<f32> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                let [x, y] = n[..] else { return Err(bad()) };
+                match cmd {
+                    "move" => Cmd::Mouse(Mouse::Move(x, y)),
+                    "scroll" => Cmd::Mouse(Mouse::Scroll(x, y)),
+                    _ => {
+                        v.push(Cmd::Mouse(Mouse::Move(x, y)));
+                        v.push(Cmd::Mouse(Mouse::Press));
+                        Cmd::Mouse(Mouse::Release)
+                    }
+                }
+            }
+            "mouse" => match rest {
+                "back" => Cmd::Mouse(Mouse::Back),
+                "forward" => Cmd::Mouse(Mouse::Forward),
+                _ => return Err(bad()),
+            },
             _ => return Err(bad()),
-        });
+        };
+        v.push(c);
     }
     Ok(v)
 }
@@ -68,7 +105,9 @@ fn key(s: &str) -> Option<Key> {
         "left" => Key::Left,
         "right" => Key::Right,
         "enter" => Key::Enter,
-        "back" => Key::Back,
+        "back" | "esc" => Key::Back,
+        "forward" => Key::Forward,
+        "search" => Key::Search,
         "space" => Key::PlayPause,
         "backspace" => Key::Backspace,
         "info" => Key::Info,
@@ -90,6 +129,7 @@ pub struct Step {
     pub keys: Vec<Key>,
     pub text: Option<String>,
     pub shot: Option<String>,
+    pub mouse: Option<Mouse>,
     pub quit: bool,
 }
 
@@ -168,6 +208,7 @@ impl Runner {
                 }
             }
             Cmd::Mem => println!("MEM rss_mb={:.1}", rss_mb()),
+            Cmd::Mouse(m) => s.mouse = Some(m),
             Cmd::Quit => s.quit = true,
         }
         if next {
@@ -186,4 +227,25 @@ pub fn rss_mb() -> f64 {
         .and_then(|l| l.split_whitespace().nth(1).and_then(|k| k.parse::<f64>().ok()))
         .map(|kb| kb / 1024.0)
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_commands_parse() {
+        let v = parse("click 10 20\nmove 1 2\nscroll 0 -300\nmouse back\nmouse forward\nkey esc").unwrap();
+        let m: Vec<String> = v.iter().map(|c| format!("{c:?}")).collect();
+        assert_eq!(m[0], "Mouse(Move(10.0, 20.0))");
+        assert_eq!(m[1], "Mouse(Press)");
+        assert_eq!(m[2], "Mouse(Release)");
+        assert_eq!(m[3], "Mouse(Move(1.0, 2.0))");
+        assert_eq!(m[4], "Mouse(Scroll(0.0, -300.0))");
+        assert_eq!(m[5], "Mouse(Back)");
+        assert_eq!(m[6], "Mouse(Forward)");
+        assert_eq!(m[7], "Key(Back, 1)");
+        assert!(parse("click 10").is_err());
+        assert!(parse("mouse middle").is_err());
+    }
 }
