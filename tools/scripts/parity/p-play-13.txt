@@ -29,9 +29,11 @@ key enter
 wait-screen player
 wait 3000
 
-# First key wakes the OSD; Play is focused; 5 × right reaches Quality (after Audio, Subtitles, Chapters).
-key right
-key right 5
+# Up wakes the OSD, Down reaches Play, 4 × Right → More…, Quality is its 1st entry.
+key up
+key down
+key right 4
+key enter
 key enter
 wait 400
 shot p-play-13

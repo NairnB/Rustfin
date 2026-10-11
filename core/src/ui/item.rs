@@ -1,5 +1,6 @@
 //! Item pages (R-UI-6, R-UI-7): movie, series, season, episode. Placeholder look; every value from `Theme`.
 use super::admin_actions;
+use super::at_details::{self as at, ActionBtn, HeroArt, RoundIcon};
 use super::collection;
 use super::parts::{self, CardKind};
 use super::player::{self, PlayOptions};
@@ -358,6 +359,34 @@ impl ItemScreen {
         v.push(("".to_string(), Action::ToggleFavorite));
         v.push(("More…".to_string(), Action::OpenMore));
         v
+    }
+
+    /// D2: `movie_buttons` in the Apple TV look, same order (key paths stay): the first is the white Play / Resume
+    /// pill, pickers are glass pills with a chevron, the rest round icon buttons with a caption under focus.
+    fn action_btns(&self) -> Vec<(ActionBtn, Action)> {
+        let played = self.current().user_data.as_ref().map(|u| u.played).unwrap_or(false);
+        let fav = self.current().user_data.as_ref().map(|u| u.is_favorite).unwrap_or(false);
+        let round = |icon, on, caption: &str| ActionBtn::Round { icon, on, caption: caption.to_string() };
+        self.movie_buttons()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (label, a))| {
+                let b = match a {
+                    Action::Play { .. } if i == 0 => ActionBtn::Play(label.clone()),
+                    Action::Play { .. } => round(RoundIcon::Restart, false, &label),
+                    Action::Trailer => round(RoundIcon::Trailer, false, &label),
+                    Action::PlayPrevEp => round(RoundIcon::Previous, false, &label),
+                    Action::PlayNextEp => round(RoundIcon::Next, false, &label),
+                    Action::ToggleWatched => round(RoundIcon::Watched, played, &label),
+                    Action::OpenVersion | Action::OpenAudio | Action::OpenSubtitles => ActionBtn::Menu(label.clone()),
+                    Action::OpenAddTo => round(RoundIcon::Add, false, &label),
+                    Action::ToggleFavorite => round(RoundIcon::Favourite, fav, "Favourite"),
+                    Action::OpenMore => round(RoundIcon::More, false, &label),
+                    _ => ActionBtn::Pill(label.clone()),
+                };
+                (b, a)
+            })
+            .collect()
     }
 
     /// G7: the rows of the "Add to…" menu at its current level.
@@ -996,31 +1025,22 @@ impl ItemScreen {
         let t = cx.theme;
         let pointer_moved = ui.input(|i| i.pointer.is_moving());
         let mut clicked = None;
-        ui.add_space(t.row_gap / 2.0);
-        parts::heading(ui, t, "Cast & crew");
-        ui.add_space(t.gap / 3.0);
-        egui::ScrollArea::horizontal()
-            .id_salt("cast-crew")
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = t.gap;
-                    for (i, p) in people.iter().enumerate() {
-                        let focused = self.focus.group == G_PEOPLE && self.focus.index == i;
-                        let r = person_card(ui, cx, p, focused);
-                        people_xs.push(r.rect.center().x);
-                        if focused {
-                            r.scroll_to_me(None);
-                        }
-                        if pointer_moved && r.hovered() {
-                            self.focus = Focus { group: G_PEOPLE, index: i };
-                        }
-                        if r.clicked() {
-                            clicked = Some(p.clone());
-                        }
-                    }
-                });
-            });
+        // D2: Apple's Cast & Crew row of round photos.
+        at::section_title(ui, t, "Cast & crew");
+        let focus = (self.focus.group == G_PEOPLE).then_some(self.focus.index);
+        let rs = at::row(ui, t, "cast-crew", people.len(), at::person_h(t), focus, |ui, i| {
+            let tx = at::person_tex(cx, ui, &people[i]);
+            at::person_circle(ui, t, tx, &people[i].name, &role_label(&people[i]), focus == Some(i))
+        });
+        for (i, r) in rs.iter().enumerate() {
+            people_xs.push(r.rect.center().x);
+            if pointer_moved && r.hovered() {
+                self.focus = Focus { group: G_PEOPLE, index: i };
+            }
+            if r.clicked() {
+                clicked = Some(people[i].clone());
+            }
+        }
         clicked
     }
 
@@ -1044,10 +1064,10 @@ impl ItemScreen {
                     for (i, c) in chips.iter().enumerate() {
                         if c.section != last {
                             last = c.section;
-                            ui.label(egui::RichText::new(c.section).size(t.small_size).color(t.muted));
+                            ui.label(egui::RichText::new(c.section).font(t.font(t.small_size)).color(t.muted));
                         }
                         let focused = self.focus.group == G_CHIPS && self.focus.index == i;
-                        let r = parts::button(ui, t, &c.label, focused, false);
+                        let r = widgets::pill_button(ui, t, &c.label, focused, false);
                         chip_xs.push(r.rect.center().x);
                         if focused {
                             r.scroll_to_me(None);
@@ -1072,14 +1092,12 @@ impl ItemScreen {
         let t = cx.theme;
         let pointer_moved = ui.input(|i| i.pointer.is_moving());
         let mut clicked = None;
-        ui.add_space(t.gap / 2.0);
-        parts::heading(ui, t, "External links");
-        ui.add_space(t.gap / 3.0);
+        at::section_title(ui, t, "External links");
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
             for (i, (label, url)) in links.iter().enumerate() {
                 let focused = self.focus.group == G_LINKS && self.focus.index == i;
-                let r = parts::button(ui, t, label, focused, false);
+                let r = widgets::pill_button(ui, t, label, focused, false);
                 link_xs.push(r.rect.center().x);
                 if pointer_moved && r.hovered() {
                     self.focus = Focus { group: G_LINKS, index: i };
@@ -1096,33 +1114,13 @@ impl ItemScreen {
         &mut self,
         ui: &mut egui::Ui,
         cx: &mut Cx,
-        btn_xs: &mut Vec<f32>,
         list_xs: &mut Vec<f32>,
         pos_xs: &mut Vec<f32>,
         story_xs: &mut Vec<f32>,
     ) -> Option<Action> {
         let t = cx.theme;
-        let buttons = self.movie_buttons();
-        let fav = self.current().user_data.as_ref().map(|u| u.is_favorite).unwrap_or(false);
         let mut act = None;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            for (i, (label, action)) in buttons.iter().enumerate() {
-                let focused = self.focus.group == G_BTN && self.focus.index == i;
-                let r = if matches!(action, Action::ToggleFavorite) {
-                    parts::heart_button(ui, t, fav, focused)
-                } else {
-                    parts::button(ui, t, label, focused, i == 0)
-                };
-                btn_xs.push(r.rect.center().x);
-                if r.hovered() {
-                    self.focus = Focus { group: G_BTN, index: i };
-                }
-                if r.clicked() {
-                    act = Some(*action);
-                }
-            }
-        });
+        // D2: the button row itself is drawn inside the hero (`page`); the pickers it opens stay here, below it.
         if self.audio_open {
             let entries = self.audio_entries();
             ui.add_space(t.gap / 2.0);
@@ -1316,31 +1314,23 @@ impl ItemScreen {
 
     // G8 (P-ITEM-18): the technical facts of the chosen version. Path only for admins.
     fn draw_media_info(&mut self, ui: &mut egui::Ui, cx: &mut Cx, xs: &mut Vec<f32>) {
-        let Some(id) = self.source().map(|m| m.id.clone()) else { return };
-        let Some(info) = self.media_info.iter().find(|m| m.id == id).or_else(|| self.media_info.first()) else {
-            return;
-        };
-        let lines = media_info_lines(info, cx.admin);
-        if lines.is_empty() {
+        let id = self.source().map(|m| m.id.clone());
+        let info = self.media_info.iter().find(|m| Some(&m.id) == id.as_ref()).or_else(|| self.media_info.first());
+        // D2: Apple's "Information" section — facts, people, then Audio / Subtitles / Format of the chosen version
+        // (path only for admins). Each column is a focus stop, so the remote can scroll down to it.
+        let cols = at::info_columns(self.current(), info, cx.admin);
+        if cols.is_empty() {
             return;
         }
         let t = cx.theme;
-        ui.add_space(t.gap);
-        parts::heading(ui, t, "Media info");
-        ui.add_space(t.gap / 3.0);
-        // each line is a focus stop, so the remote can scroll down to the panel
-        for (i, (label, value)) in lines.into_iter().enumerate() {
-            let focused = self.focus.group == G_INFO && self.focus.index == i;
-            let r = ui.add(
-                egui::Label::new(egui::RichText::new(format!("{label}  {value}")).size(t.small_size).color(t.muted))
-                    .wrap(),
-            );
+        let pointer_moved = ui.input(|i| i.pointer.is_moving());
+        at::section_title(ui, t, "Information");
+        let focus = (self.focus.group == G_INFO).then_some(self.focus.index);
+        for (i, r) in at::info_section(ui, t, &cols, focus).iter().enumerate() {
             xs.push(r.rect.center().x);
-            if focused {
-                parts::focus_ring(ui, t, r.rect);
-                r.scroll_to_me(None);
+            if pointer_moved && r.hovered() {
+                self.focus = Focus { group: G_INFO, index: i };
             }
-            ui.add_space(t.gap / 3.0);
         }
     }
 
@@ -1350,71 +1340,38 @@ impl ItemScreen {
     fn draw_chapters(&mut self, ui: &mut egui::Ui, cx: &mut Cx, chapter_xs: &mut Vec<f32>) -> Option<Action> {
         let t = cx.theme;
         let rows = super::player::chapter_rows(&self.current().chapters);
-        ui.add_space(t.gap);
-        parts::heading(ui, t, "Chapters");
-        ui.add_space(t.gap / 3.0);
+        at::section_title(ui, t, "Chapters");
         if rows.is_empty() {
             parts::muted(ui, t, "No chapters");
             return None;
         }
         // same order as `chapter_rows` (stable sort by start); the original index is what the image URL wants
-        let mut order: Vec<(usize, &crate::api::Chapter)> = self.current().chapters.iter().enumerate().collect();
+        let mut order: Vec<(usize, crate::api::Chapter)> =
+            self.current().chapters.iter().cloned().enumerate().collect();
         order.sort_by_key(|(_, c)| c.start_position_ticks);
         let id = self.current().id.clone();
-        let size = CardKind::Thumb.size(t);
-        let w = image_width_bucket(size.x, ui.ctx().pixels_per_point());
+        let w = image_width_bucket(t.thumb_w, ui.ctx().pixels_per_point());
+        let pointer_moved = ui.input(|i| i.pointer.is_moving());
+        let focus = (self.focus.group == G_CHAPTERS).then_some(self.focus.index);
+        let h = t.thumb_h + t.card_title_gap + t.body_size * 1.3;
+        let rs = at::row(ui, t, "chapters", rows.len(), h, focus, |ui, i| {
+            let (orig, ch) = &order[i];
+            let tex = ch
+                .image_tag
+                .as_deref()
+                .and_then(|tag| cx.client.as_ref().map(|c| c.chapter_image_url(&id, *orig, tag, w)))
+                .and_then(|u| cx.images.get(&u));
+            at::still_card(ui, t, tex, &rows[i].1, focus == Some(i))
+        });
         let mut act = None;
-        let mut hovered = None;
-        egui::ScrollArea::horizontal()
-            .id_salt("chapters")
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = t.gap;
-                    for (i, ((secs, label), (orig, ch))) in rows.iter().zip(order.iter()).enumerate() {
-                        let focused = self.focus.group == G_CHAPTERS && self.focus.index == i;
-                        let (rect, resp) =
-                            ui.allocate_exact_size(egui::vec2(size.x, size.y + t.card_label_h), egui::Sense::click());
-                        let img = egui::Rect::from_min_size(rect.min, size);
-                        let tex = ch
-                            .image_tag
-                            .as_deref()
-                            .and_then(|tag| cx.client.as_ref().map(|c| c.chapter_image_url(&id, *orig, tag, w)))
-                            .and_then(|u| cx.images.get(&u));
-                        match tex {
-                            Some(tex) => {
-                                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                                ui.painter().image(tex, img, uv, egui::Color32::WHITE);
-                            }
-                            None => {
-                                ui.painter().rect_filled(img, t.radius, t.skeleton);
-                            }
-                        }
-                        if focused {
-                            parts::focus_ring(ui, t, img);
-                            resp.scroll_to_me(None);
-                        }
-                        parts::label_line(
-                            ui,
-                            t,
-                            egui::pos2(rect.left(), img.bottom() + 6.0),
-                            size.x,
-                            label,
-                            t.body_size,
-                            t.text,
-                        );
-                        chapter_xs.push(rect.center().x);
-                        if resp.hovered() {
-                            hovered = Some(i);
-                        }
-                        if resp.clicked() {
-                            act = Some(Action::PlayChapter(*secs));
-                        }
-                    }
-                });
-            });
-        if let Some(i) = hovered {
-            self.focus = Focus { group: G_CHAPTERS, index: i };
+        for (i, r) in rs.iter().enumerate() {
+            chapter_xs.push(r.rect.center().x);
+            if pointer_moved && r.hovered() {
+                self.focus = Focus { group: G_CHAPTERS, index: i };
+            }
+            if r.clicked() {
+                act = Some(Action::PlayChapter(rows[i].0));
+            }
         }
         act
     }
@@ -1672,15 +1629,6 @@ fn open_chip(cx: &mut Cx, target: &ChipTarget) {
     }
 }
 
-/// P-ITEM-2: the overview as a laid-out text; `cut` limits it to `OVERVIEW_LINES` lines (ending in "…").
-fn overview_job(text: &str, font: egui::FontId, color: egui::Color32, width: f32, cut: bool) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::simple(text.to_string(), font, color, width);
-    if cut {
-        job.wrap.max_rows = OVERVIEW_LINES;
-    }
-    job
-}
-
 /// P-ITEM-19: external links built from `ProviderIds`. Only the ids the server supplied are returned, in
 /// IMDb · TMDB · TVDB order. TMDB is `tv` for series, `movie` otherwise.
 pub fn external_links(
@@ -1699,18 +1647,6 @@ pub fn external_links(
         links.push(("TVDB".to_string(), format!("https://thetvdb.com/?tab=series&id={id}")));
     }
     links
-}
-
-fn person_item(p: &PersonRef) -> Item {
-    let mut tags = std::collections::HashMap::new();
-    if let Some(tag) = &p.primary_image_tag {
-        tags.insert("Primary".to_string(), tag.clone());
-    }
-    Item { id: p.id.clone(), name: p.name.clone(), image_tags: tags, ..Default::default() }
-}
-
-fn initials(name: &str) -> String {
-    name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect()
 }
 
 /// The role shown under a person's name: their character for actors, the crew role otherwise.
@@ -1744,57 +1680,6 @@ fn ordered_people(item: &Item) -> Vec<PersonRef> {
     v
 }
 
-fn person_card(ui: &mut egui::Ui, cx: &mut Cx, p: &PersonRef, focused: bool) -> egui::Response {
-    let t = cx.theme;
-    let size = egui::vec2(t.person_size, t.person_size);
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size.x, size.y + t.card_label_h), egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let img_rect = egui::Rect::from_min_size(rect.min, size);
-        let w = image_width_bucket(size.x, ui.ctx().pixels_per_point());
-        let url = cx.client.as_ref().and_then(|c| c.image_url(&person_item(p), ImageKind::Primary, w));
-        match url.as_deref().and_then(|u| cx.images.get(u)) {
-            Some(tex) => {
-                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                ui.painter().image(tex, img_rect, uv, egui::Color32::WHITE);
-            }
-            None => {
-                ui.painter().rect_filled(img_rect, t.radius, t.skeleton);
-                if url.is_none() {
-                    ui.painter().text(
-                        img_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        initials(&p.name),
-                        t.font(t.heading_size),
-                        t.muted,
-                    );
-                }
-            }
-        }
-        if focused {
-            parts::focus_ring(ui, t, img_rect);
-        }
-        parts::label_line(
-            ui,
-            t,
-            egui::pos2(rect.left(), img_rect.bottom() + 6.0),
-            size.x,
-            &p.name,
-            t.body_size,
-            t.text,
-        );
-        parts::label_line(
-            ui,
-            t,
-            egui::pos2(rect.left(), img_rect.bottom() + 8.0 + t.body_size),
-            size.x,
-            &role_label(p),
-            t.small_size,
-            t.muted,
-        );
-    }
-    resp
-}
-
 impl ItemScreen {
     fn page(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
         if !self.started {
@@ -1808,75 +1693,96 @@ impl ItemScreen {
         let mut more_hover = false;
         let mut more_click = false;
 
+        // D2: full-bleed hero in the Apple TV look; the text column and (films / episodes) the action row sit on its
+        // bottom edge; an expanded overview grows the page below it.
+        let mut hero_xs: Vec<f32> = vec![];
+        let mut hero_act: Option<Action> = None;
         {
-            let item = self.current();
+            let item = self.current().clone();
             // G12 / P-USER-2: backdrops can be switched off in Settings.
-            let rect = if cx.settings.backdrops {
-                parts::backdrop(ui, cx, item)
+            let backdrop = if cx.settings.backdrops {
+                at::tex(cx, ui, &item, ImageKind::Backdrop, ui.ctx().screen_rect().width())
             } else {
-                let (alloc, _) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), t.backdrop_h), egui::Sense::hover());
-                ui.painter().rect_filled(alloc, 0.0, t.surface);
-                alloc
+                None
             };
-            let mut col = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(t.margin)));
-            col.set_max_width(t.field_w * 1.5);
-            col.add_space(t.backdrop_h * 0.15);
-            if let Some(line) = self.above_line(item) {
-                col.label(egui::RichText::new(line).size(t.small_size).color(t.text));
-                col.add_space(t.gap / 4.0);
+            let art = HeroArt { backdrop, logo: at::logo(cx, ui, &item) };
+            let rect = at::hero(ui, t, art, t.backdrop_h);
+            let hero_focus = matches!(self.focus.group, G_BTN | G_MORE).then_some(0);
+            if at::focus_moved(ui, egui::Id::new("item-hero"), hero_focus) {
+                ui.scroll_to_rect(rect.with_max_y(rect.top() + t.gap), None);
             }
-            parts::title(&mut col, t, &item.name);
-            if let Some(tagline) = item.taglines.first() {
-                let tagline = tagline.trim();
-                if !tagline.is_empty() {
+            let btns =
+                if matches!(self.kind, ItemKind::Movie | ItemKind::Episode) { self.action_btns() } else { vec![] };
+            let years = crate::story::year_line(&item, cx.settings.show_release_year, cx.settings.show_story_year);
+            let mut meta = at::meta_parts(&item, &years);
+            if item.kind == ItemKind::Episode {
+                // the episode line already says which show; keep the facts short
+                meta.retain(|m| !item.genres.iter().any(|g| m.contains(g.as_str())));
+            }
+            let facts: Vec<at::StreamFacts> = match self.media_info.first() {
+                Some(src) => src.media_streams.iter().map(at::StreamFacts::from).collect(),
+                None => item.media_streams.iter().map(at::StreamFacts::from).collect(),
+            };
+            let badges = at::badges(&facts);
+            let moving = ui.input(|i| i.pointer.is_moving());
+            at::hero_column(ui, t, rect, "item-hero", |col| {
+                if let Some(line) = self.above_line(&item) {
+                    at::kicker(col, t, &line);
                     col.add_space(t.gap / 4.0);
-                    col.label(egui::RichText::new(tagline).size(t.body_size).color(t.muted).italics());
                 }
-            }
-            let has_facts = !parts::meta_line_with(item, cx.settings.show_release_year, cx.settings.show_story_year)
-                .is_empty()
-                || item.community_rating.is_some()
-                || item.critic_rating.is_some();
-            if has_facts {
-                col.add_space(t.gap / 4.0);
-                parts::facts_line_with(&mut col, t, item, cx.settings.show_release_year, cx.settings.show_story_year);
-            }
-            if let Some(ov) = item.overview.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                at::hero_title(col, t, &item.name, art.logo);
+                if let Some(tagline) = item.taglines.first().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    col.add_space(t.gap / 4.0);
+                    col.label(egui::RichText::new(tagline).font(t.font(t.body_size)).color(t.muted).italics());
+                }
                 col.add_space(t.gap / 2.0);
-                let font = t.font(t.body_size);
-                let width = col.available_width();
-                let full = col.fonts(|f| f.layout_job(overview_job(ov, font.clone(), t.muted, width, false)));
-                let long = full.rows.len() > OVERVIEW_LINES;
-                col.label(overview_job(ov, font, t.muted, width, long && !self.overview_open));
-                if long {
-                    col.add_space(t.gap / 4.0);
-                    let label = if self.overview_open { "Less" } else { "More" };
-                    let r = parts::button(&mut col, t, label, self.focus.group == G_MORE, false);
-                    more_x = Some(r.rect.center().x);
-                    more_hover = r.hovered();
-                    more_click = r.clicked();
+                at::meta_row(col, t, &meta, (item.community_rating, item.critic_rating), &badges);
+                if let Some(ov) = item.overview.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                    col.add_space(t.gap / 2.0);
+                    let long = at::overview_rows(col, t, ov, t.hero_text_w) > OVERVIEW_LINES;
+                    at::overview(col, t, ov, self.overview_open || !long, OVERVIEW_LINES);
+                    if long {
+                        col.add_space(t.gap / 4.0);
+                        let label = if self.overview_open { "Less" } else { "More" };
+                        let r = at::text_button(col, t, label, self.focus.group == G_MORE);
+                        more_x = Some(r.rect.center().x);
+                        more_hover = r.hovered();
+                        more_click = r.clicked();
+                    }
                 }
-            }
-            if !self.in_collections.is_empty() {
-                let names = self.in_collections.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
-                col.add_space(t.gap / 4.0);
-                col.add(
-                    egui::Label::new(
-                        egui::RichText::new(format!("Collections  {names}")).size(t.small_size).color(t.muted),
-                    )
-                    .wrap(),
-                );
-            }
-            if let Some(note) = &self.add_note {
-                col.add_space(t.gap / 4.0);
-                col.add(egui::Label::new(egui::RichText::new(note).size(t.small_size).color(t.text)).wrap());
-            }
-            // A long overview grows the column past the backdrop: keep the buttons below it.
-            let over = col.min_rect().bottom() - rect.bottom();
-            if over > 0.0 {
-                ui.add_space(over);
-            }
+                if !self.in_collections.is_empty() {
+                    let names = self.in_collections.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
+                    col.add_space(t.gap / 4.0);
+                    col.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("Collections  {names}"))
+                                .font(t.font(t.small_size))
+                                .color(t.muted),
+                        )
+                        .wrap(),
+                    );
+                }
+                if let Some(note) = &self.add_note {
+                    col.add_space(t.gap / 4.0);
+                    col.add(
+                        egui::Label::new(egui::RichText::new(note).font(t.font(t.small_size)).color(t.text)).wrap(),
+                    );
+                }
+                if !btns.is_empty() {
+                    col.add_space(t.gap);
+                    let shown: Vec<ActionBtn> = btns.iter().map(|(b, _)| b.clone()).collect();
+                    let focus = (self.focus.group == G_BTN).then_some(self.focus.index);
+                    for (i, r) in at::action_row(col, t, &shown, focus).iter().enumerate() {
+                        hero_xs.push(r.rect.center().x);
+                        if r.hovered() && moving {
+                            self.focus = Focus { group: G_BTN, index: i };
+                        }
+                        if r.clicked() {
+                            hero_act = Some(btns[i].1);
+                        }
+                    }
+                }
+            });
         }
 
         if more_hover && ui.input(|i| i.pointer.is_moving()) {
@@ -1887,9 +1793,9 @@ impl ItemScreen {
         }
 
         ui.add_space(t.gap);
-        let mut act: Option<Action> = None;
+        let mut act: Option<Action> = hero_act;
         let mut push_item: Option<Item> = None;
-        let mut btn_xs: Vec<f32> = vec![];
+        let mut btn_xs: Vec<f32> = hero_xs;
         let mut list_xs: Vec<f32> = vec![];
         let mut row_xs: Vec<f32> = vec![];
         let mut people_xs: Vec<f32> = vec![];
@@ -1910,7 +1816,9 @@ impl ItemScreen {
 
         match self.kind {
             ItemKind::Movie | ItemKind::Episode => {
-                act = self.draw_movie_episode(ui, cx, &mut btn_xs, &mut list_xs, &mut pos_xs, &mut story_xs);
+                if let Some(a) = self.draw_movie_episode(ui, cx, &mut list_xs, &mut pos_xs, &mut story_xs) {
+                    act = Some(a);
+                }
                 if !self.picker_open() {
                     open_chip_target = self.draw_chips(ui, cx, &mut chip_xs);
                 }
@@ -1985,7 +1893,7 @@ impl ItemScreen {
                 groups[G_PEOPLE] = Group { len: people_xs.len(), cols: people_xs.len(), xs: people_xs };
                 groups[G_SPECIALS] = Group { len: special_xs.len(), cols: special_xs.len(), xs: special_xs };
                 groups[G_SIMILAR] = Group { len: similar_xs.len(), cols: similar_xs.len(), xs: similar_xs };
-                groups[G_INFO] = Group { len: info_xs.len(), cols: 1, xs: info_xs };
+                groups[G_INFO] = Group { len: info_xs.len(), cols: info_xs.len(), xs: info_xs };
                 groups[G_LINKS] = Group { len: link_xs.len(), cols: link_xs.len(), xs: link_xs };
             }
             ItemKind::Series => {

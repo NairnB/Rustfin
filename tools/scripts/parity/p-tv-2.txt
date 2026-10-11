@@ -27,4 +27,9 @@ wait-screen show
 wait 2500
 idle
 shot p-tv-2
+# D2: the Next up card now sits in its own row under the episodes; walk down to it.
+key down 2
+idle
+wait 600
+shot p-tv-2-card
 quit

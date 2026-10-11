@@ -61,7 +61,7 @@ pub struct Home {
 }
 
 const USER_MENU: [&str; 3] = ["Settings", "Switch user", "Sign out"];
-const TOPBAR_USER: usize = 5;
+const TOPBAR_USER: usize = 4;
 
 pub fn screen(verify_session: bool) -> Box<dyn Screen> {
     Box::new(Home {
@@ -306,9 +306,8 @@ impl Home {
             Role::Topbar => match self.focus.index {
                 TOPBAR_USER => self.user_menu = Some(0),
                 1 => cx.push(super::search::screen()),
-                2 => cx.push(super::settings_screen::screen()),
-                3 => cx.push(super::favourites::screen()),
-                4 => cx.push(super::playlists::list()),
+                2 => cx.push(super::favourites::screen()),
+                3 => cx.push(super::playlists::list()),
                 _ => {}
             },
             Role::Row(id) => {
@@ -582,7 +581,7 @@ impl Screen for Home {
         // TV: the top pill bar. Desktop: the app shell's sidebar replaces it, so its group stays empty.
         let tv_bar = !cx.sidebar;
         roles.push(Role::Topbar);
-        groups.push(Group { len: if tv_bar { 6 } else { 0 }, cols: 6, xs: vec![] });
+        groups.push(Group { len: if tv_bar { 5 } else { 0 }, cols: 5, xs: vec![] });
         let hero = self.hero_item();
         if let Some(h) = &hero {
             if self.hero_for.as_deref() != Some(h.id.as_str()) {
@@ -794,9 +793,8 @@ impl Screen for Home {
                 match i {
                     TOPBAR_USER => self.user_menu = Some(0),
                     1 => cx.push(super::search::screen()),
-                    2 => cx.push(super::settings_screen::screen()),
-                    3 => cx.push(super::favourites::screen()),
-                    4 => cx.push(super::playlists::list()),
+                    2 => cx.push(super::favourites::screen()),
+                    3 => cx.push(super::playlists::list()),
                     _ => {}
                 }
             }

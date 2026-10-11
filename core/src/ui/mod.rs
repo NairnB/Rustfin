@@ -1,11 +1,13 @@
 //! Screens (SPEC §8). Each module exposes `screen(...) -> Box<dyn Screen>`.
 pub mod admin;
 pub mod admin_actions;
+pub mod at_details;
 pub mod browse;
 pub mod collection;
 pub mod connect;
 pub mod favourites;
 pub mod gallery;
+pub mod gallery_details;
 pub mod home;
 pub mod imageload;
 pub mod item;

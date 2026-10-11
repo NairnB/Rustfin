@@ -27,4 +27,9 @@ wait-screen movie
 wait 2500
 idle
 shot p-item-17
+# D2: the chapter stills sit below the hero now; step down to them.
+key down
+idle
+wait 600
+shot p-item-17-stills
 quit

@@ -16,7 +16,7 @@ key enter
 wait-screen home
 idle
 key up 20
-key right 5
+key right 4
 idle
 shot p-home-7-chip
 key enter

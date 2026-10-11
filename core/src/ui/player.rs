@@ -103,16 +103,18 @@ impl Reporter {
 const G_BAR: usize = 0;
 const G_BTN: usize = 1;
 const G_VOL: usize = 2;
-const G_LIST: usize = 3;
-const G_SUB_OFFSET: usize = 4;
-const G_SUB_POS: usize = 5;
-const G_SUB_SIZE: usize = 6;
-const G_SUB_FONT: usize = 7;
-const G_SUB_WEIGHT: usize = 8;
-const G_SUB_SHADOW: usize = 9;
-const G_SUB_TEXT: usize = 10;
-const G_SUB_BACK: usize = 11;
-const GROUP_COUNT: usize = 12;
+/// UXP2: the audio list of the Audio & Subtitles panel (above the subtitle lists).
+const G_AUDIO: usize = 3;
+const G_LIST: usize = 4;
+const G_SUB_OFFSET: usize = 5;
+const G_SUB_POS: usize = 6;
+const G_SUB_SIZE: usize = 7;
+const G_SUB_FONT: usize = 8;
+const G_SUB_WEIGHT: usize = 9;
+const G_SUB_SHADOW: usize = 10;
+const G_SUB_TEXT: usize = 11;
+const G_SUB_BACK: usize = 12;
+const GROUP_COUNT: usize = 13;
 
 /// One subtitle-panel focus group as drawn: (group, x of each entry, hovered entry, clicked entry).
 type PanelGroup = (usize, Vec<f32>, Option<usize>, Option<usize>);
@@ -214,13 +216,178 @@ pub fn queue_row_label(item: &Item) -> String {
     }
 }
 
+/// UXP2 (D4, R1): which kind of control holds the OSD focus, for the key model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsdFocus {
+    Timeline,
+    VolumeBar,
+    Other,
+}
+
+/// UXP2: what a key does in the player (before any menu or panel is open).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OsdAct {
+    /// Seek by this many seconds (negative = back).
+    Seek(f64),
+    /// Show the OSD, focus on the timeline.
+    Wake,
+    HideOsd,
+    Leave,
+    /// Arrow keys move the focus.
+    Move,
+    Activate,
+    /// Change the volume by this fraction.
+    Volume(f32),
+    None,
+}
+
+/// UXP2: the remote-first key model. OSD hidden: Left/Right seek, Up/Down/Enter wake it. OSD shown: the timeline
+/// is focused first and Left/Right scrub it, Down reaches the buttons; Back hides the OSD, then leaves.
+pub fn osd_key(visible: bool, focus: OsdFocus, key: Key, skip_back: f64, skip_forward: f64) -> OsdAct {
+    let seek = |k: Key| OsdAct::Seek(if k == Key::Left { -skip_back } else { skip_forward });
+    match (visible, key) {
+        (false, Key::Left | Key::Right) => seek(key),
+        (false, Key::Up | Key::Down | Key::Enter) => OsdAct::Wake,
+        (false, Key::Back) => OsdAct::Leave,
+        (true, Key::Back) => OsdAct::HideOsd,
+        (true, Key::Left | Key::Right | Key::Up | Key::Down) if focus == OsdFocus::VolumeBar => {
+            OsdAct::Volume(if matches!(key, Key::Left | Key::Down) { -0.05 } else { 0.05 })
+        }
+        (true, Key::Left | Key::Right) if focus == OsdFocus::Timeline => seek(key),
+        (true, Key::Left | Key::Right | Key::Up | Key::Down) => OsdAct::Move,
+        (true, Key::Enter) => OsdAct::Activate,
+        _ => OsdAct::None,
+    }
+}
+
+/// UXP2: how far (in mpv `sub-pos` percent) subtitles are lifted while the OSD is up.
+pub const OSD_SUB_LIFT: f32 = 25.0;
+
+/// UXP2: the `sub-pos` to use: the chosen position, but no lower than the top of the OSD while it is up.
+pub fn lifted_sub_position(position: f32, osd_up: bool) -> f32 {
+    if osd_up {
+        position.min(100.0 - OSD_SUB_LIFT)
+    } else {
+        position
+    }
+}
+
+/// UXP2 (D14): English name of an ISO 639 language code (2- or 3-letter), `None` when unknown.
+fn language_name(code: &str) -> Option<&'static str> {
+    Some(match code.to_lowercase().as_str() {
+        "eng" | "en" => "English",
+        "ger" | "deu" | "de" => "German",
+        "fre" | "fra" | "fr" => "French",
+        "spa" | "es" => "Spanish",
+        "ita" | "it" => "Italian",
+        "por" | "pt" => "Portuguese",
+        "dut" | "nld" | "nl" => "Dutch",
+        "swe" | "sv" => "Swedish",
+        "nor" | "no" | "nob" | "nb" => "Norwegian",
+        "dan" | "da" => "Danish",
+        "fin" | "fi" => "Finnish",
+        "pol" | "pl" => "Polish",
+        "rus" | "ru" => "Russian",
+        "ukr" | "uk" => "Ukrainian",
+        "cze" | "ces" | "cs" => "Czech",
+        "slo" | "slk" | "sk" => "Slovak",
+        "hun" | "hu" => "Hungarian",
+        "rum" | "ron" | "ro" => "Romanian",
+        "bul" | "bg" => "Bulgarian",
+        "gre" | "ell" | "el" => "Greek",
+        "tur" | "tr" => "Turkish",
+        "heb" | "he" => "Hebrew",
+        "ara" | "ar" => "Arabic",
+        "hin" | "hi" => "Hindi",
+        "jpn" | "ja" => "Japanese",
+        "kor" | "ko" => "Korean",
+        "chi" | "zho" | "zh" => "Chinese",
+        "tha" | "th" => "Thai",
+        "vie" | "vi" => "Vietnamese",
+        "ind" | "id" => "Indonesian",
+        "gla" | "gd" => "Gaelic",
+        "wel" | "cym" | "cy" => "Welsh",
+        "und" | "zxx" | "mul" => return None,
+        _ => return None,
+    })
+}
+
+/// UXP2 (D14): names a person reads for one kind of stream ("German", "English (embedded)", "English — Forced"),
+/// in the order given. The server's display title is jargon ("Ger - SUBRIP - External") and is not used. A
+/// language that appears twice is told apart as embedded / external, then numbered.
+pub fn track_labels(streams: &[MediaStream]) -> Vec<String> {
+    let base: Vec<String> = streams
+        .iter()
+        .map(|s| {
+            let name = s
+                .language
+                .as_deref()
+                .and_then(|l| {
+                    language_name(l).map(String::from).or_else(|| (!l.is_empty() && l.len() > 3).then(|| capitalise(l)))
+                })
+                .or_else(|| s.title.clone().filter(|t| !t.trim().is_empty()))
+                .unwrap_or_else(|| format!("Track {}", s.index));
+            if s.is_forced {
+                format!("{name} — Forced")
+            } else {
+                name
+            }
+        })
+        .collect();
+    let count = |v: &[String], l: &str| v.iter().filter(|x| x.as_str() == l).count();
+    let mut out: Vec<String> = streams
+        .iter()
+        .zip(&base)
+        .map(|(s, b)| {
+            let twins: Vec<&MediaStream> = streams.iter().zip(&base).filter(|(_, o)| *o == b).map(|(t, _)| t).collect();
+            // Only say embedded / external when the twins really differ in that.
+            if twins.len() > 1 && twins.iter().any(|t| t.is_external != s.is_external) {
+                format!("{b} ({})", if s.is_external { "external" } else { "embedded" })
+            } else {
+                b.clone()
+            }
+        })
+        .collect();
+    let snapshot = out.clone();
+    let mut seen: Vec<(String, usize)> = vec![];
+    for l in out.iter_mut() {
+        if count(&snapshot, l) > 1 {
+            let n = match seen.iter_mut().find(|(k, _)| k == l) {
+                Some((_, n)) => {
+                    *n += 1;
+                    *n
+                }
+                None => {
+                    seen.push((l.clone(), 1));
+                    1
+                }
+            };
+            *l = format!("{l} {n}");
+        }
+    }
+    out
+}
+
+/// UXP2: the rows of the Info panel — what is playing, how far, and the chosen tracks.
+pub fn now_playing_rows(title: &str, pos: f64, dur: f64, audio: &str, subtitles: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("Playing", title.to_string()),
+        ("Time", format!("{} / {}", parts::clock(pos), parts::clock(dur))),
+        ("Audio", audio.to_string()),
+        ("Subtitles", subtitles.to_string()),
+    ]
+}
+
 #[derive(Clone)]
 enum Action {
     Seek(f64),
     TogglePause,
-    OpenAudio,
-    OpenSubtitles,
-    PickAudio(i32),
+    /// UXP2: the one Audio & Subtitles panel.
+    OpenAudioSubs,
+    /// UXP2: the "…" More panel (Quality, Speed, Aspect, Repeat, Chapters, Stats, Queue, Previous episode).
+    OpenMore,
+    /// UXP2: ✖ — leave the player.
+    Leave,
     PlayNext,
     PlayPrevious,
     OpenChapters,
@@ -256,8 +423,14 @@ pub struct PlayerScreen {
     osd_last_input: f64,
     audio: Option<i32>,
     subtitle: Option<Option<i32>>,
-    audio_open: bool,
+    /// The Audio & Subtitles panel (UXP2: audio and subtitle lists in one panel).
     subtitle_open: bool,
+    /// UXP2: the "…" More panel.
+    more_open: bool,
+    /// UXP2: subtitles are lifted above the OSD (the `sub-pos` last sent was the lifted one).
+    sub_lifted: bool,
+    /// UXP2: Back hid the OSD while paused (a paused player otherwise keeps it up).
+    osd_dismissed: bool,
     // G6: quality (max kbps chosen here; None = the Settings cap), speed, stats, transcoding state
     quality_open: bool,
     speed_open: bool,
@@ -356,8 +529,10 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         osd_last_input: 0.0,
         audio: None,
         subtitle: None,
-        audio_open: false,
         subtitle_open: false,
+        more_open: false,
+        sub_lifted: false,
+        osd_dismissed: false,
         quality_open: false,
         speed_open: false,
         aspect_open: false,
@@ -400,7 +575,7 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         sub_delay: 0.0,
         sub_style: SubStyle::default(),
         sec_subtitle: None,
-        focus: Focus { group: G_BTN, index: B_PLAY },
+        focus: Focus { group: G_BAR, index: 0 },
         groups: vec![],
         started: false,
     }
@@ -418,37 +593,35 @@ impl PlayerScreen {
         self.info.as_ref().and_then(|i| crate::playreq::pick_source(i, self.source_id.as_deref()))
     }
 
-    fn stream_label(&self, s: &MediaStream) -> String {
-        let mut l =
-            s.display_title.clone().or_else(|| s.language.clone()).unwrap_or_else(|| format!("Track {}", s.index));
-        if s.is_external && !l.to_lowercase().contains("external") {
-            l.push_str(" · External");
-        }
-        l
+    /// UXP2 (D14): (label, stream index) for each stream of `kind`, labels as `track_labels` reads them.
+    fn track_entries(&self, kind: StreamKind) -> Vec<(String, i32)> {
+        let Some(ms) = self.source() else { return vec![] };
+        let streams: Vec<MediaStream> = ms.media_streams.iter().filter(|s| s.kind == kind).cloned().collect();
+        track_labels(&streams).into_iter().zip(streams.iter().map(|s| s.index)).collect()
     }
 
     fn audio_entries(&self) -> Vec<(String, i32)> {
-        let mut v = vec![];
-        if let Some(ms) = self.source() {
-            for s in ms.media_streams.iter().filter(|s| s.kind == StreamKind::Audio) {
-                v.push((self.stream_label(s), s.index));
-            }
-        }
-        v
+        self.track_entries(StreamKind::Audio)
     }
 
     fn subtitle_entries(&self) -> Vec<(String, Option<i32>)> {
         let mut v = vec![("Off".to_string(), None)];
-        if let Some(ms) = self.source() {
-            for s in ms.media_streams.iter().filter(|s| s.kind == StreamKind::Subtitle) {
-                v.push((self.stream_label(s), Some(s.index)));
-            }
-        }
+        v.extend(self.track_entries(StreamKind::Subtitle).into_iter().map(|(l, i)| (l, Some(i))));
         v
     }
 
+    /// UXP2: the audio stream playing now (the choice, else the source's default, else the first).
+    fn current_audio(&self) -> Option<i32> {
+        let entries = self.audio_entries();
+        let known = |i: &i32| entries.iter().any(|(_, x)| x == i);
+        self.audio
+            .filter(known)
+            .or_else(|| self.source().and_then(|ms| ms.default_audio_stream_index).filter(known))
+            .or_else(|| entries.first().map(|(_, i)| *i))
+    }
+
     fn any_menu(&self) -> bool {
-        self.audio_open
+        self.more_open
             || self.subtitle_open
             || self.chapters_open
             || self.quality_open
@@ -459,7 +632,7 @@ impl PlayerScreen {
     }
 
     fn close_menus(&mut self) {
-        self.audio_open = false;
+        self.more_open = false;
         self.subtitle_open = false;
         self.chapters_open = false;
         self.quality_open = false;
@@ -488,55 +661,62 @@ impl PlayerScreen {
         Repeat::ALL.iter().map(|r| r.label().to_string()).collect()
     }
 
+    /// UXP2: the audio track playing now, by name (the choice, else the source's default).
     fn audio_label(&self) -> String {
-        match self.audio {
-            Some(i) => self
-                .source()
-                .and_then(|ms| ms.media_streams.iter().find(|s| s.kind == StreamKind::Audio && s.index == i))
-                .map(|s| self.stream_label(s))
-                .unwrap_or_else(|| "Default".to_string()),
-            None => "Default".to_string(),
-        }
+        self.current_audio()
+            .and_then(|i| self.audio_entries().into_iter().find(|(_, x)| *x == i).map(|(l, _)| l))
+            .unwrap_or_else(|| "Default".to_string())
     }
 
     fn subtitle_label(&self) -> String {
         match self.subtitle {
             Some(Some(i)) => self
-                .source()
-                .and_then(|ms| ms.media_streams.iter().find(|s| s.kind == StreamKind::Subtitle && s.index == i))
-                .map(|s| self.stream_label(s))
+                .subtitle_entries()
+                .into_iter()
+                .find(|(_, x)| *x == Some(i))
+                .map(|(l, _)| l)
                 .unwrap_or_else(|| "Default".to_string()),
             Some(None) => "Off".to_string(),
             None => "Default".to_string(),
         }
     }
 
+    /// UXP2: the OSD button row — short, so it fits at 1440 and 1920. The Next episode slot is always there for an
+    /// episode (it never moves between episodes); everything else lives in the More panel.
     fn buttons(&self, play_label: &str) -> Vec<(String, Action)> {
         let mut v = vec![
             (format!("⏪ {} s", self.skip_back as i64), Action::Seek(-self.skip_back)),
             (play_label.to_string(), Action::TogglePause),
             (format!("{} s ⏩", self.skip_forward as i64), Action::Seek(self.skip_forward)),
+            ("Audio & Subtitles".to_string(), Action::OpenAudioSubs),
         ];
+        if self.item.kind == ItemKind::Episode || self.next.is_some() {
+            v.push(("Next episode".to_string(), Action::PlayNext));
+        }
+        v.push(("More…".to_string(), Action::OpenMore));
+        v.push(("Fullscreen".to_string(), Action::ToggleFullscreen));
+        v.push(("✖".to_string(), Action::Leave));
+        v
+    }
+
+    /// UXP2: the More panel's entries — what the old button row held besides the buttons above.
+    fn more_entries(&self) -> Vec<(String, Action)> {
+        let mut v = vec![];
         if self.prev.is_some() {
             v.push(("Previous episode".to_string(), Action::PlayPrevious));
         }
-        if self.next.is_some() {
-            v.push(("Next episode".to_string(), Action::PlayNext));
-        }
-        v.push((format!("Audio: {}", self.audio_label()), Action::OpenAudio));
-        v.push((format!("Subtitles: {}", self.subtitle_label()), Action::OpenSubtitles));
-        v.push(("Chapters".to_string(), Action::OpenChapters));
         v.push((format!("Quality: {}", quality_label(self.quality_kbps, self.settings_kbps)), Action::OpenQuality));
         v.push((format!("Speed: {}×", self.speed), Action::OpenSpeed));
         v.push((format!("Aspect: {}", self.aspect.label()), Action::OpenAspect));
         v.push((format!("Repeat: {}", self.repeat.label()), Action::OpenRepeat));
-        v.push(("Stats".to_string(), Action::ToggleStats));
-        v.push(("Fullscreen".to_string(), Action::ToggleFullscreen));
+        if !self.item.chapters.is_empty() {
+            v.push(("Chapters".to_string(), Action::OpenChapters));
+        }
+        v.push((if self.stats_open { "Hide stats" } else { "Stats" }.to_string(), Action::ToggleStats));
+        if self.queue.as_ref().is_some_and(|q| q.len() > 1) {
+            v.push(("Queue".to_string(), Action::OpenQueue));
+        }
         v
-    }
-
-    fn audio_button_index(&self) -> usize {
-        self.buttons("").iter().position(|(_, a)| matches!(a, Action::OpenAudio)).unwrap_or(0)
     }
 
     /// Chapter entries for the OSD list (start seconds, label).
@@ -1058,8 +1238,6 @@ impl PlayerScreen {
     fn pick_audio(&mut self, cx: &mut Cx, index: i32) {
         self.audio = Some(index);
         cx.player.set_audio(Some(index));
-        self.audio_open = false;
-        self.focus = Focus { group: G_BTN, index: self.audio_button_index() };
         self.report_now(cx);
     }
 
@@ -1076,7 +1254,15 @@ impl PlayerScreen {
 
     fn adj_sub_pos(&mut self, cx: &mut Cx, delta: f32) {
         self.sub_style.position = (self.sub_style.position + delta).clamp(0.0, 150.0);
-        cx.player.set_sub_style(&self.sub_style);
+        self.apply_sub_style(cx);
+    }
+
+    /// UXP2: send the subtitle style to the player, lifted above the OSD while it is up (and the panel is not).
+    fn apply_sub_style(&mut self, cx: &mut Cx) {
+        let mut style = self.sub_style.clone();
+        self.sub_lifted = self.osd_visible && !self.subtitle_open && self.up_next.is_none();
+        style.position = lifted_sub_position(style.position, self.sub_lifted);
+        cx.player.set_sub_style(&style);
     }
 
     fn pick_secondary(&mut self, cx: &mut Cx, val: Option<i32>) {
@@ -1089,6 +1275,12 @@ impl PlayerScreen {
         let delta = if i == 0 { -1.0 } else { 1.0 };
         match group {
             // Two columns side by side: even entries pick the primary track, odd ones the secondary.
+            G_AUDIO => {
+                if let Some(idx) = self.audio_entries().get(i).map(|(_, x)| *x) {
+                    self.pick_audio(cx, idx);
+                }
+                return;
+            }
             G_LIST => {
                 if let Some(v) = self.subtitle_entries().get(i / 2).map(|(_, v)| *v) {
                     if i.is_multiple_of(2) {
@@ -1122,7 +1314,7 @@ impl PlayerScreen {
             }
             _ => return,
         }
-        cx.player.set_sub_style(&self.sub_style);
+        self.apply_sub_style(cx);
     }
 
     /// Enter in the subtitle panel acts on the focused control.
@@ -1140,20 +1332,22 @@ impl PlayerScreen {
         match a {
             Action::Seek(d) => self.seek_relative(cx, d),
             Action::TogglePause => self.toggle_pause(cx),
-            Action::OpenAudio => {
-                self.close_menus();
-                self.audio_open = true;
-                self.focus = Focus { group: G_LIST, index: 0 };
-                self.osd_visible = true;
-                self.osd_last_input = cx.now;
-            }
-            Action::OpenSubtitles => {
+            Action::OpenAudioSubs => {
                 self.close_menus();
                 self.subtitle_open = true;
+                let at = self.subtitle_entries().iter().position(|(_, v)| Some(*v) == self.subtitle).unwrap_or(0);
+                self.focus = Focus { group: G_LIST, index: at * 2 };
+                self.osd_visible = true;
+                self.osd_last_input = cx.now;
+            }
+            Action::OpenMore => {
+                self.close_menus();
+                self.more_open = true;
                 self.focus = Focus { group: G_LIST, index: 0 };
                 self.osd_visible = true;
                 self.osd_last_input = cx.now;
             }
+            Action::Leave => cx.pop(),
             Action::OpenChapters => {
                 self.close_menus();
                 self.chapters_open = true;
@@ -1161,8 +1355,11 @@ impl PlayerScreen {
                 self.osd_visible = true;
                 self.osd_last_input = cx.now;
             }
-            Action::PickAudio(i) => self.pick_audio(cx, i),
-            Action::PlayNext => self.play_next(cx),
+            Action::PlayNext => {
+                if self.next.is_some() {
+                    self.play_next(cx);
+                }
+            }
             Action::PlayPrevious => self.play_previous(cx),
             Action::SeekChapter(secs) => {
                 let dur = self.duration(cx).max(0.0);
@@ -1265,9 +1462,11 @@ impl PlayerScreen {
             } else if let Some((_, a)) = self.queue_actions().get(self.focus.index).copied() {
                 self.queue_act(cx, a);
             }
-        } else if self.audio_open {
-            if let Some(idx) = self.audio_entries().get(self.focus.index).map(|(_, i)| *i) {
-                self.pick_audio(cx, idx);
+        } else if self.more_open {
+            if let Some((_, a)) = self.more_entries().get(self.focus.index).cloned() {
+                self.close_menus();
+                self.focus = Focus { group: G_BTN, index: B_PLAY };
+                self.do_action(cx, a);
             }
         } else if self.subtitle_open {
             self.sub_panel_enter(cx);
@@ -1337,12 +1536,15 @@ impl PlayerScreen {
         }
         let play_label = if paused { "Play" } else { "Pause" };
         let buttons = self.buttons(play_label);
-        let audio_open = self.audio_open;
         let subtitle_open = self.subtitle_open;
         let queue_open = self.queue_open;
         let has_queue = self.queue.as_ref().is_some_and(|q| q.len() > 1);
-        let chapters_open =
-            self.chapters_open || self.quality_open || self.speed_open || self.aspect_open || self.repeat_open;
+        let chapters_open = self.chapters_open
+            || self.more_open
+            || self.quality_open
+            || self.speed_open
+            || self.aspect_open
+            || self.repeat_open;
         let focus_bar = self.focus.group == G_BAR;
         let focus_btn_index = (self.focus.group == G_BTN).then_some(self.focus.index);
         let focus_vol = self.focus.group == G_VOL;
@@ -1500,7 +1702,7 @@ impl PlayerScreen {
             self.draw_sub_panel(ui, cx, &mut groups);
         } else if queue_open {
             self.draw_queue(ui, cx, &mut groups);
-        } else if audio_open || chapters_open {
+        } else if chapters_open {
             let (list_xs, list_hovered, list_action) = self.draw_picker(ui, cx);
             groups[G_LIST] = Group { len: list_xs.len(), cols: 1, xs: list_xs };
             if let Some(i) = list_hovered {
@@ -1571,8 +1773,8 @@ impl PlayerScreen {
         let t = cx.theme;
         let screen = ui.ctx().screen_rect();
         ui.painter().rect_filled(screen, 0.0, t.scrim);
-        let labels: Vec<String> = if self.audio_open {
-            self.audio_entries().into_iter().map(|(l, _)| l).collect()
+        let labels: Vec<String> = if self.more_open {
+            self.more_entries().into_iter().map(|(l, _)| l).collect()
         } else if self.quality_open {
             self.quality_labels()
         } else if self.speed_open {
@@ -1612,8 +1814,8 @@ impl PlayerScreen {
                 }
             });
         });
-        let action = if self.audio_open {
-            clicked.and_then(|i| self.audio_entries().get(i).map(|(_, idx)| Action::PickAudio(*idx)))
+        let action = if self.more_open {
+            clicked.and_then(|i| self.more_entries().get(i).map(|(_, a)| a.clone()))
         } else if self.quality_open {
             clicked.and_then(|i| QUALITY_KBPS.get(i).map(|&k| Action::PickQuality(k)))
         } else if self.speed_open {
@@ -1744,6 +1946,8 @@ impl PlayerScreen {
         ui.painter().rect_filled(screen, 0.0, t.scrim);
 
         let entries = self.subtitle_entries();
+        let audio = self.audio_entries();
+        let audio_now = self.current_audio();
         let size_idx = match self.sub_style.size {
             SubSize::Small => 0,
             SubSize::Medium => 1,
@@ -1784,7 +1988,24 @@ impl PlayerScreen {
             .order(egui::Order::Foreground);
         area.show(ui.ctx(), |ui| {
             ui.vertical_centered(|ui| {
-                parts::heading(ui, t, "Subtitles");
+                parts::heading(ui, t, "Audio & Subtitles");
+                ui.add_space(t.gap / 3.0);
+                parts::muted(ui, t, "Audio");
+                let (mut axs, mut ahover, mut aclick) = (vec![], None, None);
+                for (i, (label, idx)) in audio.iter().enumerate() {
+                    let focused = focus.group == G_AUDIO && focus.index == i;
+                    let label = if audio_now == Some(*idx) { format!("✔ {label}") } else { label.clone() };
+                    let r = parts::button_width(ui, t, &label, focused, false, t.dropdown_w);
+                    axs.push(r.rect.center().x);
+                    if r.hovered() {
+                        ahover = Some(i);
+                    }
+                    if r.clicked() {
+                        aclick = Some(i);
+                    }
+                    ui.add_space(t.gap / 3.0);
+                }
+                found.push((G_AUDIO, axs, ahover, aclick));
                 ui.add_space(t.gap / 3.0);
                 // Two lists side by side: the primary track, and the secondary one shown above it.
                 let mut cols: [Vec<(f32, bool, bool)>; 2] = [vec![], vec![]];
@@ -1796,7 +2017,7 @@ impl PlayerScreen {
                             parts::muted(ui, t, title);
                             for (i, (label, _)) in entries.iter().enumerate() {
                                 let focused = focus.group == G_LIST && focus.index == i * 2 + c;
-                                let label = if current == Some(i) { format!("• {label}") } else { label.clone() };
+                                let label = if current == Some(i) { format!("✔ {label}") } else { label.clone() };
                                 let r = parts::button_width(ui, t, &label, focused, false, t.dropdown_w);
                                 cols[c].push((r.rect.center().x, r.hovered(), r.clicked()));
                                 ui.add_space(t.gap / 3.0);
@@ -1882,39 +2103,45 @@ impl PlayerScreen {
             if let Some(i) = clicked {
                 click = Some((group, i));
             }
-            groups[group] = Group { len: xs.len(), cols: if group == G_LIST { 2 } else { xs.len() }, xs };
+            groups[group] = Group {
+                len: xs.len(),
+                cols: if group == G_LIST {
+                    2
+                } else if group == G_AUDIO {
+                    1
+                } else {
+                    xs.len()
+                },
+                xs,
+            };
         }
         if let Some((group, i)) = click {
             self.sub_choice(cx, group, i);
         }
     }
 
+    /// UXP2: the Info panel — what is playing (title, time, tracks), not the keyboard help.
     fn draw_keys_help(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
         let t = cx.theme;
         let screen = ui.ctx().screen_rect();
         ui.painter().rect_filled(screen, 0.0, t.scrim);
-        let lines = [
-            "Space  Pause",
-            "← / →  Seek",
-            "↑ / ↓  Volume",
-            "F  Fullscreen",
-            "M  Mute",
-            "N  Next episode",
-            "P  Previous episode",
-            "C  Chapters",
-            "Q  Queue",
-            "S  Stats",
-            "i  Keys",
-        ];
+        let title = self.req.as_ref().map(|r| r.title.clone()).unwrap_or_else(|| self.item.name.clone());
+        let rows = now_playing_rows(
+            &title,
+            cx.player.position(),
+            self.duration(cx),
+            &self.audio_label(),
+            &self.subtitle_label(),
+        );
         let area = egui::Area::new(egui::Id::new("player-keys"))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .order(egui::Order::Foreground);
         area.show(ui.ctx(), |ui| {
             ui.vertical_centered(|ui| {
-                parts::heading(ui, t, "Keys");
+                parts::heading(ui, t, "Now playing");
                 ui.add_space(t.gap / 2.0);
-                for line in lines {
-                    parts::muted(ui, t, line);
+                for (label, value) in rows {
+                    parts::muted(ui, t, &format!("{label}: {value}"));
                 }
             });
         });
@@ -2065,7 +2292,21 @@ impl Screen for PlayerScreen {
                 _ => true,
             };
         }
+        let was_visible = self.osd_visible && !self.osd_dismissed;
+        let focus_kind = match (self.focus.group, self.focus.index) {
+            (G_BAR, _) => OsdFocus::Timeline,
+            (G_VOL, B_VOL_BAR) => OsdFocus::VolumeBar,
+            _ => OsdFocus::Other,
+        };
+        let act = osd_key(was_visible, focus_kind, key, self.skip_back, self.skip_forward);
         if key == Key::Back {
+            // UXP2: Back hides the OSD first, then leaves fullscreen, then leaves the player.
+            if act == OsdAct::HideOsd {
+                self.osd_visible = false;
+                self.osd_dismissed = true;
+                self.focus = Focus { group: G_BAR, index: 0 };
+                return true;
+            }
             if self.fullscreen {
                 self.leave_fullscreen(cx);
                 return true;
@@ -2073,9 +2314,9 @@ impl Screen for PlayerScreen {
             return false;
         }
 
-        let was_visible = self.osd_visible;
         let show = |p: &mut PlayerScreen, cx: &Cx| {
             p.osd_visible = true;
+            p.osd_dismissed = false;
             p.osd_last_input = cx.now;
         };
 
@@ -2142,47 +2383,42 @@ impl Screen for PlayerScreen {
             _ => {}
         }
 
-        // ↑/↓ adjust volume while the OSD is hidden (G4 keyboard rule).
-        if !was_visible && matches!(key, Key::Up | Key::Down) {
-            self.adjust_volume(cx, if key == Key::Up { 0.05 } else { -0.05 });
-            show(self, cx);
-            return true;
-        }
-
         show(self, cx);
-        if !was_visible {
-            if key == Key::Enter {
-                if let Some(i) = active_segment(&self.segments, cx.player.position()) {
-                    self.skip_segment(cx, i);
-                }
-            }
-            return true;
-        }
-
-        match key {
-            Key::Left | Key::Right => {
-                if self.focus.group == G_VOL && self.focus.index == B_VOL_BAR {
-                    self.adjust_volume(cx, if key == Key::Left { -0.05 } else { 0.05 });
-                } else if self.focus.group == G_BAR {
-                    self.seek_relative(cx, if key == Key::Left { -self.skip_back } else { self.skip_forward });
-                } else {
-                    self.focus = move_focus(&self.groups, self.focus, key);
+        match act {
+            OsdAct::Seek(d) => {
+                self.seek_relative(cx, d);
+                if !was_visible {
+                    self.focus = Focus { group: G_BAR, index: 0 };
                 }
                 true
             }
-            Key::Up | Key::Down => {
-                if self.focus.group == G_VOL && self.focus.index == B_VOL_BAR {
-                    self.adjust_volume(cx, if key == Key::Up { 0.05 } else { -0.05 });
-                } else {
-                    self.focus = move_focus(&self.groups, self.focus, key);
+            OsdAct::Wake => {
+                self.focus = Focus { group: G_BAR, index: 0 };
+                if key == Key::Enter {
+                    if let Some(i) = active_segment(&self.segments, cx.player.position()) {
+                        self.skip_segment(cx, i);
+                    }
                 }
                 true
             }
-            Key::Enter => {
+            OsdAct::Move => {
+                self.focus = if self.focus.group == G_BAR && key == Key::Down {
+                    // Down from the timeline lands on Play, not on whatever button is nearest in x.
+                    Focus { group: G_BTN, index: B_PLAY }
+                } else {
+                    move_focus(&self.groups, self.focus, key)
+                };
+                true
+            }
+            OsdAct::Volume(d) => {
+                self.adjust_volume(cx, d);
+                true
+            }
+            OsdAct::Activate => {
                 self.enter_osd(cx);
                 true
             }
-            _ => false,
+            OsdAct::HideOsd | OsdAct::Leave | OsdAct::None => false,
         }
     }
 
@@ -2349,6 +2585,7 @@ impl Screen for PlayerScreen {
         if ui.input(|i| i.pointer.is_moving() || i.pointer.any_pressed()) {
             self.osd_last_input = cx.now;
             self.osd_visible = true;
+            self.osd_dismissed = false;
         }
         // G4 / P-PLAY-18: double-click on the video toggles fullscreen.
         if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
@@ -2393,10 +2630,18 @@ impl Screen for PlayerScreen {
         }
 
         let paused = matches!(cx.player.state(), PlayerState::Paused);
-        if paused || self.any_menu() {
+        let was_up = self.osd_visible;
+        if (paused && !self.osd_dismissed) || self.any_menu() {
             self.osd_visible = true;
         } else if cx.now - self.osd_last_input > t.osd_hide_after as f64 {
             self.osd_visible = false;
+        }
+        // UXP2: the OSD always comes back with the timeline focused.
+        if was_up && !self.osd_visible {
+            self.focus = Focus { group: G_BAR, index: 0 };
+        }
+        if self.sub_lifted != (self.osd_visible && !self.subtitle_open) {
+            self.apply_sub_style(cx);
         }
 
         if self.osd_visible {

@@ -1524,6 +1524,12 @@ impl Client {
         Ok(page.items)
     }
 
+    /// D2 (Apple TV details hero): the item's title logo image, when it has one (no request; `width_px` bucketed).
+    pub fn logo_url(&self, item: &Item, width_px: u32) -> Option<String> {
+        let tag = item.image_tags.get("Logo")?;
+        Some(format!("{}/Items/{}/Images/Logo?maxWidth={width_px}&quality=90&tag={tag}", self.base, item.id))
+    }
+
     /// RR6 / P-ITEM-16: the other parts of a multi-part film (`GET /Videos/{id}/AdditionalParts`), in order.
     pub fn additional_parts(&self, id: &str) -> Result<Vec<Item>> {
         let uid = self.user_id()?;

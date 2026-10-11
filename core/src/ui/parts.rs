@@ -514,8 +514,10 @@ pub fn topbar_with_user(
     // at the right end. On desktop the app shell's sidebar replaces it (docs/DESIGN-appletv.md §4).
     let t = cx.theme;
     let mut out = RowOut { clicked: None, hovered: None, xs: vec![] };
-    const BUTTONS: [&str; 6] = ["Home", "Search", "Settings", "Favourites", "Playlists", ""];
-    let n = if user.is_some() { 6 } else { 5 };
+    // D11: Settings lives once, in the user menu (not also as a tab).
+    const BUTTONS: [&str; 5] = ["Home", "Search", "Favourites", "Playlists", ""];
+    const USER: usize = 4;
+    let n = if user.is_some() { 5 } else { 4 };
 
     let area = Rect::from_min_size(ui.cursor().left_top(), vec2(ui.available_width(), t.topbar_h));
     ui.advance_cursor_after_rect(area);
@@ -523,11 +525,13 @@ pub fn topbar_with_user(
     let font = t.font_w(t.body_size, Weight::Medium);
     let seg_h = t.bar_h - 2.0 * t.bar_inset;
     let avatar = seg_h - 2.0 * t.bar_inset;
-    let mut widths = [0.0f32; 6];
+    let mut widths = [0.0f32; 5];
     for (i, w) in widths.iter_mut().enumerate().take(n) {
-        let label = if i == 5 { user.unwrap_or_default() } else { BUTTONS[i] };
+        let label = if i == USER { user.unwrap_or_default() } else { BUTTONS[i] };
         let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), t.text));
-        *w = g.size().x + 2.0 * t.bar_item_pad + if i == 5 { avatar + t.gap / 4.0 - t.bar_item_pad / 2.0 } else { 0.0 };
+        *w = g.size().x
+            + 2.0 * t.bar_item_pad
+            + if i == USER { avatar + t.gap / 4.0 - t.bar_item_pad / 2.0 } else { 0.0 };
     }
     let total: f32 = widths.iter().take(n).sum::<f32>() + 2.0 * t.bar_inset;
     let bar =
@@ -535,7 +539,7 @@ pub fn topbar_with_user(
     ui.painter().add(t.shadow(0.6).as_shape(bar, t.bar_h / 2.0));
     ui.painter().rect_filled(bar, t.bar_h / 2.0, t.bar_fill);
     ui.painter().rect_stroke(bar, t.bar_h / 2.0, egui::Stroke::new(1.0, t.bar_stroke), egui::StrokeKind::Inside);
-    let mut rects = [Rect::NOTHING; 6];
+    let mut rects = [Rect::NOTHING; 5];
     let mut x = bar.left() + t.bar_inset;
     for i in 0..n {
         rects[i] = Rect::from_min_size(pos2(x, bar.top() + t.bar_inset), vec2(widths[i], seg_h));
@@ -553,7 +557,7 @@ pub fn topbar_with_user(
         };
         let ink = widgets::plate(ui, t, *rect, seg_h / 2.0, rest, a, t.pill_focus_scale);
         let ink = if i == 0 || a > 0.5 { ink } else { t.text.gamma_multiply(0.8) };
-        if i == 5 {
+        if i == USER {
             let name = user.unwrap_or_default();
             let c = pos2(rect.left() + t.bar_inset + avatar / 2.0, rect.center().y);
             ui.painter().circle_filled(c, avatar / 2.0, t.glass_hi.lerp_to_gamma(t.focus_ink, a));
@@ -572,7 +576,7 @@ pub fn topbar_with_user(
             out.clicked = Some(i);
         }
     }
-    (out, user.map(|_| rects[5]))
+    (out, user.map(|_| rects[USER]))
 }
 
 /// A horizontal row centred in the available width. Centring uses the row's width from the previous frame, so

@@ -35,6 +35,8 @@ wait 3000
 shot player-video
 key down
 shot player-osd
+# Back hides the OSD first, a second Back leaves the player.
+key back
 key back
 wait-screen show
 

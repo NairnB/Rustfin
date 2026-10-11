@@ -29,8 +29,12 @@ key enter
 wait-screen player
 wait 3000
 
-key right
-key right 7
+# More… → Aspect (3rd entry).
+key up
+key down
+key right 4
+key enter
+key down 2
 key enter
 wait 400
 shot p-play-14-menu

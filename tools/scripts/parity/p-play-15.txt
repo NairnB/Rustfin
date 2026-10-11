@@ -29,8 +29,12 @@ key enter
 wait-screen player
 wait 3000
 
-key right
-key right 8
+# More… → Repeat (4th entry).
+key up
+key down
+key right 4
+key enter
+key down 3
 key enter
 wait 400
 shot p-play-15-menu

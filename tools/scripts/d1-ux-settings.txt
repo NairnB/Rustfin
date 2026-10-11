@@ -1,0 +1,51 @@
+# D1 UX settings tour (FRICTION R7/D9/D11): Settings › Server — first focus is a safe button (Server admin for
+# admins), Right moves along the row to Sign out, which asks to confirm (Back cancels); the "Home screen" tab;
+# Server admin from the sidebar, its list focused on a real first entry. Clicks are 1920×1080 pixels.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+click 130 1038
+idle
+click 130 879
+wait-screen settings
+idle
+key right 6
+key down
+idle
+wait 300
+shot ux-server-first
+key right 2
+idle
+wait 300
+shot ux-server-signout
+key enter
+idle
+wait 300
+shot ux-signout-confirm
+key back
+idle
+wait 300
+shot ux-signout-cancelled
+key up
+key left 5
+idle
+wait 300
+shot ux-home-screen-tab
+click 130 982
+wait-screen admin
+idle
+wait 300
+shot ux-admin-hub
+quit

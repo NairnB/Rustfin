@@ -1,0 +1,50 @@
+# args: --screen gallery-details
+# D2 gallery: the Apple TV details parts over test-server titles (film page, then show page with Info).
+wait-screen connect
+wait 2500
+idle
+key down
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen gallery-details
+idle
+wait 400
+shot gallery-details-film
+key right 3
+wait 300
+shot gallery-details-film-round
+key down
+idle
+wait 500
+shot gallery-details-film-related
+key down
+idle
+wait 500
+shot gallery-details-film-info
+key info
+idle
+wait 400
+shot gallery-details-show
+key down 2
+idle
+wait 500
+shot gallery-details-show-episodes
+key right
+wait 100
+shot gallery-details-show-episode-mid
+key down
+idle
+wait 500
+shot gallery-details-show-upnext
+key down
+idle
+wait 500
+shot gallery-details-show-info
+quit

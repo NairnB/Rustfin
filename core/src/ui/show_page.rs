@@ -1,17 +1,29 @@
 //! F1 show page (SPEC R-F1-3): hero (backdrop, title, year · rating, overview, Play/Resume), a season
-//! drop-down, and the episode list of the open season. Built from one `episodes(series_id, None)` request.
+//! drop-down, and the episodes of the open season. Built from one `episodes(series_id, None)` request.
+//! D2: drawn in the Apple TV look (`at_details`): full-bleed hero, action row, a row of 16:9 episode cards,
+//! Up Next, Cast & Crew and Information below.
+use super::at_details::{self as at, ActionBtn, EpisodeCard, HeroArt, RoundIcon};
 use super::parts::{self, CardKind};
 use super::player::PlayOptions;
-use crate::api::{image_width_bucket, ticks_to_secs, ApiError, Item, Result};
+use super::widgets;
+use crate::api::{ticks_to_secs, ApiError, ImageKind, Item, Result};
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
 use crate::show::{self, PlayPick, ShowPlan};
+use crate::theme::Theme;
 
 const G_HERO: usize = 0;
 const G_LIST: usize = 1;
 const G_DROP: usize = 2;
 const G_RETRY: usize = 3;
+// D2: the sections below the episode row
+const G_NEXT: usize = 4;
+const G_CAST: usize = 5;
+const G_INFO: usize = 6;
+const N_GROUPS: usize = 7;
+
+const OVERVIEW_LINES: usize = 4;
 
 pub struct ShowPage {
     series: Item,
@@ -295,131 +307,162 @@ impl ShowPage {
         cx.push(super::player::screen(ep.clone(), PlayOptions { from_start: !resume, ..Default::default() }));
     }
 
-    fn draw_hero(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
-        let t = cx.theme;
-        // G12 / P-USER-2: backdrops can be switched off in Settings.
-        let rect = if cx.settings.backdrops {
-            parts::backdrop_sized(ui, cx, &self.series, t.hero_h)
-        } else {
-            let (alloc, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), t.hero_h), egui::Sense::hover());
-            ui.painter().rect_filled(alloc, 0.0, t.surface);
-            alloc
-        };
-        let mut col = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(t.margin)));
-        col.set_max_width(t.field_w * 1.5);
-        col.add_space(t.hero_h * 0.15);
-        parts::title(&mut col, t, &self.series.name);
-        let meta = parts::meta_line(&self.series);
-        if !meta.is_empty() {
-            col.add_space(t.gap / 4.0);
-            col.label(egui::RichText::new(meta).size(t.small_size).color(t.muted));
-        }
-        if let Some(ov) = &self.series.overview {
-            let ov = truncate(ov);
-            if !ov.is_empty() {
-                col.add_space(t.gap / 2.0);
-                col.add(egui::Label::new(egui::RichText::new(ov).size(t.body_size).color(t.muted)).wrap());
-            }
-        }
-        // P-TV-2: the server's next-up episode, as a card on the right of the hero.
-        if let Some(next) = self.next_up.clone() {
-            let w = t.thumb_w;
-            let area = egui::Rect::from_min_max(
-                egui::pos2(rect.right() - t.margin - w, rect.top() + t.margin),
-                egui::pos2(rect.right() - t.margin, rect.bottom()),
-            );
-            let mut side = ui.new_child(egui::UiBuilder::new().max_rect(area));
-            side.label(egui::RichText::new("Next up").size(t.small_size).color(t.text));
-            side.add_space(t.gap / 4.0);
-            parts::thumb_card(&mut side, cx, &next, false);
-        }
+    /// D2: the hero buttons as the Apple TV action row (same order as `hero_buttons`, so key paths stay).
+    fn action_btns(&self, cx: &Cx, plan: &ShowPlan) -> Vec<ActionBtn> {
+        let round = |icon, on, caption: &str| ActionBtn::Round { icon, on, caption: caption.to_string() };
+        Self::hero_buttons(plan)
+            .into_iter()
+            .map(|h| match h {
+                Hero::Play => ActionBtn::Play(plan.play.as_ref().map(|p| p.label.clone()).unwrap_or_default()),
+                Hero::Drop => ActionBtn::Menu(self.season_label(self.open_season)),
+                Hero::Shuffle => round(RoundIcon::Shuffle, false, "Shuffle"),
+                Hero::MarkSeason => {
+                    let on = self.all_played(true);
+                    round(RoundIcon::Watched, on, if on { "Mark season unwatched" } else { "Mark season watched" })
+                }
+                Hero::MarkSeries => {
+                    let on = self.all_played(false);
+                    round(RoundIcon::WatchedAll, on, if on { "Mark series unwatched" } else { "Mark series watched" })
+                }
+                Hero::Missing => ActionBtn::Pill(
+                    if cx.settings.show_missing_episodes {
+                        "Missing episodes: shown"
+                    } else {
+                        "Missing episodes: hidden"
+                    }
+                    .to_string(),
+                ),
+                Hero::Heart => {
+                    let fav = self.series.user_data.as_ref().map(|u| u.is_favorite).unwrap_or(false);
+                    round(RoundIcon::Favourite, fav, "Favourite")
+                }
+                Hero::More => round(RoundIcon::More, false, "More"),
+            })
+            .collect()
     }
 
-    fn draw_episode_list(
+    /// D2: full-bleed hero (backdrop unless switched off, P-USER-2), title logo or name, year · rating · seasons ·
+    /// genres, overview, then the action row. Returns the action row's responses.
+    fn draw_hero(&mut self, ui: &mut egui::Ui, cx: &mut Cx, btns: &[ActionBtn]) -> Vec<egui::Response> {
+        let t = cx.theme;
+        let backdrop = if cx.settings.backdrops {
+            at::tex(cx, ui, &self.series, ImageKind::Backdrop, ui.ctx().screen_rect().width())
+        } else {
+            None
+        };
+        let art = HeroArt { backdrop, logo: at::logo(cx, ui, &self.series) };
+        let rect = at::hero(ui, t, art, t.backdrop_h);
+        let hero_focus = (self.focus.group == G_HERO).then_some(0);
+        if at::focus_moved(ui, egui::Id::new("show-hero"), hero_focus) {
+            ui.scroll_to_rect(rect.with_max_y(rect.top() + t.gap), None);
+        }
+        let mut col = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(egui::vec2(0.0, t.gap)))
+                .layout(egui::Layout::bottom_up(egui::Align::Min)),
+        );
+        col.spacing_mut().item_spacing.y = 0.0;
+        col.add_space(t.gap);
+        let rs = at::action_row(&mut col, t, btns, (self.focus.group == G_HERO).then_some(self.focus.index));
+        col.add_space(t.gap);
+        if let Some(ov) = self.series.overview.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+            at::overview(&mut col, t, ov, false, OVERVIEW_LINES);
+            col.add_space(t.gap / 2.0);
+        }
+        let years = crate::story::year_line(&self.series, cx.settings.show_release_year, cx.settings.show_story_year);
+        let mut meta = at::meta_parts(&Item { run_time_ticks: None, ..self.series.clone() }, &years);
+        let n = self.plan().seasons.iter().filter(|&&s| s > 0).count();
+        if n > 0 {
+            let at_ix = meta.len().min(if self.series.official_rating.is_some() { 2 } else { 1 });
+            meta.insert(at_ix, format!("{n} Season{}", if n == 1 { "" } else { "s" }));
+        }
+        at::meta_row(&mut col, t, &meta, (self.series.community_rating, self.series.critic_rating), &[]);
+        col.add_space(t.gap / 2.0);
+        at::hero_title(&mut col, t, &self.series.name, art.logo);
+        rs
+    }
+
+    /// D2: the open season as a row of 16:9 episode cards (unaired ones dimmed, with their air date).
+    fn draw_episode_row(
         &mut self,
         ui: &mut egui::Ui,
         cx: &mut Cx,
         list_xs: &mut Vec<f32>,
         clicked: &mut Option<Item>,
+        moving: bool,
     ) {
         let t = cx.theme;
+        at::section_title(ui, t, &self.season_label(self.open_season));
         let rows = self.season_rows();
-        let today = today();
         if rows.is_empty() {
             parts::muted(ui, t, "No episodes in this season.");
             return;
         }
-        let moving = ui.input(|i| i.pointer.is_moving());
-        let thumb_w = t.ep_thumb_w;
-        let thumb_h = t.ep_thumb_h;
-        let row_h = thumb_h + t.gap / 2.0;
-        let ppp = ui.ctx().pixels_per_point();
-        egui::ScrollArea::vertical().id_salt("show-episodes").auto_shrink([false, false]).show(ui, |ui| {
-            for (i, ep) in rows.iter().enumerate() {
-                let unaired = is_unaired(ep, today);
-                let focused = self.focus.group == G_LIST && self.focus.index == i;
-                let (rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::click());
-                if ui.is_rect_visible(rect) {
-                    let thumb_rect = egui::Rect::from_min_size(rect.min, egui::vec2(thumb_w, thumb_h));
-                    let w = image_width_bucket(thumb_w, ppp);
-                    let url = cx.client.as_ref().and_then(|c| c.image_url(ep, crate::api::ImageKind::Primary, w));
-                    match url.as_deref().and_then(|u| cx.images.get(u)) {
-                        Some(tex) => {
-                            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                            ui.painter().image(tex, thumb_rect, uv, egui::Color32::WHITE);
-                        }
-                        None => {
-                            ui.painter().rect_filled(thumb_rect, t.radius, t.skeleton);
-                        }
-                    }
-                    if unaired {
-                        ui.painter().rect_filled(thumb_rect, t.radius, t.scrim);
-                    }
-                    if let Some(f) = parts::resume_fraction(ep) {
-                        parts::progress_bar(ui, t, thumb_rect, f);
-                    }
-                    if focused {
-                        parts::focus_ring(ui, t, thumb_rect);
-                    }
-                    let x = thumb_rect.right() + t.gap / 2.0;
-                    let w_text = rect.right() - x - t.gap;
-                    let ty = rect.top() + 4.0;
-                    let title = format!("E{} · {}", ep.index_number.unwrap_or(0), ep.name);
-                    parts::label_line(ui, t, egui::pos2(x, ty), w_text, &title, t.body_size, t.text);
-                    let ry = ty + t.body_size + 4.0;
-                    let runtime = match (unaired, airs_label(ep)) {
-                        (true, Some(l)) => l,
-                        _ => ep.run_time_ticks.map(|rt| parts::runtime(ticks_to_secs(rt))).unwrap_or_default(),
-                    };
-                    parts::label_line(ui, t, egui::pos2(x, ry), w_text, &runtime, t.small_size, t.muted);
-                    let played = ep.user_data.as_ref().map(|u| u.played).unwrap_or(false);
-                    if played {
-                        let rw =
-                            ui.fonts(|f| f.layout_no_wrap(runtime.clone(), t.font(t.small_size), t.muted).size().x);
-                        let center = egui::pos2(x + rw + t.gap / 3.0 + t.small_size * 0.5, ry + t.small_size * 0.5);
-                        parts::tick(ui, t, center, t.small_size);
-                    }
-                    if let Some(ov) = &ep.overview {
-                        let ov = ov.trim();
-                        if !ov.is_empty() {
-                            let oy = ry + t.small_size + 4.0;
-                            parts::two_line(ui, t, egui::pos2(x, oy), w_text, ov, t.small_size, t.muted);
-                        }
-                    }
-                }
-                list_xs.push(rect.center().x);
-                if resp.hovered() && moving {
-                    self.focus = Focus { group: G_LIST, index: i };
-                }
-                if focused {
-                    resp.scroll_to_me(None);
-                }
-                if resp.clicked() && !unaired {
-                    *clicked = Some(ep.clone());
-                }
-            }
+        let today = today();
+        let focus = (self.focus.group == G_LIST).then_some(self.focus.index);
+        let rs = at::row(ui, t, "show-episodes", rows.len(), at::episode_card_h(t), focus, |ui, i| {
+            let ep = &rows[i];
+            let unaired = is_unaired(ep, today);
+            let detail = match (unaired, airs_label(ep)) {
+                (true, Some(l)) => l,
+                _ => ep.run_time_ticks.map(|rt| at::runtime_long(ticks_to_secs(rt))).unwrap_or_default(),
+            };
+            let card = EpisodeCard {
+                art: at::tex(cx, ui, ep, ImageKind::Primary, t.ep_thumb_w),
+                number: match (self.open_season, ep.index_number) {
+                    (0, _) | (_, None) => "Special".to_string(),
+                    (_, Some(n)) => format!("Episode {n}"),
+                },
+                title: ep.name.clone(),
+                overview: ep.overview.as_deref().map(str::trim).unwrap_or_default().to_string(),
+                detail,
+                progress: parts::resume_fraction(ep),
+                played: ep.user_data.as_ref().map(|u| u.played).unwrap_or(false),
+                unaired,
+            };
+            at::episode_card(ui, t, &card, focus == Some(i))
         });
+        for (i, r) in rs.iter().enumerate() {
+            list_xs.push(r.rect.center().x);
+            if r.hovered() && moving {
+                self.focus = Focus { group: G_LIST, index: i };
+            }
+            if r.clicked() && !is_unaired(&rows[i], today) {
+                *clicked = Some(rows[i].clone());
+            }
+        }
+    }
+
+    /// D2: the season drop-down as a translucent menu card under the hero (rows are pills; focused = white plate).
+    fn draw_season_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        plan: &ShowPlan,
+        xs: &mut Vec<f32>,
+        pick: &mut Option<i32>,
+        moving: bool,
+    ) {
+        ui.add_space(t.gap);
+        let n = plan.seasons.len() as f32;
+        let row_h = t.button_h + t.gap / 4.0;
+        let size = egui::vec2(t.dropdown_w + 2.0 * t.menu_pad, n * row_h + 2.0 * t.menu_pad);
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        ui.painter().add(t.shadow(1.0).as_shape(rect, t.menu_radius));
+        ui.painter().rect_filled(rect, t.menu_radius, t.menu_fill);
+        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(t.menu_pad)));
+        inner.spacing_mut().item_spacing.y = t.gap / 4.0;
+        for (i, &s) in plan.seasons.iter().enumerate() {
+            let focused = self.focus.group == G_DROP && self.focus.index == i;
+            let r = widgets::pill_button_width(&mut inner, t, &self.season_label(s), focused, false, t.dropdown_w);
+            xs.push(r.rect.center().x);
+            if r.hovered() && moving {
+                self.focus = Focus { group: G_DROP, index: i };
+            }
+            if r.clicked() {
+                *pick = Some(s);
+            }
+        }
     }
 }
 
@@ -518,17 +561,6 @@ pub fn shuffle_queue(episodes: &[Item], seed: u64) -> Vec<Item> {
     v
 }
 
-fn truncate(ov: &str) -> String {
-    let s = ov.trim();
-    if s.chars().count() > 340 {
-        let mut t: String = s.chars().take(340).collect();
-        t.push('…');
-        t
-    } else {
-        s.to_string()
-    }
-}
-
 impl Screen for ShowPage {
     fn name(&self) -> &'static str {
         "show"
@@ -571,6 +603,18 @@ impl Screen for ShowPage {
                 if self.focus.group == G_HERO {
                     if let Some(&h) = Self::hero_buttons(&plan).get(self.focus.index) {
                         self.press(cx, &plan, h);
+                    }
+                    return true;
+                }
+                if self.focus.group == G_NEXT {
+                    if let Some(ep) = self.next_up.clone() {
+                        self.play_episode(cx, &ep);
+                    }
+                    return true;
+                }
+                if self.focus.group == G_CAST {
+                    if let Some(p) = self.series.people.get(self.focus.index).cloned() {
+                        cx.push(super::person::screen(p.id, p.name));
                     }
                     return true;
                 }
@@ -684,13 +728,13 @@ impl Screen for ShowPage {
         let t = cx.theme;
 
         if self.loading {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), t.hero_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, t.skeleton);
-            ui.add_space(t.gap / 2.0);
-            for _ in 0..4 {
-                parts::skeleton_card(ui, t, CardKind::Thumb);
-                ui.add_space(t.gap / 2.0);
-            }
+            at::hero(ui, t, HeroArt::default(), t.backdrop_h);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = t.gap;
+                for _ in 0..4 {
+                    parts::skeleton_card(ui, t, CardKind::Thumb);
+                }
+            });
             self.groups = vec![];
             return;
         }
@@ -714,50 +758,22 @@ impl Screen for ShowPage {
 
         let plan = self.plan();
         let moving = ui.input(|i| i.pointer.is_moving());
-        self.draw_hero(ui, cx);
-
+        let btns = self.action_btns(cx, &plan);
         let mut hero_xs = vec![];
         let mut drop_xs = vec![];
         let mut list_xs = vec![];
+        let mut next_xs = vec![];
+        let mut cast_xs = vec![];
+        let mut info_xs = vec![];
         let mut pressed: Option<Hero> = None;
         let mut drop_pick: Option<i32> = None;
         let mut ep_click: Option<Item> = None;
+        let mut person: Option<crate::api::PersonRef> = None;
 
-        ui.add_space(t.gap / 2.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            for (idx, h) in Self::hero_buttons(&plan).into_iter().enumerate() {
-                let focused = self.focus.group == G_HERO && self.focus.index == idx;
-                let r = match h {
-                    Hero::Play => parts::button(ui, t, &plan.play.as_ref().unwrap().label, focused, true),
-                    Hero::Drop => {
-                        let label = format!("{} (change)", self.season_label(self.open_season));
-                        parts::button_width(ui, t, &label, focused, false, t.dropdown_w)
-                    }
-                    Hero::Shuffle => parts::button(ui, t, "Shuffle", focused, false),
-                    Hero::MarkSeason => {
-                        let label = if self.all_played(true) { "Mark season unwatched" } else { "Mark season watched" };
-                        parts::button(ui, t, label, focused, false)
-                    }
-                    Hero::MarkSeries => {
-                        let label =
-                            if self.all_played(false) { "Mark series unwatched" } else { "Mark series watched" };
-                        parts::button(ui, t, label, focused, false)
-                    }
-                    Hero::Missing => {
-                        let label = if cx.settings.show_missing_episodes {
-                            "Missing episodes: shown"
-                        } else {
-                            "Missing episodes: hidden"
-                        };
-                        parts::button(ui, t, label, focused, false)
-                    }
-                    Hero::Heart => {
-                        let fav = self.series.user_data.as_ref().map(|u| u.is_favorite).unwrap_or(false);
-                        parts::heart_button(ui, t, fav, focused)
-                    }
-                    Hero::More => parts::button(ui, t, "More…", focused, false),
-                };
+        egui::ScrollArea::vertical().id_salt("show-page").auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let rs = self.draw_hero(ui, cx, &btns);
+            for (idx, (r, h)) in rs.iter().zip(Self::hero_buttons(&plan)).enumerate() {
                 hero_xs.push(r.rect.center().x);
                 if r.hovered() && moving {
                     self.focus = Focus { group: G_HERO, index: idx };
@@ -766,32 +782,77 @@ impl Screen for ShowPage {
                     pressed = Some(h);
                 }
             }
-        });
-
-        if self.drop_open {
-            ui.add_space(t.gap / 2.0);
-            for (i, &s) in plan.seasons.iter().enumerate() {
-                let focused = self.focus.group == G_DROP && self.focus.index == i;
-                let r = parts::button_width(ui, t, &self.season_label(s), focused, false, t.dropdown_w);
-                drop_xs.push(r.rect.center().x);
-                if r.hovered() && moving {
-                    self.focus = Focus { group: G_DROP, index: i };
-                }
-                if r.clicked() {
-                    drop_pick = Some(s);
+            if self.drop_open {
+                self.draw_season_menu(ui, t, &plan, &mut drop_xs, &mut drop_pick, moving);
+            } else {
+                self.draw_episode_row(ui, cx, &mut list_xs, &mut ep_click, moving);
+            }
+            // P-TV-2: the server's next-up episode as a wide card (Enter / click plays it).
+            if let Some(next) = self.next_up.clone() {
+                at::section_title(ui, t, "Up Next");
+                let focus = (self.focus.group == G_NEXT).then_some(0);
+                let h = t.wide_h + t.card_title_gap + t.body_size * 1.3;
+                let name = self.series.name.clone();
+                let rs = at::row(ui, t, "show-next", 1, h, focus, |ui, _| {
+                    let sub = match (next.parent_index_number, next.index_number) {
+                        (Some(s), Some(e)) => format!("S{s}, E{e} · {}", next.name),
+                        _ => next.name.clone(),
+                    };
+                    let tx = at::tex(cx, ui, &next, ImageKind::Primary, t.wide_w);
+                    at::wide_card(ui, t, tx, &name, &sub, parts::resume_fraction(&next), focus.is_some())
+                });
+                for r in &rs {
+                    next_xs.push(r.rect.center().x);
+                    if r.hovered() && moving {
+                        self.focus = Focus { group: G_NEXT, index: 0 };
+                    }
+                    if r.clicked() {
+                        ep_click = Some(next.clone());
+                    }
                 }
             }
-        } else {
-            self.draw_episode_list(ui, cx, &mut list_xs, &mut ep_click);
-        }
+            let people = self.series.people.clone();
+            if !people.is_empty() {
+                at::section_title(ui, t, "Cast & Crew");
+                let focus = (self.focus.group == G_CAST).then_some(self.focus.index);
+                let rs = at::row(ui, t, "show-cast", people.len(), at::person_h(t), focus, |ui, i| {
+                    let tx = at::person_tex(cx, ui, &people[i]);
+                    at::person_circle(ui, t, tx, &people[i].name, &at::role_of(&people[i]), focus == Some(i))
+                });
+                for (i, r) in rs.iter().enumerate() {
+                    cast_xs.push(r.rect.center().x);
+                    if r.hovered() && moving {
+                        self.focus = Focus { group: G_CAST, index: i };
+                    }
+                    if r.clicked() {
+                        person = Some(people[i].clone());
+                    }
+                }
+            }
+            let cols = at::info_columns(&self.series, None, cx.admin);
+            if !cols.is_empty() {
+                at::section_title(ui, t, "Information");
+                let focus = (self.focus.group == G_INFO).then_some(self.focus.index);
+                for (i, r) in at::info_section(ui, t, &cols, focus).iter().enumerate() {
+                    info_xs.push(r.rect.center().x);
+                    if r.hovered() && moving {
+                        self.focus = Focus { group: G_INFO, index: i };
+                    }
+                }
+            }
+            ui.add_space(t.row_gap);
+        });
 
-        let mut groups = vec![Group::default(); 4];
+        let mut groups = vec![Group::default(); N_GROUPS];
         groups[G_HERO] = Group { len: hero_xs.len(), cols: hero_xs.len(), xs: hero_xs };
         if self.drop_open {
             groups[G_DROP] = Group { len: drop_xs.len(), cols: 1, xs: drop_xs };
         } else {
-            groups[G_LIST] = Group { len: list_xs.len(), cols: 1, xs: list_xs };
+            groups[G_LIST] = Group { len: list_xs.len(), cols: list_xs.len(), xs: list_xs };
         }
+        groups[G_NEXT] = Group { len: next_xs.len(), cols: next_xs.len(), xs: next_xs };
+        groups[G_CAST] = Group { len: cast_xs.len(), cols: cast_xs.len(), xs: cast_xs };
+        groups[G_INFO] = Group { len: info_xs.len(), cols: info_xs.len(), xs: info_xs };
         self.groups = groups;
         self.focus = move_focus(&self.groups, self.focus, Key::Enter);
 
@@ -805,6 +866,9 @@ impl Screen for ShowPage {
         }
         if let Some(ep) = ep_click {
             self.play_episode(cx, &ep);
+        }
+        if let Some(p) = person {
+            cx.push(super::person::screen(p.id, p.name));
         }
     }
 }

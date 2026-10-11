@@ -29,8 +29,12 @@ key enter
 wait-screen player
 wait 3000
 
-key right
-key right 6
+# Up wakes the OSD, Down reaches Play, 4 × Right → More…, Speed is its 2nd entry.
+key up
+key down
+key right 4
+key enter
+key down
 key enter
 wait 400
 shot p-play-12-menu

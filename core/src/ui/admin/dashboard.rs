@@ -231,55 +231,60 @@ impl Screen for Dashboard {
             return;
         }
 
-        // Server info
-        parts::heading(ui, t, "Server");
-        match &self.info {
+        // Server info, sessions and running tasks as grouped cards (tvOS settings style).
+        let info = self.info.clone();
+        widgets::group(ui, t, "Server", |ui| match &info {
             Some(info) => {
-                info_row(ui, t, "Name", info.server_name.as_deref().unwrap_or(""));
-                info_row(ui, t, "Version", info.version.as_deref().unwrap_or(""));
-                info_row(ui, t, "System", info.operating_system.as_deref().unwrap_or(""));
+                widgets::kv_row(ui, t, "Name", info.server_name.as_deref().unwrap_or(""), false);
+                widgets::kv_row(ui, t, "Version", info.version.as_deref().unwrap_or(""), false);
+                widgets::kv_row(ui, t, "System", info.operating_system.as_deref().unwrap_or(""), true);
             }
-            None => parts::muted(ui, t, "Loading…"),
-        }
-        ui.add_space(t.gap / 2.0);
+            None => widgets::text_row(ui, t, "Loading…", true, true),
+        });
 
-        // Active sessions
-        parts::heading(ui, t, "Active sessions");
-        match &self.sessions {
-            Some(list) if list.is_empty() => parts::muted(ui, t, "No active sessions"),
+        let sessions = self.sessions.clone();
+        widgets::group(ui, t, "Active sessions", |ui| match &sessions {
+            Some(list) if list.is_empty() => widgets::text_row(ui, t, "No active sessions", true, true),
             Some(list) => {
-                for s in list.iter().take(10) {
-                    parts::muted(ui, t, &session_line(s));
+                let more = list.len() > 10;
+                let shown = list.len().min(10);
+                for (i, s) in list.iter().take(10).enumerate() {
+                    widgets::text_row(ui, t, &session_line(s), false, !more && i + 1 == shown);
                 }
-                if list.len() > 10 {
-                    parts::muted(ui, t, &format!("+{} more", list.len() - 10));
+                if more {
+                    widgets::text_row(ui, t, &format!("+{} more", list.len() - 10), true, true);
                 }
             }
-            None => parts::muted(ui, t, "Loading…"),
-        }
-        ui.add_space(t.gap / 2.0);
+            None => widgets::text_row(ui, t, "Loading…", true, true),
+        });
 
-        // Running tasks
-        parts::heading(ui, t, "Scheduled tasks");
-        match &self.tasks {
+        let tasks = self.tasks.clone();
+        widgets::group(ui, t, "Scheduled tasks", |ui| match &tasks {
             Some(list) => {
                 let running: Vec<&TaskInfo> = list.iter().filter(|task| task.state == "Running").collect();
                 if running.is_empty() {
-                    parts::muted(ui, t, "No tasks running");
+                    widgets::text_row(ui, t, "No tasks running", true, true);
                 } else {
-                    for task in running {
+                    let n = running.len();
+                    for (i, task) in running.into_iter().enumerate() {
                         let name = task.name.clone().unwrap_or_else(|| "Task".to_string());
-                        parts::muted(ui, t, &name);
+                        widgets::text_row(
+                            ui,
+                            t,
+                            &name,
+                            false,
+                            i + 1 == n && task.current_progress_percentage.is_none(),
+                        );
                         if let Some(pct) = task.current_progress_percentage {
                             let (bar, _) =
-                                ui.allocate_exact_size(vec2(ui.available_width(), t.progress_h), Sense::hover());
+                                ui.allocate_exact_size(vec2(ui.available_width(), t.gap / 2.0), Sense::hover());
                             parts::progress_bar(ui, t, bar, (pct as f32 / 100.0).clamp(0.0, 1.0));
                         }
                     }
                 }
             }
-            None => parts::muted(ui, t, "Loading…"),
-        }
+            None => widgets::text_row(ui, t, "Loading…", true, true),
+        });
 
         ui.add_space(t.gap);
         let scan_label = if self.busy { "Scanning…" } else { BUTTONS[0] };
@@ -341,11 +346,6 @@ impl Screen for Dashboard {
             }
         }
     }
-}
-
-fn info_row(ui: &mut egui::Ui, t: &crate::theme::Theme, label: &str, value: &str) {
-    parts::muted(ui, t, label);
-    parts::heading(ui, t, value);
 }
 
 fn session_line(s: &SessionInfoDto) -> String {

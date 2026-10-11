@@ -27,15 +27,20 @@ key enter
 wait-screen show
 idle
 
-# Down to the episode list, down to S1E2, play it.
+# Down to the episode row, right to S1E2, play it.
 key down
-key down
+key right
 key enter
 wait-screen player
 wait 3000
 
-# Reveal the OSD (previous + next episode buttons).
+# Reveal the OSD (Next episode button; Previous episode is in More…).
 key down
 wait 400
 shot p-play-16
+key down
+key right 4
+key enter
+wait 400
+shot p-play-16-more
 quit

@@ -28,7 +28,8 @@ key enter
 wait-screen player
 wait 3000
 
-key right
+key up
+key down
 key enter
 key up
 key right

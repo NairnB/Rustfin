@@ -538,7 +538,13 @@ impl App {
                         self.leave_top(player);
                         self.stack.pop();
                     }
+                    let home = s.name() == "home";
                     self.push(s);
+                    // Design galleries that need a signed-in client open on top of Home (`--screen gallery-…`).
+                    if let Some(g) = self.opts.start_screen.as_deref().filter(|_| home).and_then(ui::gallery::signed_in)
+                    {
+                        self.push(g);
+                    }
                 }
                 Nav::Forward => {
                     if let Some(s) = self.forward.pop() {

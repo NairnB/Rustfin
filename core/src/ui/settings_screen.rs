@@ -9,7 +9,7 @@ use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::{parse_hex_colour, sub_colour_index, Key, SubFont, SubShadow, SubSize, SubWeight, SUB_COLOURS};
 use crate::settings::{DateFormat, HomeSection, Screensaver, SubMode, SubPrefs};
-use egui::{pos2, vec2, Rect, Sense};
+use egui::{vec2, Sense};
 
 const G_TABS: usize = 0;
 const G_CONTENT: usize = 1;
@@ -71,7 +71,8 @@ impl Tab {
     fn label(self) -> &'static str {
         match self {
             Tab::Account => "Account",
-            Tab::Home => "Home",
+            // D11: "Home" read as "go Home"; this tab arranges the Home screen.
+            Tab::Home => "Home screen",
             Tab::Playback => "Playback",
             Tab::Subtitles => "Subtitles",
             Tab::Display => "Display",
@@ -103,6 +104,13 @@ enum Dd {
 enum PicError {
     Local(String),
     Api(ApiError),
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ServerAction {
+    Admin,
+    ChangeServer,
+    SignOut,
 }
 
 pub struct SettingsScreen {
@@ -155,6 +163,8 @@ pub struct SettingsScreen {
 
     // Server
     busy: bool,
+    /// UX R7: Sign out asks first — `Some(focused button)` while the confirm is open (0 = Cancel).
+    confirm_signout: Option<usize>,
     /// D10: who is signing out, so their saved session goes too.
     signing_out_user: String,
 
@@ -204,6 +214,7 @@ pub fn screen() -> Box<dyn Screen> {
         qc_error: None,
         qc_ok: false,
         busy: false,
+        confirm_signout: None,
         signing_out_user: String::new(),
         tmdb_draft: String::new(),
         tmdb_editing: false,
@@ -475,7 +486,23 @@ impl SettingsScreen {
         true
     }
 
+    /// UX R7: the Server tab's buttons in order — a safe first focus (Server admin for admins, else Change
+    /// server); Sign out last, behind a confirm.
+    fn server_action(&self, i: usize) -> ServerAction {
+        let order: &[ServerAction] = if self.admin {
+            &[ServerAction::Admin, ServerAction::ChangeServer, ServerAction::SignOut]
+        } else {
+            &[ServerAction::ChangeServer, ServerAction::SignOut]
+        };
+        order.get(i).copied().unwrap_or(ServerAction::ChangeServer)
+    }
+
     fn content_left_right(&mut self, cx: &mut Cx, key: Key) -> bool {
+        // UX R3/R7: the Server tab is a row of buttons — Left/Right move along it.
+        if Tab::ALL[self.tab] == Tab::Server {
+            self.focus = move_focus(&self.groups, self.focus, key);
+            return true;
+        }
         if Tab::ALL[self.tab] == Tab::Subtitles {
             let n = match self.focus.index {
                 2 => SIZE_LABELS.len(),
@@ -613,11 +640,10 @@ impl SettingsScreen {
                 1 => self.authorize(cx),
                 _ => {}
             },
-            Tab::Server => match i {
-                0 => self.sign_out(cx),
-                1 => cx.reset(super::connect::screen(None)),
-                2 if self.admin => cx.push(super::admin::screen()),
-                _ => {}
+            Tab::Server => match self.server_action(i) {
+                ServerAction::Admin => cx.push(super::admin::screen()),
+                ServerAction::ChangeServer => cx.reset(super::connect::screen(None)),
+                ServerAction::SignOut => self.confirm_signout = Some(0),
             },
             Tab::Tmdb => {
                 if self.tmdb_editing {
@@ -807,18 +833,26 @@ impl SettingsScreen {
         let mut xs = vec![];
         let (user_id, user_name) = Self::signed_in_user(cx);
         ui.horizontal(|ui| {
+            // A round avatar (Apple TV profiles); the initial on glass until a picture loads.
             let (avatar, _) = ui.allocate_exact_size(vec2(t.avatar_size, t.avatar_size), Sense::hover());
-            if user_id.is_empty() {
-                ui.painter().rect_filled(avatar, t.radius, t.skeleton);
-            } else {
+            let round = t.avatar_size / 2.0;
+            let tex = (!user_id.is_empty()).then(|| {
                 let ppp = ui.ctx().pixels_per_point();
                 let url = cx.api().user_image_url(&user_id, image_width_bucket(t.avatar_size, ppp));
-                let url = format!("{url}&v={}", self.pic_rev);
-                if let Some(tex) = cx.images.get(&url) {
-                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                    ui.painter().image(tex, avatar, uv, egui::Color32::WHITE);
-                } else {
-                    ui.painter().rect_filled(avatar, t.radius, t.skeleton);
+                format!("{url}&v={}", self.pic_rev)
+            });
+            match tex.and_then(|u| cx.images.get(&u)) {
+                Some(tex) => parts::paint_image(ui, tex, avatar, round),
+                None => {
+                    ui.painter().rect_filled(avatar, round, t.glass_hi);
+                    let initial = user_name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                    ui.painter().text(
+                        avatar.center(),
+                        egui::Align2::CENTER_CENTER,
+                        initial,
+                        t.font(t.title_size),
+                        t.text,
+                    );
                 }
             }
             ui.add_space(t.gap);
@@ -984,7 +1018,7 @@ impl SettingsScreen {
         let order = cx.settings.home_order.clone();
         for (i, section) in order.iter().enumerate() {
             let on = cx.settings.home_visible(*section);
-            let out = widgets::toggle(ui, t, section.label(), on, self.focused(i));
+            let out = widgets::toggle_row(ui, t, section.label(), on, self.focused(i));
             xs.push(out.x);
             if out.hovered {
                 self.set_content(i);
@@ -1008,7 +1042,7 @@ impl SettingsScreen {
         let mut xs = vec![];
         let langs: Vec<String> = LANGUAGES.iter().map(|s| s.to_string()).collect();
         let f0 = self.focused(0);
-        let out = widgets::dropdown(ui, t, &mut self.audio_lang, "Audio language", &langs, f0);
+        let out = widgets::dropdown_row(ui, t, &mut self.audio_lang, "Audio language", &langs, f0);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(0);
@@ -1018,11 +1052,10 @@ impl SettingsScreen {
             self.audio_lang.open = false;
             self.apply_pick(cx, Dd::Audio, i);
         }
-        ui.add_space(t.gap / 3.0);
 
         let bitrates: Vec<String> = BITRATE_LABELS.iter().map(|s| s.to_string()).collect();
         let f1 = self.focused(1);
-        let out = widgets::dropdown(ui, t, &mut self.bitrate, "Max streaming bitrate", &bitrates, f1);
+        let out = widgets::dropdown_row(ui, t, &mut self.bitrate, "Max streaming bitrate", &bitrates, f1);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(1);
@@ -1032,10 +1065,9 @@ impl SettingsScreen {
             self.bitrate.open = false;
             self.apply_pick(cx, Dd::Bitrate, i);
         }
-        ui.add_space(t.gap / 3.0);
 
         let out =
-            widgets::toggle(ui, t, "Play next episode automatically", cx.settings.auto_play_next, self.focused(2));
+            widgets::toggle_row(ui, t, "Play next episode automatically", cx.settings.auto_play_next, self.focused(2));
         xs.push(out.x);
         if out.hovered {
             self.set_content(2);
@@ -1044,11 +1076,10 @@ impl SettingsScreen {
             cx.settings.auto_play_next = !cx.settings.auto_play_next;
             cx.save_settings();
         }
-        ui.add_space(t.gap / 3.0);
 
         let skip_back: Vec<String> = SKIP_BACK.iter().map(|(l, _)| l.to_string()).collect();
         let f3 = self.focused(3);
-        let out = widgets::dropdown(ui, t, &mut self.skip_back, "Skip back", &skip_back, f3);
+        let out = widgets::dropdown_row(ui, t, &mut self.skip_back, "Skip back", &skip_back, f3);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(3);
@@ -1058,11 +1089,10 @@ impl SettingsScreen {
             self.skip_back.open = false;
             self.apply_pick(cx, Dd::SkipBack, i);
         }
-        ui.add_space(t.gap / 3.0);
 
         let skip_forward: Vec<String> = SKIP_FORWARD.iter().map(|(l, _)| l.to_string()).collect();
         let f4 = self.focused(4);
-        let out = widgets::dropdown(ui, t, &mut self.skip_forward, "Skip forward", &skip_forward, f4);
+        let out = widgets::dropdown_row(ui, t, &mut self.skip_forward, "Skip forward", &skip_forward, f4);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(4);
@@ -1073,8 +1103,8 @@ impl SettingsScreen {
             self.apply_pick(cx, Dd::SkipForward, i);
         }
         // RR8 / P-USER-4: fMP4 HLS and the Next up options.
-        ui.add_space(t.gap / 3.0);
-        let out = widgets::toggle(ui, t, "Prefer fMP4-HLS media container", cx.settings.prefer_fmp4, self.focused(5));
+        let out =
+            widgets::toggle_row(ui, t, "Prefer fMP4-HLS media container", cx.settings.prefer_fmp4, self.focused(5));
         xs.push(out.x);
         if out.hovered {
             self.set_content(5);
@@ -1083,9 +1113,8 @@ impl SettingsScreen {
             cx.settings.prefer_fmp4 = !cx.settings.prefer_fmp4;
             cx.save_settings();
         }
-        ui.add_space(t.gap / 3.0);
         let label = "Show episodes I've started rewatching in Next up";
-        let out = widgets::toggle(ui, t, label, cx.settings.next_up_rewatching, self.focused(6));
+        let out = widgets::toggle_row(ui, t, label, cx.settings.next_up_rewatching, self.focused(6));
         xs.push(out.x);
         if out.hovered {
             self.set_content(6);
@@ -1094,10 +1123,9 @@ impl SettingsScreen {
             cx.settings.next_up_rewatching = !cx.settings.next_up_rewatching;
             cx.save_settings();
         }
-        ui.add_space(t.gap / 3.0);
         let days: Vec<String> = NEXT_UP_DAYS.iter().map(|(l, _)| l.to_string()).collect();
         let f7 = self.focused(7);
-        let out = widgets::dropdown(ui, t, &mut self.next_up_days, "Next up window", &days, f7);
+        let out = widgets::dropdown_row(ui, t, &mut self.next_up_days, "Next up window", &days, f7);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(7);
@@ -1109,10 +1137,9 @@ impl SettingsScreen {
         }
         // G10 / P-PLAY-11: auto-skip per segment kind.
         for (n, kind) in SegmentKind::SKIPPABLE.into_iter().enumerate() {
-            ui.add_space(t.gap / 3.0);
             let on = cx.settings.auto_skip.contains(&kind);
             let label = format!("Skip {} automatically", kind.label());
-            let out = widgets::toggle(ui, t, &label, on, self.focused(PLAYBACK_FIXED + n));
+            let out = widgets::toggle_row(ui, t, &label, on, self.focused(PLAYBACK_FIXED + n));
             xs.push(out.x);
             if out.hovered {
                 self.set_content(PLAYBACK_FIXED + n);
@@ -1129,7 +1156,7 @@ impl SettingsScreen {
         let mut xs = vec![];
         let modes: Vec<String> = MODE_LABELS.iter().map(|s| s.to_string()).collect();
         let f0 = self.focused(0);
-        let out = widgets::dropdown(ui, t, &mut self.sub_mode, "Mode", &modes, f0);
+        let out = widgets::dropdown_row(ui, t, &mut self.sub_mode, "Mode", &modes, f0);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(0);
@@ -1236,7 +1263,7 @@ impl SettingsScreen {
         let mut back_opts = vec!["None".to_string()];
         back_opts.extend(text_opts.iter().cloned());
         let f7 = self.focused(7);
-        let out = widgets::dropdown(ui, t, &mut self.sub_text, "Text colour", &text_opts, f7);
+        let out = widgets::dropdown_row(ui, t, &mut self.sub_text, "Text colour", &text_opts, f7);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(7);
@@ -1260,7 +1287,7 @@ impl SettingsScreen {
         }
         ui.add_space(t.gap / 3.0);
         let f9 = self.focused(9);
-        let out = widgets::dropdown(ui, t, &mut self.sub_back, "Background colour", &back_opts, f9);
+        let out = widgets::dropdown_row(ui, t, &mut self.sub_back, "Background colour", &back_opts, f9);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(9);
@@ -1318,7 +1345,7 @@ impl SettingsScreen {
     fn draw_display(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> Vec<f32> {
         let t = cx.theme;
         let mut xs = vec![];
-        let out = widgets::toggle(ui, t, "Show release year", cx.settings.show_release_year, self.focused(0));
+        let out = widgets::toggle_row(ui, t, "Show release year", cx.settings.show_release_year, self.focused(0));
         xs.push(out.x);
         if out.hovered {
             self.set_content(0);
@@ -1327,8 +1354,7 @@ impl SettingsScreen {
             cx.settings.show_release_year = !cx.settings.show_release_year;
             cx.save_settings();
         }
-        ui.add_space(t.gap / 3.0);
-        let out = widgets::toggle(ui, t, "Show story year", cx.settings.show_story_year, self.focused(1));
+        let out = widgets::toggle_row(ui, t, "Show story year", cx.settings.show_story_year, self.focused(1));
         xs.push(out.x);
         if out.hovered {
             self.set_content(1);
@@ -1337,10 +1363,9 @@ impl SettingsScreen {
             cx.settings.show_story_year = !cx.settings.show_story_year;
             cx.save_settings();
         }
-        ui.add_space(t.gap / 3.0);
         let formats: Vec<String> = DateFormat::ALL.iter().map(|f| f.label().to_string()).collect();
         let f2 = self.focused(2);
-        let out = widgets::dropdown(ui, t, &mut self.date_format, "Date format", &formats, f2);
+        let out = widgets::dropdown_row(ui, t, &mut self.date_format, "Date format", &formats, f2);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(2);
@@ -1350,8 +1375,7 @@ impl SettingsScreen {
             self.date_format.open = false;
             self.apply_pick(cx, Dd::Date, i);
         }
-        ui.add_space(t.gap / 3.0);
-        let out = widgets::toggle(ui, t, "Show backdrops", cx.settings.backdrops, self.focused(3));
+        let out = widgets::toggle_row(ui, t, "Show backdrops", cx.settings.backdrops, self.focused(3));
         xs.push(out.x);
         if out.hovered {
             self.set_content(3);
@@ -1361,10 +1385,9 @@ impl SettingsScreen {
             cx.save_settings();
         }
         // RR8 / P-USER-2: screensaver.
-        ui.add_space(t.gap / 3.0);
         let modes: Vec<String> = Screensaver::ALL.iter().map(|m| m.label().to_string()).collect();
         let f4 = self.focused(4);
-        let out = widgets::dropdown(ui, t, &mut self.saver_mode, "Screensaver", &modes, f4);
+        let out = widgets::dropdown_row(ui, t, &mut self.saver_mode, "Screensaver", &modes, f4);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(4);
@@ -1374,10 +1397,9 @@ impl SettingsScreen {
             self.saver_mode.open = false;
             self.apply_pick(cx, Dd::SaverMode, i);
         }
-        ui.add_space(t.gap / 3.0);
         let mins: Vec<String> = SAVER_MINUTES.iter().map(|(l, _)| l.to_string()).collect();
         let f5 = self.focused(5);
-        let out = widgets::dropdown(ui, t, &mut self.saver_minutes, "Start after", &mins, f5);
+        let out = widgets::dropdown_row(ui, t, &mut self.saver_minutes, "Start after", &mins, f5);
         xs.push(out.button_x);
         if out.button_hovered {
             self.set_content(5);
@@ -1434,36 +1456,31 @@ impl SettingsScreen {
                 .unwrap_or_else(|| "Signed out".to_string());
             (server, user)
         };
-        info_row(ui, t, "Server", &server);
-        info_row(ui, t, "Signed in as", &user);
+        widgets::kv_row(ui, t, "Server", &server, false);
+        widgets::kv_row(ui, t, "Signed in as", &user, true);
         ui.add_space(t.gap);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            let label = if self.busy { "Signing out…" } else { "Sign out" };
-            let r = parts::button(ui, t, label, self.focused(0), true);
-            xs.push(r.rect.center().x);
-            if r.hovered() {
-                self.set_content(0);
-            }
-            if r.clicked() {
-                self.sign_out(cx);
-            }
-            let r = parts::button(ui, t, "Change server", self.focused(1), false);
-            xs.push(r.rect.center().x);
-            if r.hovered() {
-                self.set_content(1);
-            }
-            if r.clicked() {
-                cx.reset(super::connect::screen(None));
-            }
-            if self.admin {
-                let r = parts::button(ui, t, "Server admin", self.focused(2), false);
+            let n = if self.admin { 3 } else { 2 };
+            for k in 0..n {
+                let action = self.server_action(k);
+                let label = match action {
+                    ServerAction::Admin => "Server admin",
+                    ServerAction::ChangeServer => "Change server",
+                    ServerAction::SignOut if self.busy => "Signing out…",
+                    ServerAction::SignOut => "Sign out",
+                };
+                let r = parts::button(ui, t, label, self.focused(k), false);
                 xs.push(r.rect.center().x);
                 if r.hovered() {
-                    self.set_content(2);
+                    self.set_content(k);
                 }
                 if r.clicked() {
-                    cx.push(super::admin::screen());
+                    match action {
+                        ServerAction::Admin => cx.push(super::admin::screen()),
+                        ServerAction::ChangeServer => cx.reset(super::connect::screen(None)),
+                        ServerAction::SignOut => self.confirm_signout = Some(0),
+                    }
                 }
             }
         });
@@ -1509,7 +1526,7 @@ impl SettingsScreen {
 
     fn draw_about(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> Vec<f32> {
         let t = cx.theme;
-        info_row(ui, t, "Rustfin version", env!("CARGO_PKG_VERSION"));
+        widgets::kv_row(ui, t, "Rustfin version", env!("CARGO_PKG_VERSION"), true);
         parts::muted(ui, t, "A fast native Jellyfin client for desktop.");
         let _ = cx;
         vec![]
@@ -1553,17 +1570,27 @@ fn size_from(i: usize) -> SubSize {
     }
 }
 
-fn info_row(ui: &mut egui::Ui, t: &crate::theme::Theme, label: &str, value: &str) {
-    parts::muted(ui, t, label);
-    parts::heading(ui, t, value);
-}
-
 impl Screen for SettingsScreen {
     fn name(&self) -> &'static str {
         "settings"
     }
 
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
+        // The Sign out confirm swallows its keys: Left/Right between Cancel and Sign out, Back = Cancel.
+        if let Some(f) = self.confirm_signout {
+            match key {
+                Key::Left | Key::Right => self.confirm_signout = Some(widgets::tabs_key(f, 2, key)),
+                Key::Enter => {
+                    self.confirm_signout = None;
+                    if f == 1 {
+                        self.sign_out(cx);
+                    }
+                }
+                Key::Back => self.confirm_signout = None,
+                _ => {}
+            }
+            return true;
+        }
         // An open dropdown swallows its own keys.
         if let Some(dd) = self.open_dropdown() {
             return self.dd_key(cx, key, dd);
@@ -1706,17 +1733,23 @@ impl Screen for SettingsScreen {
             ui.add_space(t.gap / 2.0);
             parts::title(ui, t, tab.label());
             ui.add_space(t.gap / 2.0);
-            xs = match tab {
-                Tab::Account => self.draw_account(ui, cx),
-                Tab::Home => self.draw_home(ui, cx),
-                Tab::Playback => self.draw_playback(ui, cx),
-                Tab::Subtitles => self.draw_subtitles(ui, cx),
-                Tab::Display => self.draw_display(ui, cx),
-                Tab::QuickConnect => self.draw_quickconnect(ui, cx),
-                Tab::Server => self.draw_server(ui, cx),
-                Tab::Tmdb => self.draw_tmdb(ui, cx),
-                Tab::About => self.draw_about(ui, cx),
-            };
+            // Each page sits in one grouped card (tvOS settings style); toggles and dropdowns are full-width rows.
+            xs = widgets::group(ui, t, "", |ui| {
+                ui.add_space(t.gap / 4.0);
+                let xs = match tab {
+                    Tab::Account => self.draw_account(ui, cx),
+                    Tab::Home => self.draw_home(ui, cx),
+                    Tab::Playback => self.draw_playback(ui, cx),
+                    Tab::Subtitles => self.draw_subtitles(ui, cx),
+                    Tab::Display => self.draw_display(ui, cx),
+                    Tab::QuickConnect => self.draw_quickconnect(ui, cx),
+                    Tab::Server => self.draw_server(ui, cx),
+                    Tab::Tmdb => self.draw_tmdb(ui, cx),
+                    Tab::About => self.draw_about(ui, cx),
+                };
+                ui.add_space(t.gap / 4.0);
+                xs
+            });
             ui.add_space(t.gap * 2.0);
         });
 
@@ -1730,7 +1763,23 @@ impl Screen for SettingsScreen {
             }
         }
 
-        self.groups =
-            vec![Group { len: Tab::ALL.len(), cols: Tab::ALL.len(), xs: tabs.xs }, Group { len, cols: 1, xs }];
+        // The Server tab's buttons are one row (Left/Right move along it); every other tab is a column.
+        let cols = if tab == Tab::Server { len.max(1) } else { 1 };
+        self.groups = vec![Group { len: Tab::ALL.len(), cols: Tab::ALL.len(), xs: tabs.xs }, Group { len, cols, xs }];
+
+        if let Some(f) = self.confirm_signout {
+            let buttons = vec!["Cancel".to_string(), "Sign out".to_string()];
+            let body = "You will need to sign in again on this device.";
+            let out = widgets::dialog(ui, t, "Sign out?", body, &buttons, Some(f));
+            if let Some(i) = out.hovered {
+                self.confirm_signout = Some(i);
+            }
+            if let Some(i) = out.clicked {
+                self.confirm_signout = None;
+                if i == 1 {
+                    self.sign_out(cx);
+                }
+            }
+        }
     }
 }

@@ -1,12 +1,14 @@
 //! F5b person page (SPEC R-F5-1, P-PPL-1/2): photo, name, dates, biography; an "On this server" grid; and the
 //! TMDB Acting / Crew filmography (R-F5-2). Reached from cast rows.
+use super::at_details as at;
 use super::parts::{self, CardKind};
+use super::widgets;
 use crate::api::{image_width_bucket, ApiError, ImageKind, Item, Result};
 use crate::app::{Cx, Screen};
 use crate::nav::{self, Focus, Group};
 use crate::platform::Key;
 use crate::tmdb::{self, Credit, Tmdb, TmdbError};
-use egui::{pos2, vec2, Align2, Rect, Sense};
+use egui::{pos2, vec2, Rect, Sense};
 
 const G_TAB: usize = 0;
 const G_LIST: usize = 1;
@@ -197,94 +199,87 @@ impl Person {
         true
     }
 
+    /// D2: Apple's person header — a large round portrait beside the name (hero title size), the life line and
+    /// the biography.
     fn draw_header(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
         let t = cx.theme;
-        ui.add_space(t.margin);
-        ui.horizontal(|ui| {
-            let (photo, _) = ui.allocate_exact_size(vec2(t.person_photo_w, t.person_photo_h), Sense::hover());
+        ui.add_space(t.row_gap);
+        ui.horizontal_top(|ui| {
             let ppp = ui.ctx().pixels_per_point();
             let url = self.person.as_ref().and_then(|p| {
                 cx.client
                     .as_ref()
                     .and_then(|c| c.image_url(p, ImageKind::Primary, image_width_bucket(t.person_photo_w, ppp)))
             });
-            match url.as_deref().and_then(|u| cx.images.get(u)) {
-                Some(tex) => {
-                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                    ui.painter().image(tex, photo, uv, egui::Color32::WHITE);
-                }
-                None => {
-                    ui.painter().rect_filled(photo, t.radius, t.skeleton);
-                    if url.is_none() {
-                        ui.painter().text(
-                            photo.center(),
-                            Align2::CENTER_CENTER,
-                            initials(&self.name),
-                            t.font(t.heading_size),
-                            t.muted,
-                        );
-                    }
-                }
-            }
-            ui.add_space(t.gap);
+            let tex = url.as_deref().and_then(|u| cx.images.get(u));
+            at::portrait(ui, t, tex, &self.name, t.person_photo_w);
+            ui.add_space(t.gap * 2.0);
             ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
                 ui.add_space(t.gap / 2.0);
-                parts::title(ui, t, &self.name);
+                at::hero_title(ui, t, &self.name, None);
                 if let Some(p) = &self.person {
                     let born = self.dates.0.as_deref().or(p.premiere_date.as_deref());
                     if let Some(line) = life_line(born, self.dates.1.as_deref()) {
-                        ui.add_space(t.gap / 4.0);
-                        parts::muted(ui, t, &line);
+                        ui.add_space(t.gap / 2.0);
+                        at::meta_row(ui, t, &[line], (None, None), &[]);
                     }
                     if let Some(ov) = p.overview.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                         ui.add_space(t.gap / 2.0);
-                        ui.label(egui::RichText::new(ov).size(t.body_size).color(t.muted));
+                        at::overview(ui, t, ov, true, 0);
                     }
                 } else if self.loading {
-                    ui.add_space(t.gap / 4.0);
+                    ui.add_space(t.gap / 2.0);
                     parts::muted(ui, t, "Loading…");
                 }
             });
         });
+        ui.add_space(t.gap);
     }
 
+    /// D2: the three tabs as the segmented pill control (selected = brighter glass, focused = white plate).
     fn draw_tabs(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> (Vec<f32>, Option<Tab>) {
+        let t = cx.theme;
+        let labels: Vec<String> = Tab::ALL.iter().map(|tab| tab.label().to_string()).collect();
+        let focus = (self.focus.group == G_TAB).then_some(self.focus.index);
+        let out = widgets::tabs(ui, t, &labels, self.tab.index(), focus);
+        if let Some(i) = out.hovered {
+            if ui.input(|i| i.pointer.is_moving()) {
+                self.focus = Focus { group: G_TAB, index: i };
+            }
+        }
+        let clicked = out.clicked.and_then(|i| Tab::ALL.get(i).copied());
+        (out.xs, clicked)
+    }
+
+    /// D2: what is on this server as Apple's sideways row of posters (lift on focus), left-aligned under the tabs.
+    fn draw_server_grid(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> (Vec<f32>, Option<usize>) {
         let t = cx.theme;
         let mut xs = vec![];
         let mut clicked = None;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = t.gap / 3.0;
-            for tab in Tab::ALL {
-                let idx = tab.index();
-                let focused = self.focus.group == G_TAB && self.focus.index == idx;
-                let r = parts::button(ui, t, tab.label(), focused, self.tab == tab);
-                xs.push(r.rect.center().x);
-                if r.hovered() {
-                    self.focus = Focus { group: G_TAB, index: idx };
-                }
-                if r.clicked() {
-                    clicked = Some(tab);
-                }
-            }
-        });
-        (xs, clicked)
-    }
-
-    fn draw_server_grid(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> (Vec<f32>, Option<usize>) {
-        let t = cx.theme;
-        let cols = nav::grid_cols(ui.available_width(), t.margin, t.poster_w, t.gap);
-        let items: Vec<Option<Item>> = self.server_items.iter().cloned().map(Some).collect();
-        let total = items.len();
-        let mut out = parts::RowOut { clicked: None, hovered: None, xs: vec![] };
-        if total == 0 {
+        if self.server_items.is_empty() {
             ui.add_space(t.gap);
             parts::muted(ui, t, "Nothing from this person on the server.");
-        } else {
-            egui::ScrollArea::vertical().id_salt("person-server").show(ui, |ui| {
-                out = parts::grid(ui, cx, &items, cols, Some(self.focus.index), total);
-            });
+            return (xs, clicked);
         }
-        (out.xs, out.clicked)
+        let items = self.server_items.clone();
+        let focus = (self.focus.group == G_LIST).then_some(self.focus.index);
+        let h = t.poster_h + t.card_title_gap + t.body_size * 1.3;
+        let pointer_moved = ui.input(|i| i.pointer.is_moving());
+        let rs = at::row(ui, t, "person-server", items.len(), h, focus, |ui, i| {
+            let tx = at::tex(cx, ui, &items[i], ImageKind::Primary, t.poster_w);
+            at::poster_card(ui, t, tx, &items[i].name, focus == Some(i))
+        });
+        for (i, r) in rs.iter().enumerate() {
+            xs.push(r.rect.center().x);
+            if pointer_moved && r.hovered() {
+                self.focus = Focus { group: G_LIST, index: i };
+            }
+            if r.clicked() {
+                clicked = Some(i);
+            }
+        }
+        (xs, clicked)
     }
 
     fn draw_credits(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> (Vec<f32>, Option<usize>) {
@@ -456,10 +451,6 @@ impl Person {
     }
 }
 
-fn initials(name: &str) -> String {
-    name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect()
-}
-
 impl Screen for Person {
     fn name(&self) -> &'static str {
         "person"
@@ -603,8 +594,7 @@ impl Screen for Person {
         } else if !retry_xs.is_empty() {
             groups[G_RETRY] = Group { len: 1, cols: 1, xs: retry_xs };
         } else if self.tab == Tab::OnServer {
-            let cols = nav::grid_cols(ui.available_width(), t.margin, t.poster_w, t.gap);
-            groups[G_LIST] = Group { len: list_xs.len(), cols, xs: list_xs };
+            groups[G_LIST] = Group { len: list_xs.len(), cols: list_xs.len(), xs: list_xs };
         } else {
             groups[G_LIST] = Group { len: list_xs.len(), cols: 1, xs: list_xs };
         }

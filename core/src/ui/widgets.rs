@@ -143,6 +143,56 @@ pub fn round_button(ui: &mut Ui, t: &Theme, i: Icon, focused: bool) -> Response 
     resp
 }
 
+// ---------- 0b. Grouped cards (tvOS settings style) ----------
+
+/// A section heading in `muted` above a rounded `surface` card holding rows (`kv_row`, `text_row`, or any
+/// widgets). The card is as wide as the page up to `group_max_w`.
+pub fn group<R>(ui: &mut Ui, t: &Theme, heading: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.add_space(t.gap / 2.0);
+    if !heading.is_empty() {
+        let g = ui.fonts(|f| f.layout_no_wrap(heading.to_string(), t.font_w(t.body_size, Weight::SemiBold), t.muted));
+        let (r, _) = ui.allocate_exact_size(vec2(g.size().x, g.size().y + t.gap / 4.0), Sense::hover());
+        ui.painter().galley(pos2(r.left() + t.section_pad, r.top()), g, t.muted);
+    }
+    let w = ui.available_width().min(t.group_max_w);
+    egui::Frame::new()
+        .fill(t.surface)
+        .corner_radius(t.section_radius)
+        .inner_margin(egui::Margin::symmetric(t.section_pad as i8, (t.gap / 4.0) as i8))
+        .show(ui, |ui| {
+            ui.set_width(w - 2.0 * t.section_pad);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui)
+        })
+        .inner
+}
+
+/// One row inside a `group`: label on the left, value on the right in `muted`; a hairline under it unless `last`.
+pub fn kv_row(ui: &mut Ui, t: &Theme, label: &str, value: &str, last: bool) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), t.list_row_h), Sense::hover());
+    ui.painter().text(pos2(rect.left(), rect.center().y), Align2::LEFT_CENTER, label, t.font(t.body_size), t.text);
+    ui.painter().text(pos2(rect.right(), rect.center().y), Align2::RIGHT_CENTER, value, t.font(t.body_size), t.muted);
+    if !last {
+        hairline(ui, t, rect);
+    }
+}
+
+/// A plain text row inside a `group` (`muted` when `dim`); a hairline under it unless `last`.
+pub fn text_row(ui: &mut Ui, t: &Theme, text: &str, dim: bool, last: bool) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), t.list_row_h), Sense::hover());
+    let ink = if dim { t.muted } else { t.text };
+    ui.painter().text(pos2(rect.left(), rect.center().y), Align2::LEFT_CENTER, text, t.font(t.body_size), ink);
+    if !last {
+        hairline(ui, t, rect);
+    }
+}
+
+fn hairline(ui: &Ui, t: &Theme, rect: Rect) {
+    let y = rect.bottom() - t.section_border_w / 2.0;
+    ui.painter()
+        .line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(t.section_border_w, t.section_border));
+}
+
 // ---------- 1. Dropdown / menu ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -192,6 +242,31 @@ pub fn dropdown(
     options: &[String],
     focused: bool,
 ) -> DropdownOut {
+    dropdown_impl(ui, t, state, label, options, focused, false)
+}
+
+/// `dropdown` as a full-width settings row (tvOS style): label on the left, the choice and a chevron on the
+/// right; the menu opens under the row, right-aligned. For grouped cards (`group`).
+pub fn dropdown_row(
+    ui: &mut Ui,
+    t: &Theme,
+    state: &mut DropdownState,
+    label: &str,
+    options: &[String],
+    focused: bool,
+) -> DropdownOut {
+    dropdown_impl(ui, t, state, label, options, focused, true)
+}
+
+fn dropdown_impl(
+    ui: &mut Ui,
+    t: &Theme,
+    state: &mut DropdownState,
+    label: &str,
+    options: &[String],
+    focused: bool,
+    row: bool,
+) -> DropdownOut {
     let mut out = DropdownOut {
         button_x: 0.0,
         item_xs: vec![],
@@ -201,9 +276,13 @@ pub fn dropdown(
         clicked_outside: false,
     };
     let current = options.get(state.highlighted).cloned().unwrap_or_default();
-    let shown = if label.is_empty() { current } else { format!("{label}: {current}") };
     let button_focused = focused && !state.open;
-    let r = dropdown_button(ui, t, &shown, button_focused);
+    let r = if row {
+        setting_row(ui, t, label, &current, button_focused, RowEnd::Chevron)
+    } else {
+        let shown = if label.is_empty() { current } else { format!("{label}: {current}") };
+        dropdown_button(ui, t, &shown, button_focused)
+    };
     out.button_x = r.rect.center().x;
     out.button_hovered = r.hovered();
     if r.clicked() {
@@ -213,34 +292,38 @@ pub fn dropdown(
     if state.open {
         ui.add_space(t.gap / 4.0);
         let inset = t.bar_inset;
-        egui::Frame::new()
-            .fill(t.menu_fill)
-            .corner_radius(t.menu_radius)
-            .stroke(Stroke::new(1.0, t.bar_stroke))
-            .shadow(t.shadow(1.0))
-            .inner_margin(egui::Margin::same(inset as i8))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                egui::ScrollArea::vertical()
-                    .id_salt("w0-dropdown-menu")
-                    .max_height(t.menu_max_h)
-                    .auto_shrink([true, true])
-                    .show(ui, |ui| {
-                        for (i, opt) in options.iter().enumerate() {
-                            let item_focused = focused && state.highlighted == i;
-                            let rr = menu_item(ui, t, opt, item_focused, t.dropdown_w - 2.0 * inset);
-                            out.item_xs.push(rr.rect.center().x);
-                            menu_rects.push(rr.rect);
-                            if rr.hovered() {
-                                out.item_hovered = Some(i);
-                                state.highlighted = i;
+        let layout =
+            if row { egui::Layout::right_to_left(egui::Align::Min) } else { egui::Layout::top_down(egui::Align::Min) };
+        ui.with_layout(layout, |ui| {
+            egui::Frame::new()
+                .fill(t.menu_fill)
+                .corner_radius(t.menu_radius)
+                .stroke(Stroke::new(1.0, t.bar_stroke))
+                .shadow(t.shadow(1.0))
+                .inner_margin(egui::Margin::same(inset as i8))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    egui::ScrollArea::vertical()
+                        .id_salt("w0-dropdown-menu")
+                        .max_height(t.menu_max_h)
+                        .auto_shrink([true, true])
+                        .show(ui, |ui| {
+                            for (i, opt) in options.iter().enumerate() {
+                                let item_focused = focused && state.highlighted == i;
+                                let rr = menu_item(ui, t, opt, item_focused, t.dropdown_w - 2.0 * inset);
+                                out.item_xs.push(rr.rect.center().x);
+                                menu_rects.push(rr.rect);
+                                if rr.hovered() {
+                                    out.item_hovered = Some(i);
+                                    state.highlighted = i;
+                                }
+                                if rr.clicked() {
+                                    out.item_clicked = Some(i);
+                                }
                             }
-                            if rr.clicked() {
-                                out.item_clicked = Some(i);
-                            }
-                        }
-                    });
-            });
+                        });
+                });
+        });
         if out.item_clicked.is_none() && ui.input(|i| i.pointer.any_click()) {
             if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                 if !menu_rects.iter().any(|r| r.contains(pos)) {
@@ -310,6 +393,54 @@ pub fn toggle(ui: &mut Ui, t: &Theme, label: &str, on: bool, focused: bool) -> T
     ui.painter().add(t.shadow(0.3).as_shape(Rect::from_center_size(knob, vec2(d, d)), d / 2.0));
     ui.painter().circle_filled(knob, d / 2.0, t.focus_fill);
     ToggleOut { x: track_rect.center().x, hovered: resp.hovered(), clicked: resp.clicked() }
+}
+
+/// `toggle` as a full-width settings row (tvOS style): label on the left, the switch on the right; the whole row
+/// is the focus target. For grouped cards (`group`).
+pub fn toggle_row(ui: &mut Ui, t: &Theme, label: &str, on: bool, focused: bool) -> ToggleOut {
+    let r = setting_row(ui, t, label, "", focused, RowEnd::Switch(on));
+    ToggleOut { x: r.rect.center().x, hovered: r.hovered(), clicked: r.clicked() }
+}
+
+enum RowEnd {
+    Chevron,
+    Switch(bool),
+}
+
+/// One full-width settings row: label left; on the right a value + chevron, or a switch. Focused = white plate.
+fn setting_row(ui: &mut Ui, t: &Theme, label: &str, value: &str, focused: bool, end: RowEnd) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.list_row_h), Sense::click());
+    let a = focus_amount(ui, t, resp.id, focused);
+    let plate_rect = rect.expand2(vec2(t.section_pad / 2.0, 0.0));
+    let rest = if resp.hovered() { t.glass } else { Color32::TRANSPARENT };
+    let ink = plate(ui, t, plate_rect, t.field_radius, rest, a, 1.0);
+    let sub = if a > 0.5 { t.focus_ink.gamma_multiply(0.7) } else { t.muted };
+    let font = t.font(t.body_size);
+    ui.painter().text(pos2(rect.left(), rect.center().y), Align2::LEFT_CENTER, label, font.clone(), ink);
+    match end {
+        RowEnd::Chevron => {
+            let c = pos2(rect.right() - t.small_size / 2.0, rect.center().y);
+            icon(ui, t, Icon::ChevronDown, c, t.small_size * 0.8, sub);
+            let x = rect.right() - t.small_size - t.gap / 3.0;
+            ui.painter().text(pos2(x, rect.center().y), Align2::RIGHT_CENTER, value, font, sub);
+        }
+        RowEnd::Switch(on) => {
+            let track = Rect::from_center_size(
+                pos2(rect.right() - t.toggle_w / 2.0, rect.center().y),
+                vec2(t.toggle_w, t.toggle_h),
+            );
+            let k = t.ease(ui.ctx().animate_bool_with_time(resp.id.with("on"), on, t.focus_time));
+            let off_fill = if a > 0.5 { t.surface_hi } else { t.glass_hi };
+            ui.painter().rect_filled(track, t.toggle_h / 2.0, off_fill.lerp_to_gamma(t.toggle_on, k));
+            let d = t.toggle_h - 2.0 * t.toggle_inset;
+            let x_off = track.left() + t.toggle_inset + d / 2.0;
+            let x_on = track.right() - t.toggle_inset - d / 2.0;
+            let knob = pos2(x_off + (x_on - x_off) * k, track.center().y);
+            ui.painter().add(t.shadow(0.3).as_shape(Rect::from_center_size(knob, vec2(d, d)), d / 2.0));
+            ui.painter().circle_filled(knob, d / 2.0, t.focus_fill);
+        }
+    }
+    resp
 }
 
 // ---------- 3. Chip row ----------
@@ -571,48 +702,75 @@ pub struct ListOut {
 }
 
 /// Headings + rows. `focus` indexes the flattened rows across all sections (headings are not focusable).
+/// Each section is a grouped card (tvOS settings style): rows with hairlines, the focused row a white plate.
 pub fn list(ui: &mut Ui, t: &Theme, sections: &[(&str, Vec<ListRow<'_>>)], focus: Option<usize>) -> ListOut {
+    list_impl(ui, t, sections, focus, false)
+}
+
+/// `list`, and the focused row is scrolled into view (for lists longer than a screen).
+pub fn list_scrolling(ui: &mut Ui, t: &Theme, sections: &[(&str, Vec<ListRow<'_>>)], focus: Option<usize>) -> ListOut {
+    list_impl(ui, t, sections, focus, true)
+}
+
+fn list_impl(
+    ui: &mut Ui,
+    t: &Theme,
+    sections: &[(&str, Vec<ListRow<'_>>)],
+    focus: Option<usize>,
+    scroll: bool,
+) -> ListOut {
     let mut out = ListOut { xs: vec![], hovered: None, clicked: None };
     let mut idx = 0;
     for (heading, rows) in sections {
-        ui.add_space(t.gap / 3.0);
-        parts::muted(ui, t, heading);
-        for row in rows {
-            let focused = focus == Some(idx);
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.list_row_h), Sense::click());
-            let a = focus_amount(ui, t, resp.id, focused);
-            if ui.is_rect_visible(rect) {
-                let rest = if resp.hovered() { t.glass } else { Color32::TRANSPARENT };
-                let ink = plate(ui, t, rect, t.field_radius, rest, a, 1.0);
-                let sub = t.muted.lerp_to_gamma(t.focus_ink, a * 0.7);
-                let left = rect.left() + t.menu_pad;
-                let has_secondary = row.secondary.is_some_and(|s| !s.is_empty());
-                let label_g = ui.fonts(|f| f.layout_no_wrap(row.label.to_string(), t.font(t.body_size), ink));
-                let y = if has_secondary {
-                    rect.top() + t.gap / 4.0
-                } else {
-                    rect.top() + (t.list_row_h - label_g.size().y) / 2.0
-                };
-                ui.painter().galley(pos2(left, y), label_g, ink);
-                if let Some(sec) = row.secondary.filter(|s| !s.is_empty()) {
-                    let sec_g = ui.fonts(|f| f.layout_no_wrap(sec.to_string(), t.font(t.small_size), sub));
-                    ui.painter().galley(pos2(left, y + t.body_size + 4.0), sec_g, sub);
-                }
-                if let Some(val) = row.value.filter(|v| !v.is_empty()) {
-                    let val_g = ui.fonts(|f| f.layout_no_wrap(val.to_string(), t.font(t.body_size), sub));
-                    let vy = rect.top() + (t.list_row_h - val_g.size().y) / 2.0;
-                    ui.painter().galley(pos2(rect.right() - t.menu_pad - val_g.size().x, vy), val_g, sub);
-                }
-            }
-            out.xs.push(rect.center().x);
-            if resp.hovered() {
-                out.hovered = Some(idx);
-            }
-            if resp.clicked() {
-                out.clicked = Some(idx);
-            }
-            idx += 1;
+        if rows.is_empty() {
+            continue;
         }
+        group(ui, t, heading, |ui| {
+            let n = rows.len();
+            for (k, row) in rows.iter().enumerate() {
+                let focused = focus == Some(idx);
+                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.list_row_h), Sense::click());
+                let a = focus_amount(ui, t, resp.id, focused);
+                if ui.is_rect_visible(rect) {
+                    // The plate reaches the card's inner edges; text keeps the card's padding.
+                    let plate_rect = rect.expand2(vec2(t.section_pad / 2.0, 0.0));
+                    let rest = if resp.hovered() { t.glass } else { Color32::TRANSPARENT };
+                    let ink = plate(ui, t, plate_rect, t.field_radius, rest, a, 1.0);
+                    let sub = if a > 0.5 { t.focus_ink.gamma_multiply(0.7) } else { t.muted };
+                    let has_secondary = row.secondary.is_some_and(|s| !s.is_empty());
+                    let label_g = ui.fonts(|f| f.layout_no_wrap(row.label.to_string(), t.font(t.body_size), ink));
+                    let y = if has_secondary {
+                        rect.top() + t.gap / 4.0
+                    } else {
+                        rect.top() + (t.list_row_h - label_g.size().y) / 2.0
+                    };
+                    ui.painter().galley(pos2(rect.left(), y), label_g, ink);
+                    if let Some(sec) = row.secondary.filter(|s| !s.is_empty()) {
+                        let sec_g = ui.fonts(|f| f.layout_no_wrap(sec.to_string(), t.font(t.small_size), sub));
+                        ui.painter().galley(pos2(rect.left(), y + t.body_size + 4.0), sec_g, sub);
+                    }
+                    if let Some(val) = row.value.filter(|v| !v.is_empty()) {
+                        let val_g = ui.fonts(|f| f.layout_no_wrap(val.to_string(), t.font(t.body_size), sub));
+                        let vy = rect.top() + (t.list_row_h - val_g.size().y) / 2.0;
+                        ui.painter().galley(pos2(rect.right() - val_g.size().x, vy), val_g, sub);
+                    }
+                    if k + 1 < n && a < 0.01 {
+                        hairline(ui, t, rect);
+                    }
+                }
+                if scroll && focused {
+                    ui.scroll_to_rect(rect.expand(t.gap), None);
+                }
+                out.xs.push(rect.center().x);
+                if resp.hovered() {
+                    out.hovered = Some(idx);
+                }
+                if resp.clicked() {
+                    out.clicked = Some(idx);
+                }
+                idx += 1;
+            }
+        });
     }
     out
 }

@@ -1,8 +1,9 @@
 //! G7 collections: the BoxSet page (P-COLL-1) and the grid of collections (P-LIB-17). `grid_screen` is the
 //! shared "title + poster grid of items loaded in one call" screen (the playlists list uses it too).
+use super::at_details::{self as at, ActionBtn, HeroArt, RoundIcon};
 use super::player::{self, PlayOptions};
 use super::{browse, parts, widgets};
-use crate::api::{ApiError, Client, Item, ItemKind, Result};
+use crate::api::{ApiError, Client, ImageKind, Item, ItemKind, Result};
 use crate::app::{Cx, Screen};
 use crate::nav::{self, move_focus, Focus, Group};
 use crate::order;
@@ -185,6 +186,8 @@ const G_PLAY: usize = 0;
 const G_SORT: usize = 1;
 const G_ITEMS: usize = 2;
 const G_RETRY: usize = 3;
+
+const OVERVIEW_LINES: usize = 3;
 
 /// How the items of a collection are ordered on the page.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -397,20 +400,64 @@ impl Screen for Collection {
 
         let cols = nav::grid_cols(ui.available_width(), 0.0, t.poster_w, t.gap);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let rect = parts::backdrop(ui, cx, self.current());
-            let mut col = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(t.margin)));
-            col.set_max_width(t.field_w * 1.5);
-            col.add_space(t.backdrop_h * 0.15);
-            parts::title(&mut col, t, &self.current().name);
-            if let Some(Ok(v)) = &self.items {
-                col.add_space(t.gap / 4.0);
-                parts::muted(&mut col, t, &format!("{} {}", v.len(), if v.len() == 1 { "item" } else { "items" }));
+            // D2: compact full-bleed hero with the title, item count, overview and the Play all / Shuffle row.
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let backdrop = if cx.settings.backdrops {
+                at::tex(cx, ui, self.current(), ImageKind::Backdrop, ui.ctx().screen_rect().width())
+            } else {
+                None
+            };
+            let art = HeroArt { backdrop, logo: at::logo(cx, ui, self.current()) };
+            let rect = at::hero(ui, t, art, t.hero_h);
+            let mut col = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect.shrink2(egui::vec2(0.0, t.gap)))
+                    .layout(egui::Layout::bottom_up(egui::Align::Min)),
+            );
+            col.spacing_mut().item_spacing.y = 0.0;
+            let loaded = matches!(self.items, Some(Ok(_)));
+            if loaded && (can_play || can_shuffle) {
+                // Play all first (white pill); Shuffle round beside it, or the white pill when nothing plays directly.
+                let mut btns = vec![];
+                if can_play {
+                    btns.push(ActionBtn::Play("Play all".into()));
+                }
+                if can_shuffle {
+                    btns.push(if can_play {
+                        ActionBtn::Round { icon: RoundIcon::Shuffle, on: false, caption: "Shuffle".into() }
+                    } else {
+                        ActionBtn::Play("Shuffle".into())
+                    });
+                }
+                let rs = at::action_row(&mut col, t, &btns, (self.focus.group == G_PLAY).then_some(self.focus.index));
+                for (i, r) in rs.iter().enumerate() {
+                    if r.hovered() {
+                        hovered = Some(Focus { group: G_PLAY, index: i });
+                    }
+                    if r.clicked() {
+                        if can_play && i == 0 {
+                            play_clicked = true;
+                        } else {
+                            shuffle_clicked = true;
+                        }
+                    }
+                }
+                groups[G_PLAY] =
+                    Group { len: rs.len(), cols: rs.len(), xs: rs.iter().map(|r| r.rect.center().x).collect() };
+                col.add_space(t.gap);
             }
             if let Some(ov) = self.current().overview.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                at::overview(&mut col, t, ov, false, OVERVIEW_LINES);
                 col.add_space(t.gap / 2.0);
-                col.add(egui::Label::new(egui::RichText::new(ov).size(t.body_size).color(t.muted)).wrap());
             }
-            ui.add_space(t.gap);
+            if let Some(Ok(v)) = &self.items {
+                let n = format!("{} {}", v.len(), if v.len() == 1 { "item" } else { "items" });
+                at::meta_row(&mut col, t, &[n], (None, None), &[]);
+                col.add_space(t.gap / 2.0);
+            }
+            at::hero_title(&mut col, t, &self.current().name, art.logo);
+            ui.spacing_mut().item_spacing.y = t.gap / 2.0;
+            ui.add_space(t.row_gap); // room for the focused round button's caption
 
             if let Some(Err(e)) = &self.items {
                 parts::error_line(ui, t, &e.to_string());
@@ -430,39 +477,6 @@ impl Screen for Collection {
                     }
                 });
                 return;
-            }
-
-            if can_play || can_shuffle {
-                let mut xs = vec![];
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-                    if can_play {
-                        let r =
-                            parts::button(ui, t, "Play all", self.focus.group == G_PLAY && self.focus.index == 0, true);
-                        if r.hovered() {
-                            hovered = Some(Focus { group: G_PLAY, index: 0 });
-                        }
-                        play_clicked = r.clicked();
-                        xs.push(r.rect.center().x);
-                    }
-                    if can_shuffle {
-                        let idx = xs.len();
-                        let r = parts::button(
-                            ui,
-                            t,
-                            "Shuffle",
-                            self.focus.group == G_PLAY && self.focus.index == idx,
-                            !can_play,
-                        );
-                        if r.hovered() {
-                            hovered = Some(Focus { group: G_PLAY, index: idx });
-                        }
-                        shuffle_clicked = r.clicked();
-                        xs.push(r.rect.center().x);
-                    }
-                });
-                groups[G_PLAY] = Group { len: xs.len(), cols: xs.len(), xs };
-                ui.add_space(t.gap / 2.0);
             }
 
             let labels: Vec<String> = SORTS.iter().map(|(_, l)| l.to_string()).collect();

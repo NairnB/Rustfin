@@ -62,6 +62,14 @@ pub fn screen() -> Box<dyn Screen> {
     })
 }
 
+/// Galleries that show server data, opened on top of Home after sign-in (`--screen <name>`).
+pub fn signed_in(name: &str) -> Option<Box<dyn Screen>> {
+    match name {
+        "gallery-details" => Some(super::gallery_details::screen()),
+        _ => None,
+    }
+}
+
 impl Gallery {
     fn list_sections() -> Vec<(&'static str, Vec<widgets::ListRow<'static>>)> {
         vec![

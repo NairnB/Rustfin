@@ -208,6 +208,8 @@ pub struct Theme {
     pub badge_h: f32,
     pub badge_pad: f32,
     pub badge_stroke: f32,
+    /// Grouped cards (settings / admin): widest a card grows to.
+    pub group_max_w: f32,
     // ---- Poster Flow (BRIEF-coverflow; measured in docs/coverflow-reference.md) ----
     /// Pure black stage under the covers and their reflections.
     pub flow_bg: Color32,
@@ -366,6 +368,7 @@ impl Theme {
             badge_h: 24.0,
             badge_pad: 7.0,
             badge_stroke: 1.5,
+            group_max_w: 1100.0,
             flow_bg: Color32::BLACK,
             flow_sub: Color32::from_rgb(0x9a, 0x9a, 0x9e),
             flow_label_frac: 0.042,

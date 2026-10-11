@@ -1,0 +1,38 @@
+# Details pages frame times (D2, Apple TV look): film page held Down/Up through hero, chips, cast, rows and
+# Information (page scroll + lifts), then the show page held Right/Left along the episode row.
+# Signed in already (run after first-run.txt).
+wait-screen home
+idle
+key search
+wait-screen search
+idle
+type Copper
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+wait 500
+mark film-ready
+bench-keys down 60
+bench-keys up 60
+key back
+wait-screen search
+key up
+key backspace 6
+type Night Shift
+wait 600
+idle
+key down
+key enter
+wait-screen show
+idle
+wait 500
+mark show-ready
+key down
+idle
+bench-keys right 100
+bench-keys left 100
+mem
+quit

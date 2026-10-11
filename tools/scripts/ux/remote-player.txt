@@ -1,0 +1,56 @@
+# UXP2 tour: the player with a remote only (arrows, Enter, Back): seek with the OSD hidden, scrub, buttons, panels, Back order.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3000
+
+# OSD hidden: Left seeks back (the film is only 40 s), Right seeks +30 s and shows the OSD on the timeline.
+key left
+wait 300
+key right
+wait 400
+shot remote-seek
+key left
+wait 400
+# Down reaches the button row (Play), Right × 2 = Audio & Subtitles.
+key down
+key right 2
+key enter
+wait 400
+shot remote-audio-subs
+# Back closes the panel, Back hides the OSD, Back leaves the player.
+key back
+wait 300
+shot remote-back-1
+key back
+wait 300
+shot remote-back-2
+key back
+wait-screen movie
+shot remote-left-player
+quit

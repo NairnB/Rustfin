@@ -15,7 +15,6 @@ use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
 use crate::theme::Theme;
-use egui::{pos2, vec2, Sense};
 
 /// One admin-home row and what it opens.
 #[derive(Clone, Copy)]
@@ -194,58 +193,14 @@ pub(super) struct SectionsOut {
     pub clicked: Option<usize>,
 }
 
-/// A list with sections drawn like `widgets::list`, but it also scrolls the focused row into view (the admin
-/// lists are longer than one screen). Focus indexes the flattened rows across all sections.
+/// A list with sections drawn like `widgets::list` (grouped cards), but it also scrolls the focused row into
+/// view (the admin lists are longer than one screen). Focus indexes the flattened rows across all sections.
 pub(super) fn sectioned_list(
     ui: &mut egui::Ui,
     t: &Theme,
     sections: &[(&str, Vec<ListRow<'_>>)],
     focus: Option<usize>,
 ) -> SectionsOut {
-    let mut out = SectionsOut { xs: vec![], hovered: None, clicked: None };
-    let mut idx = 0;
-    for (heading, rows) in sections {
-        if !heading.is_empty() {
-            ui.add_space(t.gap / 3.0);
-            parts::muted(ui, t, heading);
-        }
-        for row in rows {
-            let focused = focus == Some(idx);
-            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.list_row_h), Sense::click());
-            if ui.is_rect_visible(rect) {
-                let has_secondary = row.secondary.is_some_and(|s| !s.is_empty());
-                let label_g = ui.fonts(|f| f.layout_no_wrap(row.label.to_string(), t.font(t.body_size), t.text));
-                let y = if has_secondary {
-                    rect.top() + t.gap / 4.0
-                } else {
-                    rect.top() + (t.list_row_h - label_g.size().y) / 2.0
-                };
-                ui.painter().galley(pos2(rect.left(), y), label_g, t.text);
-                if let Some(sec) = row.secondary.filter(|s| !s.is_empty()) {
-                    let sec_g = ui.fonts(|f| f.layout_no_wrap(sec.to_string(), t.font(t.small_size), t.muted));
-                    ui.painter().galley(pos2(rect.left(), y + t.body_size + 4.0), sec_g, t.muted);
-                }
-                if let Some(val) = row.value.filter(|v| !v.is_empty()) {
-                    let val_g = ui.fonts(|f| f.layout_no_wrap(val.to_string(), t.font(t.body_size), t.muted));
-                    let vy = rect.top() + (t.list_row_h - val_g.size().y) / 2.0;
-                    ui.painter().galley(pos2(rect.right() - val_g.size().x, vy), val_g, t.muted);
-                }
-                if focused {
-                    parts::focus_ring(ui, t, rect);
-                }
-            }
-            if focused {
-                ui.scroll_to_rect(rect.expand(t.gap), None);
-            }
-            out.xs.push(rect.center().x);
-            if resp.hovered() {
-                out.hovered = Some(idx);
-            }
-            if resp.clicked() {
-                out.clicked = Some(idx);
-            }
-            idx += 1;
-        }
-    }
-    out
+    let o = crate::ui::widgets::list_scrolling(ui, t, sections, focus);
+    SectionsOut { xs: o.xs, hovered: o.hovered, clicked: o.clicked }
 }
