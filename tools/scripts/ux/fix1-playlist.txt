@@ -1,0 +1,52 @@
+# FIX-1 #9 (D2): Add to → Add to playlist… with no playlists offers "New playlist…"; the suggested name is selected,
+# so typing replaces it. Viewer, Amber Tide. Creates nothing (Back at the end).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Amber Tide
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+key right 10
+key left 2
+key enter
+idle
+key down
+key enter
+idle
+wait 300
+shot fix1-playlist-empty
+# (with playlists already there the shot shows them instead) back to the first menu → "New playlist…"
+key back
+idle
+key down
+key enter
+wait-screen new-playlist
+idle
+wait 300
+shot fix1-playlist-name
+type Spring
+idle
+shot fix1-playlist-typed
+key back
+wait-screen movie
+quit

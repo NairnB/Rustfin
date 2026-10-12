@@ -1,0 +1,32 @@
+# FIX-1 #13 (r1-half-remembered): a word no title has falls back to plots / genres / people; a word nothing has
+# offers genres instead of a dead end.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key search
+wait-screen search
+idle
+type generated
+wait 2500
+idle
+wait 300
+shot fix1-13-mentions
+key backspace 9
+type zzqxv
+wait 2500
+idle
+wait 300
+shot fix1-13-genres
+quit

@@ -179,6 +179,11 @@ pub struct Theme {
     pub shadow_offset: f32,
     /// Light sheen across the top of a focused card.
     pub sheen: Color32,
+    /// FIX-1 #2: soft white glow around a focused card (a black shadow vanishes on near-black pages).
+    pub focus_glow: Color32,
+    pub focus_glow_blur: f32,
+    /// FIX-1 #2: unfocused cards in the focused row are dimmed by this much (0..1).
+    pub row_dim: f32,
     // radii
     pub card_radius: f32,
     pub field_radius: f32,
@@ -354,12 +359,15 @@ impl Theme {
             shadow_color: Color32::from_rgba_unmultiplied(0, 0, 0, 0xa0),
             shadow_blur: 36.0,
             shadow_offset: 14.0,
-            sheen: white(0x26),
+            sheen: white(0x40),
+            focus_glow: white(0x59),
+            focus_glow_blur: 28.0,
+            row_dim: 0.22,
             card_radius: 14.0,
             field_radius: 12.0,
             menu_radius: 20.0,
             dialog_radius: 28.0,
-            focus_scale: 1.08,
+            focus_scale: 1.12,
             pill_focus_scale: 1.05,
             focus_time: 0.2,
             hero_title_size: 64.0,

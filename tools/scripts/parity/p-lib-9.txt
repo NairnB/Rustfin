@@ -23,7 +23,7 @@ idle
 # UX R2: the chips are the row just above the first poster.
 key up
 key left 20
-key right 3
+key right 4
 key enter
 idle
 shot p-lib-9

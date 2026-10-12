@@ -259,8 +259,18 @@ pub struct Libraries {
     notice: Option<String>,
     started: bool,
     last_load: f64,
+    /// FIX-1 #18: a scan was started at this time (s) and is being watched until it ends; `scan_seen` once any
+    /// library reported scanning.
+    scan_watch: Option<f64>,
+    scan_seen: bool,
     focus: Focus,
     groups: Vec<Group>,
+}
+
+/// FIX-1 #18: after "Scan all", when to say it has finished: once a library was seen scanning and none is now,
+/// or after `quiet` seconds with none ever seen (a scan quicker than the first poll).
+fn scan_finished(seen: bool, scanning_now: bool, waited: f64, quiet: f64) -> bool {
+    !scanning_now && (seen || waited > quiet)
 }
 
 pub fn screen() -> Box<dyn Screen> {
@@ -270,6 +280,8 @@ pub fn screen() -> Box<dyn Screen> {
         notice: None,
         started: false,
         last_load: 0.0,
+        scan_watch: None,
+        scan_seen: false,
         focus: Focus { group: L_LIST, index: 0 },
         groups: vec![],
     })
@@ -329,6 +341,14 @@ impl Screen for Libraries {
                 match *r {
                     Ok(mut v) => {
                         v.sort_by_key(|f| f.name.clone().unwrap_or_default().to_lowercase());
+                        let scanning = v.iter().any(is_scanning);
+                        self.scan_seen |= scanning;
+                        if let Some(start) = self.scan_watch {
+                            if scan_finished(self.scan_seen, scanning, cx.now - start, 30.0) {
+                                self.scan_watch = None;
+                                self.notice = Some("Scan finished.".into());
+                            }
+                        }
                         self.folders = Some(v);
                     }
                     Err(e) => self.error = fail(cx, e),
@@ -338,7 +358,9 @@ impl Screen for Libraries {
                 let Ok(r) = payload.downcast::<Result<()>>() else { return };
                 match *r {
                     Ok(()) => {
-                        self.notice = Some("Scanning all libraries.".into());
+                        self.notice = Some("Scanning all libraries…".into());
+                        self.scan_watch = Some(cx.now);
+                        self.scan_seen = false;
                         self.load(cx);
                     }
                     Err(e) => self.error = fail(cx, e),
@@ -361,7 +383,7 @@ impl Screen for Libraries {
             self.load(cx);
         }
         // While the server is scanning, ask again every few seconds so the progress moves.
-        if self.folders.as_ref().is_some_and(|v| v.iter().any(is_scanning)) {
+        if self.scan_watch.is_some() || self.folders.as_ref().is_some_and(|v| v.iter().any(is_scanning)) {
             if now - self.last_load > 3.0 {
                 self.last_load = now;
                 self.load(cx);
@@ -1258,6 +1280,15 @@ impl Screen for ConfigPage {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_scan_finishes_when_nothing_is_scanning_any_more() {
+        assert!(!scan_finished(false, false, 2.0, 30.0), "too early to tell");
+        assert!(!scan_finished(true, true, 40.0, 30.0), "still scanning");
+        assert!(scan_finished(true, false, 5.0, 30.0));
+        assert!(scan_finished(false, false, 31.0, 30.0), "a quick scan never seen");
+    }
+
     use super::*;
 
     fn offered() -> AvailableType {

@@ -423,6 +423,7 @@ impl ShowPage {
         cx: &mut Cx,
         list_xs: &mut Vec<f32>,
         clicked: &mut Option<Item>,
+        opened: &mut Option<Item>,
         moving: bool,
     ) {
         let t = cx.theme;
@@ -461,8 +462,14 @@ impl ShowPage {
             if r.hovered() && moving {
                 self.focus = Focus { group: G_LIST, index: i };
             }
-            if r.clicked() && !is_unaired(&rows[i], today) {
-                *clicked = Some(rows[i].clone());
+            // FIX-1 #18: a click opens the episode's page; only the ▶ spot on the art plays it
+            if r.clicked() {
+                let on_play = r.interact_pointer_pos().is_some_and(|p| at::episode_play_rect(t, r.rect).contains(p));
+                if on_play && !is_unaired(&rows[i], today) {
+                    *clicked = Some(rows[i].clone());
+                } else {
+                    *opened = Some(rows[i].clone());
+                }
             }
         }
     }
@@ -684,11 +691,10 @@ impl Screen for ShowPage {
                     }
                     return true;
                 }
+                // FIX-1 #18: Enter on an episode opens its page (Play is one press away there)
                 if self.focus.group == G_LIST {
                     if let Some(ep) = self.season_rows().get(self.focus.index).cloned() {
-                        if !is_unaired(&ep, today()) {
-                            self.play_episode(cx, &ep);
-                        }
+                        cx.push(super::item::screen(ep));
                     }
                     return true;
                 }
@@ -846,6 +852,7 @@ impl Screen for ShowPage {
         let mut confirm_pick: Option<usize> = None;
         let mut drop_pick: Option<i32> = None;
         let mut ep_click: Option<Item> = None;
+        let mut ep_open: Option<Item> = None;
         let mut person: Option<crate::api::PersonRef> = None;
 
         egui::ScrollArea::vertical().id_salt("show-page").auto_shrink([false, false]).show(ui, |ui| {
@@ -879,7 +886,7 @@ impl Screen for ShowPage {
             } else if self.drop_open {
                 self.draw_season_menu(ui, t, &plan, &mut drop_xs, &mut drop_pick, moving);
             } else {
-                self.draw_episode_row(ui, cx, &mut list_xs, &mut ep_click, moving);
+                self.draw_episode_row(ui, cx, &mut list_xs, &mut ep_click, &mut ep_open, moving);
             }
             // P-TV-2: the server's next-up episode as a wide card (Enter / click plays it).
             if let Some(next) = self.next_up.clone() {
@@ -1001,6 +1008,9 @@ impl Screen for ShowPage {
         }
         if let Some(ep) = ep_click {
             self.play_episode(cx, &ep);
+        }
+        if let Some(ep) = ep_open {
+            cx.push(super::item::screen(ep));
         }
         if let Some(p) = person {
             cx.push(super::person::screen(p.id, p.name));

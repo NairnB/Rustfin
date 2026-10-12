@@ -742,6 +742,8 @@ pub fn round_button(ui: &mut Ui, t: &Theme, icon: RoundIcon, on: bool, caption: 
     let rest = if resp.hovered() { t.glass_hi } else { t.glass };
     let ink = widgets::plate(ui, t, rect, t.round_button / 2.0, rest, a, t.pill_focus_scale);
     round_icon(ui, t, icon, on, rect.center(), t.round_button * 0.36, ink);
+    // FIX-1 #4: desktop hover names the button even when focus is elsewhere
+    let resp = if caption.is_empty() || a > 0.01 { resp } else { resp.on_hover_text(caption) };
     if a > 0.01 && !caption.is_empty() {
         let font = t.font_w(t.small_size, Weight::Medium);
         let g = ui.fonts(|f| f.layout_no_wrap(caption.to_string(), font, t.text.gamma_multiply(a)));
@@ -858,6 +860,29 @@ pub fn popover(
     out
 }
 
+/// Seconds a toast stays up (it fades out over the last quarter).
+pub const TOAST_SECS: f64 = 2.0;
+
+/// FIX-1 #4: a short message pill at the bottom centre of the window ("Added to Favourites"), `age` seconds old.
+/// Returns true once it has run its time (the caller drops it).
+pub fn toast(ui: &Ui, t: &Theme, text: &str, age: f64) -> bool {
+    if age >= TOAST_SECS {
+        return true;
+    }
+    let a = ((TOAST_SECS - age) / (TOAST_SECS / 4.0)).min(1.0) as f32;
+    let screen = ui.ctx().screen_rect();
+    let font = t.font_w(t.body_size, Weight::SemiBold);
+    let g = ui.fonts(|f| f.layout_no_wrap(text.to_string(), font, Color32::PLACEHOLDER));
+    let size = vec2(g.size().x + 2.0 * t.pill_pad, t.pill_h);
+    let rect = Rect::from_center_size(pos2(screen.center().x, screen.bottom() - t.row_gap - size.y / 2.0), size);
+    let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("at-toast")));
+    p.add(t.shadow(a).as_shape(rect, size.y / 2.0));
+    p.rect_filled(rect, size.y / 2.0, t.menu_fill.gamma_multiply(a));
+    p.galley(rect.center() - g.size() / 2.0, g, t.text.gamma_multiply(a));
+    ui.ctx().request_repaint();
+    false
+}
+
 /// The action row: buttons left to right with `gap / 2` between. Returns one response per button.
 pub fn action_row(ui: &mut Ui, t: &Theme, btns: &[ActionBtn], focus: Option<usize>) -> Vec<Response> {
     let mut out = vec![];
@@ -957,6 +982,12 @@ pub fn episode_card_h(t: &Theme) -> f32 {
     t.ep_thumb_h + t.card_title_gap + line_h(t.small_size) * 4.0 + line_h(t.body_size) + t.gap / 4.0
 }
 
+/// FIX-1 #18: the ▶ spot on an episode card's art (desktop hover shows it; a click there plays, elsewhere opens).
+pub fn episode_play_rect(t: &Theme, card: Rect) -> Rect {
+    let img = Rect::from_min_size(card.min, vec2(t.ep_thumb_w, t.ep_thumb_h));
+    Rect::from_center_size(img.center(), vec2(t.round_button, t.round_button))
+}
+
 /// Apple's episode card: 16:9 art that lifts when focused (progress inset along the bottom, dimmed if not
 /// aired yet), then EPISODE n, the title, two lines of overview and the runtime with a tick once watched.
 pub fn episode_card(ui: &mut Ui, t: &Theme, c: &EpisodeCard, focused: bool) -> Response {
@@ -966,7 +997,12 @@ pub fn episode_card(ui: &mut Ui, t: &Theme, c: &EpisodeCard, focused: bool) -> R
     }
     let a = widgets::focus_amount(ui, t, resp.id, focused);
     let img = Rect::from_min_size(rect.min, vec2(t.ep_thumb_w, t.ep_thumb_h));
-    art(ui, t, img, c.art, "", a, c.progress, c.unaired);
+    let r = art(ui, t, img, c.art, "", a, c.progress, c.unaired);
+    if resp.hovered() && !c.unaired {
+        let play = Rect::from_center_size(r.center(), vec2(t.round_button, t.round_button));
+        ui.painter().circle_filled(play.center(), play.width() / 2.0, t.scrim);
+        widgets::icon(ui, t, Icon::Play, play.center(), t.round_button * 0.36, t.text);
+    }
     let w = t.ep_thumb_w;
     let mut y = img.bottom() + t.card_title_gap + (t.focus_scale - 1.0) * t.ep_thumb_h / 2.0 * a;
     let small_b = t.font_w(t.small_size, Weight::SemiBold);

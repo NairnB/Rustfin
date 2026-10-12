@@ -27,6 +27,35 @@ const LANGUAGES: [&str; 11] = [
     "Russian",
     "Portuguese",
 ];
+/// FIX-1 #11: subtitle languages as a list (label, the 3-letter code the server's streams carry); "Any" = no preference.
+const SUB_LANGS: [(&str, &str); 11] = [
+    ("Any", ""),
+    ("English", "eng"),
+    ("French", "fre"),
+    ("German", "ger"),
+    ("Spanish", "spa"),
+    ("Italian", "ita"),
+    ("Japanese", "jpn"),
+    ("Korean", "kor"),
+    ("Chinese", "chi"),
+    ("Russian", "rus"),
+    ("Portuguese", "por"),
+];
+
+/// The list index for a stored subtitle language code (case-insensitive; also the 639-2/T forms fra/deu/zho).
+fn sub_lang_index(code: &str) -> Option<usize> {
+    let c = code.trim().to_ascii_lowercase();
+    let c = match c.as_str() {
+        "fra" => "fre",
+        "deu" => "ger",
+        "zho" => "chi",
+        other => other,
+    };
+    SUB_LANGS.iter().position(|(_, k)| *k == c)
+}
+
+/// How long "Saved" stays after an automatic save.
+const SAVED_SHOW_SECS: f64 = 2.0;
 const BITRATE_LABELS: [&str; 7] = ["Auto", "1.5 Mbps", "3 Mbps", "5 Mbps", "10 Mbps", "20 Mbps", "40 Mbps"];
 const BITRATE_KBPS: [u32; 7] = [0, 1500, 3000, 5000, 10000, 20000, 40000];
 const SKIP_BACK: [(&str, u32); 4] = [("5 s", 5), ("10 s", 10), ("15 s", 15), ("30 s", 30)];
@@ -95,6 +124,7 @@ enum Dd {
     SubMode,
     SubText,
     SubBack,
+    SubLang,
     NextUpDays,
     SaverMode,
     SaverMinutes,
@@ -144,9 +174,11 @@ pub struct SettingsScreen {
     saver_mode: widgets::DropdownState,
     saver_minutes: widgets::DropdownState,
 
-    // Subtitles (G5): a draft until Save; `chip` is the focused chip within a chip row.
+    // Subtitles (G5): saved as soon as anything changes (FIX-1 #11); `chip` is the focused chip within a chip row.
     subs: SubPrefs,
-    lang_draft: String,
+    sub_lang: widgets::DropdownState,
+    /// When the Subtitles tab last saved (shows "Saved" for a moment).
+    subs_saved_at: Option<f64>,
     subs_loaded: bool,
     sub_mode: widgets::DropdownState,
     sub_text: widgets::DropdownState,
@@ -201,7 +233,8 @@ pub fn screen() -> Box<dyn Screen> {
         saver_mode: widgets::DropdownState::default(),
         saver_minutes: widgets::DropdownState::default(),
         subs: SubPrefs::default(),
-        lang_draft: String::new(),
+        sub_lang: widgets::DropdownState::default(),
+        subs_saved_at: None,
         subs_loaded: false,
         sub_mode: widgets::DropdownState::default(),
         sub_text: widgets::DropdownState::default(),
@@ -241,7 +274,7 @@ impl SettingsScreen {
             Tab::Account => 3,
             Tab::Home => HomeSection::ALL.len(),
             Tab::Playback => PLAYBACK_FIXED + SegmentKind::SKIPPABLE.len(),
-            Tab::Subtitles => 13,
+            Tab::Subtitles => 11,
             Tab::Display => 6,
             Tab::QuickConnect => 2,
             Tab::Server => 2 + usize::from(self.admin),
@@ -280,6 +313,9 @@ impl SettingsScreen {
         if !self.sub_mode.open {
             self.sub_mode.highlighted = mode_index(self.subs.mode);
         }
+        if !self.sub_lang.open {
+            self.sub_lang.highlighted = sub_lang_index(&self.subs.language).unwrap_or(0);
+        }
         if !self.next_up_days.open {
             self.next_up_days.highlighted =
                 NEXT_UP_DAYS.iter().position(|&(_, d)| d == cx.settings.next_up_days).unwrap_or(0);
@@ -308,6 +344,10 @@ impl SettingsScreen {
     }
 
     fn apply_pick(&mut self, cx: &mut Cx, dd: Dd, i: usize) {
+        if dd == Dd::SubLang {
+            self.subs.language = SUB_LANGS[i.min(SUB_LANGS.len() - 1)].1.to_string();
+            return;
+        }
         if dd == Dd::SubMode {
             self.subs.mode = MODES[i];
             return;
@@ -353,7 +393,7 @@ impl SettingsScreen {
             Dd::NextUpDays => cx.settings.next_up_days = NEXT_UP_DAYS[i].1,
             Dd::SaverMode => cx.settings.screensaver = Screensaver::ALL[i],
             Dd::SaverMinutes => cx.settings.screensaver_minutes = SAVER_MINUTES[i].1,
-            Dd::SubMode | Dd::SubText | Dd::SubBack => {}
+            Dd::SubMode | Dd::SubText | Dd::SubBack | Dd::SubLang => {}
         }
         cx.save_settings();
     }
@@ -388,6 +428,11 @@ impl SettingsScreen {
             Dd::SubMode => {
                 let (s, ev) = widgets::dropdown_key(self.sub_mode, key, MODES.len());
                 self.sub_mode = s;
+                ev
+            }
+            Dd::SubLang => {
+                let (s, ev) = widgets::dropdown_key(self.sub_lang, key, SUB_LANGS.len());
+                self.sub_lang = s;
                 ev
             }
             Dd::SubText => {
@@ -442,6 +487,8 @@ impl SettingsScreen {
             Tab::Subtitles => {
                 if self.sub_mode.open {
                     Some(Dd::SubMode)
+                } else if self.sub_lang.open {
+                    Some(Dd::SubLang)
                 } else if self.sub_text.open {
                     Some(Dd::SubText)
                 } else if self.sub_back.open {
@@ -603,7 +650,7 @@ impl SettingsScreen {
             },
             Tab::Subtitles => match i {
                 0 => self.sub_mode.open = true,
-                1 => self.set_content(2),
+                1 => self.sub_lang.open = true,
                 2 => self.subs.style.size = size_from(self.chip.min(SIZE_LABELS.len() - 1)),
                 3 => self.adj_pos(if self.chip == 0 { -5.0 } else { 5.0 }),
                 4 => self.subs.style.font = SubFont::ALL[self.chip.min(SubFont::ALL.len() - 1)],
@@ -612,9 +659,6 @@ impl SettingsScreen {
                 7 => self.sub_text.open = true,
                 8 => self.set_content(9),
                 9 => self.sub_back.open = true,
-                10 => self.set_content(11),
-                11 => self.save_subs(cx),
-                12 => self.cancel_subs(cx),
                 _ => {}
             },
             Tab::Display => match i {
@@ -667,21 +711,17 @@ impl SettingsScreen {
             return;
         }
         self.subs = cx.settings.subtitles.clone();
-        self.lang_draft = self.subs.language.clone();
         self.sync_colour_drafts();
         self.subs_loaded = true;
     }
 
-    fn save_subs(&mut self, cx: &mut Cx) {
-        self.subs.language = self.lang_draft.trim().to_string();
-        cx.settings.subtitles = self.subs.clone();
-        cx.save_settings();
-    }
-
-    fn cancel_subs(&mut self, cx: &Cx) {
-        self.subs = cx.settings.subtitles.clone();
-        self.lang_draft = self.subs.language.clone();
-        self.sync_colour_drafts();
+    /// FIX-1 #11: tvOS settings never ask to save — any change on the Subtitles tab is saved at once.
+    fn autosave_subs(&mut self, cx: &mut Cx) {
+        if self.subs_loaded && self.subs != cx.settings.subtitles {
+            cx.settings.subtitles = self.subs.clone();
+            cx.save_settings();
+            self.subs_saved_at = Some(cx.now);
+        }
     }
 
     fn sync_colour_drafts(&mut self) {
@@ -1168,11 +1208,17 @@ impl SettingsScreen {
         }
         ui.add_space(t.gap / 3.0);
 
+        let langs: Vec<String> = SUB_LANGS.iter().map(|(l, _)| l.to_string()).collect();
         let f1 = self.focused(1);
-        let r = parts::text_field(ui, t, &mut self.lang_draft, "Preferred language (e.g. eng)", f1, false);
-        xs.push(r.rect.center().x);
-        if r.clicked() {
+        let out = widgets::dropdown_row(ui, t, &mut self.sub_lang, "Language", &langs, f1);
+        xs.push(out.button_x);
+        if out.button_hovered {
             self.set_content(1);
+        }
+        if let Some(i) = out.item_clicked {
+            self.sub_lang.highlighted = i;
+            self.sub_lang.open = false;
+            self.apply_pick(cx, Dd::SubLang, i);
         }
         ui.add_space(t.gap / 3.0);
 
@@ -1311,33 +1357,11 @@ impl SettingsScreen {
         }
         ui.add_space(t.gap / 3.0);
 
-        let mut save = false;
-        let mut cancel = false;
-        let (f11, f12) = (self.focused(11), self.focused(12));
-        let mut hover = None;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            let r = parts::button(ui, t, "Save subtitles", f11, true);
-            xs.push(r.rect.center().x);
-            if r.hovered() {
-                hover = Some(11);
-            }
-            save = r.clicked();
-            let r = parts::button(ui, t, "Cancel", f12, false);
-            if r.hovered() {
-                hover = Some(12);
-            }
-            cancel = r.clicked();
-        });
-        xs.push(xs[11]);
-        if let Some(i) = hover {
-            self.set_content(i);
-        }
-        if save {
-            self.save_subs(cx);
-        }
-        if cancel {
-            self.cancel_subs(cx);
+        self.autosave_subs(cx);
+        let shown = self.subs_saved_at.is_some_and(|at| cx.now - at < SAVED_SHOW_SECS);
+        if shown {
+            parts::muted(ui, t, "Saved");
+            ui.ctx().request_repaint();
         }
         xs
     }
@@ -1781,5 +1805,18 @@ impl Screen for SettingsScreen {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod fix1_sub_lang_tests {
+    use super::*;
+
+    #[test]
+    fn subtitle_language_codes_map_to_the_list() {
+        assert_eq!(sub_lang_index(""), Some(0));
+        assert_eq!(sub_lang_index("ENG"), Some(1));
+        assert_eq!(sub_lang_index("deu"), sub_lang_index("ger"));
+        assert_eq!(sub_lang_index("xx"), None);
     }
 }

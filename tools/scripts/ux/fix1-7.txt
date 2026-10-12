@@ -1,0 +1,46 @@
+# FIX-1 #7 (r1-filter-unwatched): All · Unwatched · Watched is one choice (never Unwatched AND Watched = nothing);
+# an empty filtered page names the filter and offers a focused "Clear filters".
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+# Chips: All, Unwatched, Watched, In progress, Favourites.
+key up
+key left 20
+key right
+key enter
+idle
+key right
+key enter
+idle
+wait 300
+shot fix1-7-watched
+# Favourites on top of Watched empties Mixed for this user → the page says why; Down → Clear filters.
+key right 2
+key enter
+idle
+wait 300
+shot fix1-7-empty
+key down
+key enter
+idle
+wait 300
+shot fix1-7-cleared
+quit

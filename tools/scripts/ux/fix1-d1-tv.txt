@@ -1,0 +1,30 @@
+# args: --tv
+# FIX-1 regression (D1, TV): #2 the focused card in a row reads from the sofa (bigger lift, white glow, the rest of
+# the row dimmed); #18 the user menu sits on a dark card. Tester task: r1-play-sintel-tv / r1-switch-user-tv.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key down
+key right
+idle
+wait 300
+shot fix1-tv-row-focus
+key up 20
+key right 10
+key enter
+idle
+wait 300
+shot fix1-tv-user-menu
+quit

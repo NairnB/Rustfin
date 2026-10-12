@@ -20,6 +20,12 @@ pub fn focus_amount(ui: &Ui, t: &Theme, id: Id, focused: bool) -> f32 {
     t.ease(ui.ctx().animate_bool_with_time(id.with("focus"), on, t.focus_time))
 }
 
+/// FIX-1 #8: `focus_amount` for text fields — shown whatever the input mode (after a mouse click too), because
+/// the caret alone doesn't say where typing will go.
+pub fn field_focus_amount(ui: &Ui, t: &Theme, id: Id, focused: bool) -> f32 {
+    t.ease(ui.ctx().animate_bool_with_time(id.with("focus"), focused, t.focus_time))
+}
+
 /// `r` grown about its centre by the focus lift: `scale` at `a` = 1.
 pub fn lift(r: Rect, scale: f32, a: f32) -> Rect {
     Rect::from_center_size(r.center(), r.size() * (1.0 + (scale - 1.0) * a))
@@ -592,7 +598,7 @@ pub fn number_key(value: i64, key: Key, min: i64, max: i64, step: i64) -> i64 {
 pub fn number_field(ui: &mut Ui, t: &Theme, value: i64, focused: bool) -> Response {
     let text = value.to_string();
     let (rect, resp) = ui.allocate_exact_size(vec2(t.field_w, t.button_h), Sense::click());
-    let a = focus_amount(ui, t, resp.id, focused);
+    let a = field_focus_amount(ui, t, resp.id, focused);
     let ink = plate(ui, t, rect, t.field_radius, t.surface_hi, a, 1.0);
     let galley = ui.fonts(|f| f.layout_no_wrap(text, t.font(t.body_size), ink));
     let y = rect.top() + (t.button_h - galley.size().y) / 2.0;
@@ -892,6 +898,14 @@ mod tests {
         let s = DropdownState { open: true, highlighted: 3 };
         let (s, _) = dropdown_key(s, Key::Down, 4);
         assert_eq!(s.highlighted, 3);
+    }
+
+    #[test]
+    fn dropdown_opens_on_the_current_choice() {
+        // FIX-1 #15: Enter opens the menu with the current choice highlighted (no extra press to reach it).
+        let s = DropdownState { open: false, highlighted: 2 };
+        let (s, ev) = dropdown_key(s, Key::Enter, 4);
+        assert_eq!((s.open, s.highlighted, ev), (true, 2, Some(DropdownEvent::Open)));
     }
 
     #[test]

@@ -232,6 +232,13 @@ pub fn type_ahead(items: &[Item], prefix: &str) -> Option<usize> {
         .or_else(|| items.iter().position(|i| sort_key(&i.name).as_str() > p.as_str()))
 }
 
+/// Under a minute in counts as not started: offer Play, not "Resume from 0:00".
+const RESUME_MIN_SECS: f64 = 60.0;
+
+fn resumable(position_ticks: i64) -> bool {
+    ticks_to_secs(position_ticks) >= RESUME_MIN_SECS
+}
+
 /// Label lines under the centre cover: film → title / year · runtime; show → title / years · N seasons.
 pub fn labels(item: &Item, full: Option<&Item>) -> (String, String) {
     let it = full.unwrap_or(item);
@@ -501,21 +508,11 @@ impl PosterFlow {
         self.back.tracks_for = Some(it.id.clone());
     }
 
+    /// The tracks of one kind, with the names a person reads ("German", "English (embedded)"), as the player shows them.
     fn streams(&self, kind: StreamKind) -> Vec<(String, i32)> {
         let Some(ms) = self.full.get(&self.back.id).and_then(|i| i.media_sources.first()) else { return vec![] };
-        ms.media_streams
-            .iter()
-            .filter(|s| s.kind == kind)
-            .map(|s| {
-                (
-                    s.display_title
-                        .clone()
-                        .or_else(|| s.language.clone())
-                        .unwrap_or_else(|| format!("Track {}", s.index)),
-                    s.index,
-                )
-            })
-            .collect()
+        let v: Vec<_> = ms.media_streams.iter().filter(|s| s.kind == kind).cloned().collect();
+        player::track_labels(&v).into_iter().zip(v.iter().map(|s| s.index)).collect()
     }
 
     fn rows(&self) -> Vec<Row> {
@@ -532,7 +529,7 @@ impl PosterFlow {
         }
         let mut v = vec![];
         let pos = it.user_data.as_ref().map(|u| u.playback_position_ticks).unwrap_or(0);
-        if pos > 0 {
+        if resumable(pos) {
             v.push(Row::Play { from_start: false, label: format!("Resume from {}", parts::clock(ticks_to_secs(pos))) });
             v.push(Row::Play { from_start: true, label: "Play from start".into() });
         } else {
@@ -1352,6 +1349,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(labels(&show, None).1, "2008 · 3 seasons");
+    }
+
+    #[test]
+    fn resume_only_after_a_minute() {
+        assert!(!resumable(0));
+        assert!(!resumable(30 * 10_000_000));
+        assert!(resumable(60 * 10_000_000));
     }
 
     #[test]

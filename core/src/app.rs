@@ -200,8 +200,9 @@ pub struct App {
     tv_kb: Option<ui::keyboard::KeyboardState>,
     tv_field: Option<ui::keyboard::TvField>,
     tv_kb_auto: u64,
-    /// UXP5: a real keyboard has typed text this session — then Enter in a field behaves as on the desktop.
-    tv_physical: bool,
+    /// FIX-1 #10: when text last arrived from a physical keyboard (TV); typing stands the on-screen keyboard
+    /// down only for `TV_TEXT_QUIET` seconds after it, so the remote keyboard never latches off.
+    tv_text_at: Option<f64>,
 }
 
 impl App {
@@ -242,7 +243,7 @@ impl App {
             tv_kb: None,
             tv_field: None,
             tv_kb_auto: 0,
-            tv_physical: false,
+            tv_text_at: None,
         };
         let first: Box<dyn Screen> = match app.settings.last().cloned() {
             Some(e) if e.session.is_some() => {
@@ -521,13 +522,15 @@ impl App {
         use ui::keyboard::{Effect, KeyboardState};
         // Text arriving from outside (a USB / Bluetooth keyboard on the TV) means no remote-only typing: stand down.
         if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))) {
-            self.tv_physical = true;
+            self.tv_text_at = Some(now);
         }
         let Some(field) = self.tv_field.clone() else {
             self.tv_kb = None;
             return keys.to_vec();
         };
-        if self.tv_physical && self.tv_kb.is_none() {
+        // A physical keyboard typed recently: leave it the field (its Enter submits). After a quiet spell
+        // Enter on a field opens the on-screen keyboard again.
+        if physical_typing(self.tv_text_at, now) && self.tv_kb.is_none() {
             return keys.to_vec();
         }
         if self.tv_kb.is_none() && self.screen_name() == "search" && self.tv_kb_auto != top_id {
@@ -1015,5 +1018,25 @@ mod tests {
         run(&mut a, &[Key::Right, Key::Enter]);
         assert_eq!(a.history(), ["signin"]);
         assert!(a.client.as_ref().is_some_and(|c| c.session.is_none()));
+    }
+}
+
+/// FIX-1 #10: seconds without text from a physical keyboard before the TV's on-screen keyboard comes back.
+pub const TV_TEXT_QUIET: f64 = 30.0;
+
+/// True while a physical keyboard typed within the last `TV_TEXT_QUIET` seconds.
+pub fn physical_typing(last_text: Option<f64>, now: f64) -> bool {
+    last_text.is_some_and(|t| now - t < TV_TEXT_QUIET)
+}
+
+#[cfg(test)]
+mod fix1_keyboard_tests {
+    use super::*;
+
+    #[test]
+    fn physical_typing_lapses_after_a_quiet_spell() {
+        assert!(!physical_typing(None, 100.0));
+        assert!(physical_typing(Some(100.0), 110.0));
+        assert!(!physical_typing(Some(100.0), 100.0 + TV_TEXT_QUIET));
     }
 }

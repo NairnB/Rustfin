@@ -1,0 +1,36 @@
+# FIX-1 regression (D1, desktop + keys): #11 the subtitle language is a list (no code box), saved at once with a
+# brief "Saved". Tester task: r1-setting-sublang-desk / -tv (prefer German subtitles). Clicks are 1920×1080 pixels.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+click 130 1038
+idle
+click 380 939
+wait-screen settings
+idle
+key right 3
+key down
+key down
+idle
+key enter
+idle
+wait 300
+shot fix1-sublang-open
+key down 3
+key enter
+idle
+wait 300
+shot fix1-sublang-saved
+quit

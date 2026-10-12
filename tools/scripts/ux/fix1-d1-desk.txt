@@ -1,0 +1,26 @@
+# FIX-1 regression (D1, desktop): #8 a text field clicked with the mouse shows that it has focus. Tester task:
+# r1-cast-search-desk (click the search box). Clicks are 1920×1080 pixels.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+click 130 155
+wait-screen search
+idle
+move 1500 900
+click 1000 136
+idle
+wait 300
+shot fix1-desk-field-click
+quit

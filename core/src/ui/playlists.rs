@@ -493,6 +493,9 @@ pub struct NewPlaylist {
     error: Option<String>,
     focus: Focus,
     groups: Vec<Group>,
+    // FIX-1 #9: the suggested name (the film's) is the field's hint, not its text: typing starts a fresh name, and
+    // Create with the field left empty uses the suggestion.
+    suggest: String,
 }
 
 /// P-COLL-5: ask for a name, create the playlist holding `ids`, then open it.
@@ -505,11 +508,27 @@ pub fn new_collection_screen(ids: Vec<String>, default_name: String) -> Box<dyn 
     new_named(true, ids, default_name)
 }
 
+/// FIX-1 #9: what Create names it — what was typed, or the suggestion when nothing was.
+pub fn chosen_name(typed: &str, suggest: &str) -> String {
+    let t = typed.trim();
+    if t.is_empty() { suggest.trim() } else { t }.to_string()
+}
+
+/// FIX-1 #9: the field's hint — the suggestion itself (greyed) when there is one.
+fn hint_for(collection: bool, suggest: &str) -> String {
+    match suggest.trim() {
+        "" if collection => "Collection name".to_string(),
+        "" => "Playlist name".to_string(),
+        s => s.to_string(),
+    }
+}
+
 fn new_named(collection: bool, ids: Vec<String>, name: String) -> Box<dyn Screen> {
     Box::new(NewPlaylist {
         collection,
         ids,
-        name,
+        name: String::new(),
+        suggest: name,
         busy: false,
         error: None,
         focus: Focus { group: N_NAME, index: 0 },
@@ -519,7 +538,7 @@ fn new_named(collection: bool, ids: Vec<String>, name: String) -> Box<dyn Screen
 
 impl NewPlaylist {
     fn create(&mut self, cx: &Cx) {
-        let name = self.name.trim().to_string();
+        let name = chosen_name(&self.name, &self.suggest);
         if self.busy {
             return;
         }
@@ -603,7 +622,7 @@ impl Screen for NewPlaylist {
             ui,
             t,
             &mut self.name,
-            if self.collection { "Collection name" } else { "Playlist name" },
+            &hint_for(self.collection, &self.suggest),
             self.focus.group == N_NAME,
             false,
         );

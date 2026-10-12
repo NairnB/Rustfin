@@ -13,7 +13,7 @@ pub fn search_field(ui: &mut Ui, t: &Theme, text: &mut String, hint: &str, focus
     let w = t.search_w.min(band.width());
     let rect = Rect::from_center_size(band.center(), vec2(w, t.search_h));
     let id = ui.id().with("at-search-field");
-    let a = widgets::focus_amount(ui, t, id, focused);
+    let a = widgets::field_focus_amount(ui, t, id, focused);
     let ink = widgets::plate(ui, t, rect, t.search_h / 2.0, t.glass, a, 1.0 + (t.pill_focus_scale - 1.0) / 2.0);
     let icon_c = pos2(rect.left() + t.search_h / 2.0 + t.gap / 4.0, rect.center().y);
     magnifier(ui, t, icon_c, t.search_icon, ink);

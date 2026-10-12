@@ -95,6 +95,14 @@ fn card_lift(ui: &Ui, t: &Theme, img_rect: Rect, a: f32) -> Rect {
     let r = widgets::lift(img_rect, t.focus_scale, a);
     if a > 0.01 {
         ui.painter().add(t.shadow(a).as_shape(r, t.card_radius));
+        // FIX-1 #2: a soft white glow (not a ring) so focus reads on near-black pages from the sofa.
+        let glow = egui::epaint::Shadow {
+            offset: [0, 0],
+            blur: (t.focus_glow_blur * a) as u8,
+            spread: 0,
+            color: t.focus_glow.gamma_multiply(a),
+        };
+        ui.painter().add(glow.as_shape(r, t.card_radius));
     }
     r
 }
@@ -315,9 +323,23 @@ pub fn text_field(ui: &mut Ui, t: &Theme, text: &mut String, hint: &str, focused
     if focused {
         // UXP5: tell the TV keyboard which field has focus (the app reads it next frame; desktop ignores it).
         super::keyboard::register(ui.ctx(), text, password, hint);
-        focus_ring(ui, t, r.rect);
+    }
+    // FIX-1 #8: a field that has the text focus always shows it — after a mouse click too (other rings wait for
+    // keyboard use).
+    if focused || r.has_focus() {
+        field_ring(ui, t, r.rect);
     }
     r
+}
+
+/// The focus ring for text fields, shown whatever the input mode (the caret alone is too faint to find).
+pub fn field_ring(ui: &Ui, t: &Theme, r: Rect) {
+    ui.painter().rect_stroke(
+        r.expand(t.focus_gap / 2.0),
+        t.field_radius + t.focus_gap / 2.0,
+        egui::Stroke::new(t.focus_stroke, t.focus_color),
+        egui::StrokeKind::Outside,
+    );
 }
 
 pub fn title(ui: &mut Ui, t: &Theme, text: &str) {
@@ -425,6 +447,11 @@ fn row_impl(
                             card(ui, cx, it, kind, focus == Some(i))
                         };
                         out.xs.push(r.rect.center().x);
+                        // FIX-1 #2: the rest of the focused row steps back (keyboard/remote focus only).
+                        if focus.is_some_and(|f| f != i) && crate::ui::shell::keyboard_focus(ui.ctx()) {
+                            let art = Rect::from_min_size(r.rect.min, kind.size(t));
+                            ui.painter().rect_filled(art, t.card_radius, t.bg.gamma_multiply(t.row_dim));
+                        }
                         if focus == Some(i) {
                             if crate::ui::shell::keyboard_focus(ui.ctx()) {
                                 ui.scroll_to_rect(r.rect.expand2(vec2(t.margin, 0.0)), None);

@@ -14,6 +14,10 @@ const G_EPS: usize = 4;
 const G_COLLS: usize = 5;
 const G_PEOPLE: usize = 6;
 const G_SUGGESTED: usize = 7;
+/// FIX-1 #13: films and shows whose plot / genres / people mention the words (when no title matched).
+const G_TEXT: usize = 8;
+/// FIX-1 #13: genres offered on an empty result.
+const G_GENRES: usize = 9;
 
 /// How many cards the Top results row holds.
 const TOP_MAX: usize = 12;
@@ -69,6 +73,10 @@ pub struct Search {
     top: Vec<Item>,
     /// Ids in `top` that are people (they open a person page).
     top_people: Vec<String>,
+    /// FIX-1 #13: the second search (plots, genres, tags, people) and the genres to offer when it is empty too.
+    mentions: Vec<Item>,
+    genres: Vec<String>,
+    text_loading: bool,
     films: Vec<Item>,
     shows: Vec<Item>,
     episodes: Vec<Item>,
@@ -90,6 +98,9 @@ pub fn screen() -> Box<dyn Screen> {
         last_query: String::new(),
         top: vec![],
         top_people: vec![],
+        mentions: vec![],
+        genres: vec![],
+        text_loading: false,
         films: vec![],
         shows: vec![],
         episodes: vec![],
@@ -136,6 +147,7 @@ impl Search {
             G_COLLS => self.collections.get(f.index).cloned(),
             G_PEOPLE => self.people.get(f.index).cloned(),
             G_SUGGESTED => self.suggested.get(f.index).cloned(),
+            G_TEXT => self.mentions.get(f.index).cloned(),
             _ => None,
         }
     }
@@ -186,7 +198,11 @@ impl Screen for Search {
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
         match key {
             Key::Enter => {
-                if self.focus.group != G_FIELD {
+                if self.focus.group == G_GENRES {
+                    if let Some(g) = self.genres.get(self.focus.index) {
+                        cx.push(super::browse::genre(g));
+                    }
+                } else if self.focus.group != G_FIELD {
                     if let Some(it) = self.result_at(self.focus) {
                         let person = self.focus.group == G_PEOPLE
                             || (self.focus.group == G_TOP && self.top_people.contains(&it.id));
@@ -225,6 +241,19 @@ impl Screen for Search {
             }
             return;
         }
+        if tag == "search-text" {
+            let Ok(r) = payload.downcast::<(u64, Result<(Vec<Item>, Vec<String>)>)>() else { return };
+            let (seq, result) = *r;
+            if seq == self.seq {
+                self.text_loading = false;
+                match result {
+                    Ok((found, genres)) => (self.mentions, self.genres) = (found, genres),
+                    Err(ApiError::Unauthorized) => cx.signed_out(),
+                    Err(_) => {}
+                }
+            }
+            return;
+        }
         if tag != "search" {
             return;
         }
@@ -238,6 +267,14 @@ impl Screen for Search {
             Ok((items, people)) => {
                 self.set_results(items, people);
                 self.error = None;
+                self.mentions.clear();
+                self.genres.clear();
+                // FIX-1 #13: no title matched — look in plots, genres, tags and people too.
+                if !self.any_results() {
+                    self.text_loading = true;
+                    let (client, term, seq) = (cx.api(), self.last_query.trim().to_string(), self.seq);
+                    cx.spawn("search-text", move || (seq, client.search_text(&term)));
+                }
             }
             Err(ApiError::Unauthorized) => cx.signed_out(),
             Err(e) => self.error = Some(e.to_string()),
@@ -361,12 +398,44 @@ impl Screen for Search {
             ui.add_space(t.gap / 2.0);
             parts::error_line(ui, t, e);
         }
-        if !self.loading && self.deadline.is_none() && !self.query.trim().is_empty() && !self.any_results() {
+        let mut text_xs: Vec<f32> = vec![];
+        let mut genre_xs: Vec<f32> = vec![];
+        let settled = !self.loading && self.deadline.is_none() && !self.query.trim().is_empty();
+        if settled && !self.any_results() && !self.mentions.is_empty() {
+            let focus = (self.focus.group == G_TEXT).then_some(self.focus.index);
+            let heading = format!("Films and shows that mention \u{201c}{}\u{201d}", self.query.trim());
+            let out = parts::row(ui, cx, "search-text", &heading, &self.mentions, CardKind::Poster, focus);
+            text_xs = out.xs;
+            if let Some(i) = out.hovered {
+                self.focus = Focus { group: G_TEXT, index: i };
+            }
+            if let Some(i) = out.clicked {
+                clicked = self.mentions.get(i).cloned();
+            }
+        }
+        if settled && !self.any_results() && self.mentions.is_empty() && !self.text_loading {
             let body = format!(
-                "Nothing found for \u{201c}{}\u{201d}. Try a different spelling or fewer words.",
+                "Nothing has \u{201c}{}\u{201d} in its title or story. Try a different word, or browse a genre.",
                 self.query.trim()
             );
             super::at_library::empty_state(ui, t, "No results", &body);
+            let mut picked = None;
+            parts::centered_row(ui, "search-genres", |ui| {
+                ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                for (i, g) in self.genres.iter().enumerate() {
+                    let r = parts::button(ui, t, g, self.focus == Focus { group: G_GENRES, index: i }, false);
+                    genre_xs.push(r.rect.center().x);
+                    if r.hovered() {
+                        self.focus = Focus { group: G_GENRES, index: i };
+                    }
+                    if r.clicked() {
+                        picked = Some(g.clone());
+                    }
+                }
+            });
+            if let Some(g) = picked {
+                cx.push(super::browse::genre(&g));
+            }
         }
 
         let mut groups = vec![Group { len: 1, cols: 1, xs: field_xs }];
@@ -378,6 +447,10 @@ impl Screen for Search {
         groups.push(Group { len: self.people.len(), cols: self.people.len(), xs: people_xs });
         let n = sugg_xs.len();
         groups.push(Group { len: n, cols: n, xs: sugg_xs });
+        let n = text_xs.len();
+        groups.push(Group { len: n, cols: n, xs: text_xs });
+        let n = genre_xs.len();
+        groups.push(Group { len: n, cols: n, xs: genre_xs });
         self.groups = groups;
         self.focus = move_focus(&self.groups, self.focus, Key::Enter);
 

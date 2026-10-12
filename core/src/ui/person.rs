@@ -181,10 +181,19 @@ impl Person {
         }
     }
 
+    /// FIX-1 #18: without a TMDB key the Acting / Crew tabs could only say "key required", so they are not shown.
+    fn tabs(cx: &Cx) -> &'static [Tab] {
+        if cx.settings.tmdb_key.trim().is_empty() {
+            &Tab::ALL[..1]
+        } else {
+            &Tab::ALL
+        }
+    }
+
     fn enter(&mut self, cx: &mut Cx) -> bool {
         match self.focus.group {
             G_TAB => {
-                if let Some(&tab) = Tab::ALL.get(self.focus.index) {
+                if let Some(&tab) = Self::tabs(cx).get(self.focus.index) {
                     self.tab = tab;
                     self.detail = None;
                     if matches!(tab, Tab::Acting | Tab::Crew) {
@@ -262,7 +271,7 @@ impl Person {
     /// D2: the three tabs as the segmented pill control (selected = brighter glass, focused = white plate).
     fn draw_tabs(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> (Vec<f32>, Option<Tab>) {
         let t = cx.theme;
-        let labels: Vec<String> = Tab::ALL.iter().map(|tab| tab.label().to_string()).collect();
+        let labels: Vec<String> = Self::tabs(cx).iter().map(|tab| tab.label().to_string()).collect();
         let focus = (self.focus.group == G_TAB).then_some(self.focus.index);
         let out = widgets::tabs(ui, t, &labels, self.tab.index(), focus);
         if let Some(i) = out.hovered {
@@ -270,7 +279,7 @@ impl Person {
                 self.focus = Focus { group: G_TAB, index: i };
             }
         }
-        let clicked = out.clicked.and_then(|i| Tab::ALL.get(i).copied());
+        let clicked = out.clicked.and_then(|i| Self::tabs(cx).get(i).copied());
         (out.xs, clicked)
     }
 

@@ -1,0 +1,35 @@
+# FIX-1 #18 (D2): on the show page Enter on an episode opens its page (no accidental playback). Viewer, Drift Rebels.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Drift Rebels
+wait 600
+idle
+key down
+key enter
+wait-screen show
+wait 1000
+idle
+key down
+idle
+key enter
+wait-screen episode
+idle
+wait 300
+shot fix1-episode-opens
+quit

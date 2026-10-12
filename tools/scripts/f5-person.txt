@@ -1,5 +1,5 @@
 # F5b person page (R-F5-1/2): connect → sign in → search "Ember Rising" → cast → Ada Quill → person page.
-# Shoots the "On this server" grid and the Acting tab with no TMDB key (the hint, no live TMDB calls).
+# Shoots the "On this server" grid; with no TMDB key there are no Acting / Crew tabs (no live TMDB calls).
 wait-screen connect
 wait 2500
 idle
@@ -37,7 +37,7 @@ wait-screen person
 idle
 shot person-server
 
-# Acting tab: no key set, so the hint is shown (never a live TMDB call).
+# No TMDB key set: only "On this server" is shown (FIX-1 #18 hides Acting / Crew); Right + Enter stay on it.
 key right
 key enter
 wait 300

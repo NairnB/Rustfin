@@ -28,7 +28,76 @@ const G_SECTIONS: usize = 6;
 /// P-LIB-23: how many items Play all / Shuffle queue.
 const PLAY_LIMIT: usize = 300;
 
-const CHIP_LABELS: [&str; 4] = ["Unplayed", "Played", "In progress", "Favourites"];
+/// FIX-1 #7: the quick filters. All / Unwatched / Watched are one choice (exactly one is on); In progress and
+/// Favourites are independent chips. In progress is left out on TV-show libraries (the server applies it to the
+/// series, not their episodes, so it always came back empty).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chip {
+    All,
+    Unwatched,
+    Watched,
+    InProgress,
+    Favourites,
+}
+
+impl Chip {
+    fn label(self) -> &'static str {
+        match self {
+            Chip::All => "All",
+            Chip::Unwatched => "Unwatched",
+            Chip::Watched => "Watched",
+            Chip::InProgress => "In progress",
+            Chip::Favourites => "Favourites",
+        }
+    }
+    fn on(self, f: &crate::api::Filters) -> bool {
+        match self {
+            Chip::All => !f.unplayed && !f.played,
+            Chip::Unwatched => f.unplayed && !f.played,
+            Chip::Watched => f.played && !f.unplayed,
+            Chip::InProgress => f.resumable,
+            Chip::Favourites => f.favourites,
+        }
+    }
+}
+
+fn chips_for(collection_type: Option<&str>) -> Vec<Chip> {
+    let mut v = vec![Chip::All, Chip::Unwatched, Chip::Watched];
+    if collection_type != Some("tvshows") {
+        v.push(Chip::InProgress);
+    }
+    v.push(Chip::Favourites);
+    v
+}
+
+/// FIX-1 #7: pressing a quick filter. Unwatched and Watched never combine (they used to AND to nothing).
+fn press_chip(f: &mut crate::api::Filters, c: Chip) {
+    match c {
+        Chip::All => (f.unplayed, f.played) = (false, false),
+        Chip::Unwatched => (f.unplayed, f.played) = (true, false),
+        Chip::Watched => (f.unplayed, f.played) = (false, true),
+        Chip::InProgress => f.resumable = !f.resumable,
+        Chip::Favourites => f.favourites = !f.favourites,
+    }
+}
+
+/// FIX-1 #7: what an empty filtered page names ("Watched, Favourites"), or None when nothing filters.
+fn filter_names(f: &crate::api::Filters, extra: &ExtraFilters) -> Option<String> {
+    let mut v: Vec<String> = vec![];
+    for c in [Chip::Unwatched, Chip::Watched, Chip::InProgress, Chip::Favourites] {
+        if c.on(f) {
+            v.push(c.label().to_string());
+        }
+    }
+    if f.unplayed && f.played {
+        // Saved before FIX-1: both on at once.
+        v.push("Unwatched + Watched".to_string());
+    }
+    if !extra.is_empty() {
+        v.push(extra.summary());
+    }
+    (!v.is_empty()).then(|| v.join(", "))
+}
 
 /// P-LIB-13: the jump bar's letters ('#' = names that do not start with a letter).
 const AZ: [char; 27] = [
@@ -210,6 +279,8 @@ pub struct Library {
     ctrl: Vec<Focus>,
     /// UX R2: the library opens on its first poster — set once the first section is drawn, unless a key came first.
     first_focus: bool,
+    /// FIX-1 #7: the empty filtered page's "Clear filters" button is the G_SECTIONS group this frame.
+    empty_clear: bool,
     items: Vec<Option<Item>>,
     total: usize,
     next_start: usize,
@@ -268,6 +339,7 @@ pub fn screen(view: Item) -> Box<dyn Screen> {
         focus: Focus { group: G_DROP, index: 0 },
         ctrl: vec![],
         first_focus: true,
+        empty_clear: false,
         groups: vec![],
         moving: None,
         drag: None,
@@ -520,14 +592,21 @@ impl Library {
         }
     }
 
+    fn chips(&self) -> Vec<Chip> {
+        chips_for(self.view.collection_type.as_deref())
+    }
+
     fn toggle_filter(&mut self, cx: &mut Cx, i: usize) {
-        match i {
-            0 => self.prefs.filters.unplayed = !self.prefs.filters.unplayed,
-            1 => self.prefs.filters.played = !self.prefs.filters.played,
-            2 => self.prefs.filters.resumable = !self.prefs.filters.resumable,
-            3 => self.prefs.filters.favourites = !self.prefs.filters.favourites,
-            _ => return,
-        }
+        let Some(&c) = self.chips().get(i) else { return };
+        press_chip(&mut self.prefs.filters, c);
+        self.persist(cx);
+        self.reload(cx);
+    }
+
+    /// FIX-1 #7: the empty page's "Clear filters" — every quick filter and the Filters… dialog's.
+    fn clear_all_filters(&mut self, cx: &mut Cx) {
+        self.prefs.filters = Default::default();
+        self.prefs.extra = ExtraFilters::default();
         self.persist(cx);
         self.reload(cx);
     }
@@ -1103,13 +1182,9 @@ impl Library {
         ui.add_space(t.gap / 3.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            let chips_on = [
-                self.prefs.filters.unplayed,
-                self.prefs.filters.played,
-                self.prefs.filters.resumable,
-                self.prefs.filters.favourites,
-            ];
-            let chip_labels: Vec<String> = CHIP_LABELS.iter().map(|s| s.to_string()).collect();
+            let chips = self.chips();
+            let chips_on: Vec<bool> = chips.iter().map(|c| c.on(&self.prefs.filters)).collect();
+            let chip_labels: Vec<String> = chips.iter().map(|c| c.label().to_string()).collect();
             let chips_out = widgets::chips(
                 ui,
                 t,
@@ -1147,6 +1222,31 @@ impl Library {
 
         // Loaded items grouped into sections (R-F2-1). Sections grow as later pages land.
         let sections = self.display_sections(&ordered);
+        // FIX-1 #7: a filtered library with nothing in it says which filter emptied it and offers to clear them.
+        self.empty_clear = false;
+        let loaded_all = self.total == 0 && !self.in_flight && self.started;
+        if sections.is_empty() && loaded_all {
+            if let Some(names) = filter_names(&self.prefs.filters, &self.prefs.extra) {
+                let what = match self.view.collection_type.as_deref() {
+                    Some("movies") => "films",
+                    Some("tvshows") => "shows",
+                    _ => "items",
+                };
+                at_library::empty_state(ui, t, "Nothing here", &format!("No {what} match {names}."));
+                let focused = self.focus.group == G_SECTIONS;
+                let r =
+                    parts::centered_row(ui, "fix1-clear", |ui| parts::button(ui, t, "Clear filters", focused, true));
+                groups.push(Group { len: 1, cols: 1, xs: vec![r.rect.center().x] });
+                if r.hovered() {
+                    *hovered = Some(Focus { group: G_SECTIONS, index: 0 });
+                }
+                self.empty_clear = true;
+                if r.clicked() {
+                    self.clear_all_filters(cx);
+                }
+                return None;
+            }
+        }
         let mode = self.mode();
         let editing = cx.admin && self.prefs.sort == SortBy::MyOrder && mode != ViewMode::List;
         self.az_on = self.prefs.sort == SortBy::Name && self.total > 0;
@@ -1463,11 +1563,15 @@ impl Screen for Library {
                     true
                 }
                 G_CHIPS => {
-                    let (f, ev) = widgets::chips_key(self.focus.index, CHIP_LABELS.len(), Key::Enter);
+                    let (f, ev) = widgets::chips_key(self.focus.index, self.chips().len(), Key::Enter);
                     self.focus.index = f;
                     if let Some(i) = ev {
                         self.toggle_filter(cx, i);
                     }
+                    true
+                }
+                G_SECTIONS if self.empty_clear => {
+                    self.clear_all_filters(cx);
                     true
                 }
                 _ => {
@@ -1485,7 +1589,7 @@ impl Screen for Library {
             }
             Key::Left | Key::Right => {
                 if self.focus.group == G_CHIPS {
-                    let (f, _) = widgets::chips_key(self.focus.index, CHIP_LABELS.len(), key);
+                    let (f, _) = widgets::chips_key(self.focus.index, self.chips().len(), key);
                     self.focus.index = f;
                 } else {
                     let next = self.nav_move(key);
@@ -1854,6 +1958,36 @@ fn list_rows(ui: &mut egui::Ui, cx: &mut Cx, items: &[Option<Item>], focus: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unwatched_and_watched_are_one_choice() {
+        let mut f = crate::api::Filters::default();
+        assert!(Chip::All.on(&f));
+        press_chip(&mut f, Chip::Unwatched);
+        press_chip(&mut f, Chip::Watched);
+        assert!(f.played && !f.unplayed, "Watched replaces Unwatched, never both");
+        assert!(Chip::Watched.on(&f) && !Chip::All.on(&f));
+        press_chip(&mut f, Chip::All);
+        assert!(!f.played && !f.unplayed);
+        press_chip(&mut f, Chip::Favourites);
+        press_chip(&mut f, Chip::Unwatched);
+        assert!(f.favourites && f.unplayed);
+    }
+
+    #[test]
+    fn shows_have_no_in_progress_chip() {
+        assert!(!chips_for(Some("tvshows")).contains(&Chip::InProgress));
+        assert!(chips_for(Some("movies")).contains(&Chip::InProgress));
+    }
+
+    #[test]
+    fn an_empty_page_names_its_filters() {
+        let mut f = crate::api::Filters::default();
+        assert_eq!(filter_names(&f, &ExtraFilters::default()), None);
+        press_chip(&mut f, Chip::Watched);
+        press_chip(&mut f, Chip::Favourites);
+        assert_eq!(filter_names(&f, &ExtraFilters::default()).as_deref(), Some("Watched, Favourites"));
+    }
 
     #[test]
     fn item_count_is_singular_for_one() {

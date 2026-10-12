@@ -25,10 +25,11 @@ key down
 key enter
 wait-screen movie
 idle
+# FIX-1 #14: for a viewer ••• is a menu (Mark watched, Favourites, Add to…, Media info, Copy link).
 key right 30
 idle
 key enter
-wait-screen more
 idle
+wait 400
 shot p-item-20-viewer
 quit

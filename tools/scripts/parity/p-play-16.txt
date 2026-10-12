@@ -31,6 +31,10 @@ idle
 key down
 key right
 key enter
+# FIX-1 #18: Enter on an episode opens its page; Play there
+wait-screen episode
+idle
+key enter
 wait-screen player
 wait 3000
 

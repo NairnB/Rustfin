@@ -73,6 +73,10 @@ enum Action {
     VersionPick(usize),
     // G7 (P-COLL-2/3/5): the "Add to…" menu.
     OpenAddTo,
+    // FIX-1 #14: the ••• menu (a popover) and its rows that are not buttons elsewhere
+    MoreMenu,
+    ShowInfo,
+    CopyLink,
     AddPick(AddAct),
 }
 
@@ -122,6 +126,12 @@ pub struct ItemScreen {
     audio_open: bool,
     subtitle_open: bool,
     pending_open: Option<String>,
+    // FIX-1 #14 / #4: the ••• popover, a jump to Information, a link to copy, and the toast after a toggle
+    more_open: bool,
+    info_jump: bool,
+    pending_copy: Option<String>,
+    toast_pending: Option<String>,
+    toast: Option<(String, f64)>,
     is_admin: bool,
     section: admin_actions::SectionMove,
     // F4 (R-F4-2): the place (library/collection id) this item page was opened from; "Position…" is hidden
@@ -186,6 +196,11 @@ pub fn screen_in(item: Item, place: Option<String>) -> Box<dyn Screen> {
                 audio_open: false,
                 subtitle_open: false,
                 pending_open: None,
+                more_open: false,
+                info_jump: false,
+                pending_copy: None,
+                toast_pending: None,
+                toast: None,
                 is_admin: false,
                 section: admin_actions::SectionMove::new(),
                 place,
@@ -235,6 +250,7 @@ impl ItemScreen {
             || self.position.open
             || self.story.open
             || self.add_open
+            || self.more_open
     }
 
     fn close_pickers(&mut self) {
@@ -245,6 +261,7 @@ impl ItemScreen {
         self.position.open = false;
         self.story.open = false;
         self.add_open = false;
+        self.more_open = false;
     }
 
     // G8 / P-ITEM-8: the Trailer button's target, local first.
@@ -352,7 +369,7 @@ impl ItemScreen {
         }
         v.push(("Add to…".to_string(), Action::OpenAddTo));
         v.push(("".to_string(), Action::ToggleFavorite));
-        v.push(("More…".to_string(), Action::OpenMore));
+        v.push(("More".to_string(), Action::MoreMenu));
         v
     }
 
@@ -375,13 +392,33 @@ impl ItemScreen {
                     Action::ToggleWatched => round(RoundIcon::Watched, played, &label),
                     Action::OpenVersion | Action::OpenAudio | Action::OpenSubtitles => ActionBtn::Menu(label.clone()),
                     Action::OpenAddTo => round(RoundIcon::Add, false, &label),
-                    Action::ToggleFavorite => round(RoundIcon::Favourite, fav, "Favourite"),
-                    Action::OpenMore => round(RoundIcon::More, false, &label),
+                    // FIX-1 #4: the caption says the state ("In Favourites") as well as the action
+                    Action::ToggleFavorite => {
+                        round(RoundIcon::Favourite, fav, if fav { "In Favourites" } else { "Add to Favourites" })
+                    }
+                    Action::MoreMenu => round(RoundIcon::More, false, &label),
                     _ => ActionBtn::Pill(label.clone()),
                 };
                 (b, a)
             })
             .collect()
+    }
+
+    /// FIX-1 #14: the ••• menu — the everyday actions in one place; admins also get the edit / identify screen.
+    fn more_entries(&self) -> Vec<(String, Action)> {
+        let played = self.current().user_data.as_ref().map(|u| u.played).unwrap_or(false);
+        let fav = self.current().user_data.as_ref().map(|u| u.is_favorite).unwrap_or(false);
+        let mut v = vec![
+            ((if played { "Mark as unwatched" } else { "Mark as watched" }).to_string(), Action::ToggleWatched),
+            ((if fav { "Remove from Favourites" } else { "Add to Favourites" }).to_string(), Action::ToggleFavorite),
+            ("Add to…".to_string(), Action::OpenAddTo),
+            ("Media info".to_string(), Action::ShowInfo),
+            ("Copy link".to_string(), Action::CopyLink),
+        ];
+        if self.is_admin {
+            v.push(("Edit, identify, refresh…".to_string(), Action::OpenMore));
+        }
+        v
     }
 
     /// G7: the rows of the "Add to…" menu at its current level.
@@ -400,6 +437,10 @@ impl ItemScreen {
                     }
                 }
                 v
+            }
+            // FIX-1 #9: with no playlists yet the only row is "New playlist…" (no dead end)
+            AddMode::Playlists if self.playlists.as_ref().is_some_and(|p| p.is_empty()) => {
+                vec![("New playlist…".to_string(), AddAct::NewPlaylist)]
             }
             AddMode::Playlists => self
                 .playlists
@@ -738,7 +779,11 @@ impl ItemScreen {
                 }
             }
             Action::PlayNext => self.play_next_episode(cx),
-            Action::ToggleWatched => self.toggle_watched(cx),
+            Action::ToggleWatched => {
+                let played = self.current().user_data.as_ref().map(|u| u.played).unwrap_or(false);
+                self.toast_pending = Some(if played { "Marked as unwatched" } else { "Marked as watched" }.to_string());
+                self.toggle_watched(cx)
+            }
             Action::OpenAudio => {
                 self.close_pickers();
                 self.audio_open = true;
@@ -851,8 +896,24 @@ impl ItemScreen {
             }
             // G4 (P-ITEM-17)
             Action::PlayChapter(s) => self.play_chapter(cx, s),
-            Action::ToggleFavorite => self.toggle_favorite(cx),
+            Action::ToggleFavorite => {
+                let fav = self.current().user_data.as_ref().map(|u| u.is_favorite).unwrap_or(false);
+                self.toast_pending =
+                    Some(if fav { "Removed from Favourites" } else { "Added to Favourites" }.to_string());
+                self.toggle_favorite(cx)
+            }
             Action::OpenMore => cx.push(admin_actions::more_screen(self.current().clone(), self.is_admin)),
+            Action::MoreMenu => {
+                self.close_pickers();
+                self.more_open = true;
+            }
+            Action::ShowInfo => self.info_jump = true,
+            Action::CopyLink => {
+                if let Some(c) = cx.client.as_ref() {
+                    self.pending_copy = Some(crate::api::item_edit::web_link(&c.base, &self.current().id, None));
+                    self.toast = Some(("Link copied".to_string(), cx.now));
+                }
+            }
             Action::OpenAddTo => self.open_add_menu(cx),
             Action::AddPick(a) => self.pick_add(cx, a),
         }
@@ -889,6 +950,16 @@ impl ItemScreen {
                 }
                 self.subtitle_open = false;
                 self.focus = Focus { group: G_BTN, index: self.subtitle_button_index() };
+            }
+            return true;
+        }
+        if self.focus.group == G_LIST && self.more_open {
+            let a = self.more_entries().get(self.focus.index).map(|(_, a)| *a);
+            self.close_pickers();
+            let idx = self.movie_buttons().iter().position(|(_, a)| matches!(a, Action::MoreMenu)).unwrap_or(0);
+            self.focus = Focus { group: G_BTN, index: idx };
+            if let Some(a) = a {
+                self.do_action(cx, a);
             }
             return true;
         }
@@ -1137,6 +1208,8 @@ impl ItemScreen {
                 None,
                 Action::OpenVersion,
             ))
+        } else if self.more_open {
+            Some((self.more_entries(), None, Action::MoreMenu))
         } else if self.section.open {
             let v = admin_actions::CHOICES
                 .iter()
@@ -1162,6 +1235,9 @@ impl ItemScreen {
                 }
                 if r.clicked() {
                     act = Some(entries[i].1);
+                    if self.more_open {
+                        self.close_pickers();
+                    }
                 }
             }
         } else if self.story.open {
@@ -1302,7 +1378,8 @@ impl ItemScreen {
         let top = ui.cursor().top();
         at::section_title(ui, t, "Information");
         at::info_section(ui, t, &cols, None);
-        if at::focus_moved(ui, egui::Id::new("item-info"), bring_in.then_some(0)) {
+        if std::mem::take(&mut self.info_jump) || at::focus_moved(ui, egui::Id::new("item-info"), bring_in.then_some(0))
+        {
             ui.scroll_to_rect(
                 egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), top), ui.cursor().left_top()),
                 None,
@@ -1931,6 +2008,15 @@ impl ItemScreen {
         if let Some(target) = open_chip_target {
             open_chip(cx, &target);
         }
+        if let Some(link) = self.pending_copy.take() {
+            ui.ctx().copy_text(link);
+        }
+        // FIX-1 #4: a short toast after a toggle ("Added to Favourites")
+        if let Some((msg, since)) = self.toast.clone() {
+            if at::toast(ui, t, &msg, cx.now - since) {
+                self.toast = None;
+            }
+        }
         if let Some(url) = open_url.or_else(|| self.pending_open.take()) {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
@@ -2042,7 +2128,10 @@ impl Screen for ItemScreen {
             "played" => {
                 let Ok(r) = payload.downcast::<Result<()>>() else { return };
                 match *r {
-                    Ok(()) => self.refresh(cx),
+                    Ok(()) => {
+                        self.toast = self.toast_pending.take().map(|m| (m, cx.now));
+                        self.refresh(cx)
+                    }
                     Err(ApiError::Unauthorized) => cx.signed_out(),
                     Err(e) => self.error = Some(e.to_string()),
                 }
@@ -2067,7 +2156,10 @@ impl Screen for ItemScreen {
             "favorite" => {
                 let Ok(r) = payload.downcast::<Result<()>>() else { return };
                 match *r {
-                    Ok(()) => self.refresh(cx),
+                    Ok(()) => {
+                        self.toast = self.toast_pending.take().map(|m| (m, cx.now));
+                        self.refresh(cx)
+                    }
                     Err(ApiError::Unauthorized) => cx.signed_out(),
                     Err(e) => self.error = Some(e.to_string()),
                 }

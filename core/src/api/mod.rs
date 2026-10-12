@@ -11,7 +11,7 @@ pub use trickplay::{TrickplayCell, TrickplayInfo};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 // TV web route: sync XHR stands in for ureq
@@ -1525,9 +1525,10 @@ impl Client {
     }
 
     /// D2 (Apple TV details hero): the item's title logo image, when it has one (no request; `width_px` bucketed).
+    /// FIX-1 #12: always PNG — a re-encoded JPEG loses the transparency and paints a black box behind the title.
     pub fn logo_url(&self, item: &Item, width_px: u32) -> Option<String> {
         let tag = item.image_tags.get("Logo")?;
-        Some(format!("{}/Items/{}/Images/Logo?maxWidth={width_px}&quality=90&tag={tag}", self.base, item.id))
+        Some(format!("{}/Items/{}/Images/Logo?maxWidth={width_px}&format=png&tag={tag}", self.base, item.id))
     }
 
     /// RR6 / P-ITEM-16: the other parts of a multi-part film (`GET /Videos/{id}/AdditionalParts`), in order.
@@ -1550,6 +1551,18 @@ impl Client {
         let v: serde_json::Value = self.get_json(&format!("/Items/{person_id}?userId={uid}"))?;
         let field = |k: &str| v.get(k).and_then(|d| d.as_str()).map(str::to_string).filter(|d| !d.is_empty());
         Ok((field("PremiereDate"), field("EndDate")))
+    }
+    /// FIX-1 #13: the second search when no title matches — films and shows whose plot, genres, tags or people
+    /// mention `term` (Jellyfin's `searchTerm` only looks at names). Fetches the film/show list with plots and
+    /// matches here (fine at home-library sizes). Also returns the most common genres, for the empty page.
+    pub fn search_text(&self, term: &str) -> Result<(Vec<Item>, Vec<String>)> {
+        let uid = self.user_id()?;
+        let path = format!(
+            "/Items?userId={uid}&Recursive=true&IncludeItemTypes=Movie,Series&Limit=3000&Fields={CARD_FIELDS},Overview,People"
+        );
+        let page: Page = self.get_json(&path)?;
+        let genres = top_genres(&page.items, 8);
+        Ok((text_matches(page.items, term), genres))
     }
 }
 
@@ -1806,4 +1819,35 @@ pub fn plan_from_json(raw: &serde_json::Value, base: &str, token: &str) -> Resul
             url
         });
     Ok(PlaybackPlan { info, transcoding_url, source_bitrate })
+}
+
+/// FIX-1 #13: items whose plot, genres, tags or people mention every word of `term` (case-insensitive), at most 30.
+pub fn text_matches(items: Vec<Item>, term: &str) -> Vec<Item> {
+    let words: Vec<String> = term.split_whitespace().map(|w| w.to_lowercase()).collect();
+    if words.is_empty() {
+        return vec![];
+    }
+    items
+        .into_iter()
+        .filter(|it| {
+            let mut hay = it.overview.clone().unwrap_or_default().to_lowercase();
+            for s in it.genres.iter().chain(it.tags.iter()).chain(it.people.iter().map(|p| &p.name)) {
+                hay.push(' ');
+                hay.push_str(&s.to_lowercase());
+            }
+            words.iter().all(|w| hay.contains(w.as_str()))
+        })
+        .take(30)
+        .collect()
+}
+
+/// FIX-1 #13: the `n` most common genres in `items`, most common first.
+pub fn top_genres(items: &[Item], n: usize) -> Vec<String> {
+    let mut count: HashMap<&str, usize> = HashMap::new();
+    for g in items.iter().flat_map(|i| i.genres.iter()) {
+        *count.entry(g.as_str()).or_default() += 1;
+    }
+    let mut v: Vec<(&str, usize)> = count.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    v.into_iter().take(n).map(|(g, _)| g.to_string()).collect()
 }

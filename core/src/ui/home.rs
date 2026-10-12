@@ -251,16 +251,25 @@ impl Home {
         let area = egui::Area::new(egui::Id::new("home-user-menu")).order(egui::Order::Foreground).fixed_pos(pos).show(
             ui.ctx(),
             |ui| {
-                ui.spacing_mut().item_spacing.y = t.gap / 6.0;
-                for (i, label) in USER_MENU.iter().enumerate() {
-                    let r = parts::button_width(ui, t, label, highlighted == i, false, w);
-                    if r.hovered() {
-                        hovered = Some(i);
-                    }
-                    if r.clicked() {
-                        clicked = Some(i);
-                    }
-                }
+                // FIX-1 #18: a dark material card behind the entries (pills alone floated over the backdrop).
+                egui::Frame::new()
+                    .fill(t.menu_fill)
+                    .corner_radius(t.menu_radius)
+                    .stroke(egui::Stroke::new(1.0, t.bar_stroke))
+                    .shadow(t.shadow(1.0))
+                    .inner_margin(egui::Margin::same(t.bar_inset as i8))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = t.gap / 6.0;
+                        for (i, label) in USER_MENU.iter().enumerate() {
+                            let r = parts::button_width(ui, t, label, highlighted == i, false, w);
+                            if r.hovered() {
+                                hovered = Some(i);
+                            }
+                            if r.clicked() {
+                                clicked = Some(i);
+                            }
+                        }
+                    });
             },
         );
         if let Some(i) = hovered {

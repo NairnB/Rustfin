@@ -1,0 +1,40 @@
+# FIX-1 #18 (r1-admin-rescan): Scan all ends with "Scan finished." (no "Scanning." forever). Admin (tester).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+click 130 1038
+idle
+click 380 939
+wait-screen settings
+idle
+key right 6
+key down 3
+key enter
+wait-screen admin
+idle
+key down 5
+key enter
+wait-screen libraries
+wait 1500
+idle
+key up
+key right
+key enter
+wait 1500
+shot fix1-18-scanning
+wait 33000
+idle
+shot fix1-18-finished
+quit

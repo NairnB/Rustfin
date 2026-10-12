@@ -25,7 +25,12 @@ key down
 key enter
 wait-screen movie
 idle
+# FIX-1 #14: ••• opens a menu; the admin screen is its last row ("Edit, identify, refresh…").
 key right 30
+idle
+key enter
+idle
+key down 6
 idle
 key enter
 wait-screen more
