@@ -38,6 +38,10 @@ wait 400
 shot p-play-8
 
 # Offset +0.1 twice → the value shows 0.2 s.
+# FIX-1 #5: offset is under "Subtitle options…", after the second-subtitles list (Off, German, English).
+key down 3
+key enter
+wait 300
 key down 3
 key right
 key enter

@@ -3,8 +3,8 @@
 use super::parts;
 use super::widgets;
 use crate::api::{
-    secs_to_ticks, ticks_to_secs, ApiError, Chapter, Item, ItemKind, MediaStream, PlaybackInfo, PlaybackPlan,
-    ProgressReport, Result, Segment, SegmentKind, StreamKind, TrickplayInfo,
+    image_width_bucket, secs_to_ticks, ticks_to_secs, ApiError, Chapter, ImageKind, Item, ItemKind, MediaStream,
+    PlaybackInfo, PlaybackPlan, ProgressReport, Result, Segment, SegmentKind, StreamKind, TrickplayInfo,
 };
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
@@ -16,6 +16,7 @@ use crate::playreq::build_plan;
 use crate::queue::Queue;
 use crate::repeat::{end_action, EndAction, Repeat};
 use crate::settings::SubPrefs;
+use crate::theme::{Theme, Weight};
 use std::any::Any;
 
 /// What the item page chose. `audio`/`subtitle` are Jellyfin `MediaStream.Index`es; `subtitle: Some(None)` = off,
@@ -103,18 +104,44 @@ impl Reporter {
 const G_BAR: usize = 0;
 const G_BTN: usize = 1;
 const G_VOL: usize = 2;
-/// UXP2: the audio list of the Audio & Subtitles panel (above the subtitle lists).
-const G_AUDIO: usize = 3;
-const G_LIST: usize = 4;
-const G_SUB_OFFSET: usize = 5;
-const G_SUB_POS: usize = 6;
-const G_SUB_SIZE: usize = 7;
-const G_SUB_FONT: usize = 8;
-const G_SUB_WEIGHT: usize = 9;
-const G_SUB_SHADOW: usize = 10;
-const G_SUB_TEXT: usize = 11;
-const G_SUB_BACK: usize = 12;
-const GROUP_COUNT: usize = 13;
+/// FIX-1 #5: the Audio | Subtitles segmented control at the top of the sheet.
+const G_TABS: usize = 3;
+/// UXP2: the audio list of the Audio & Subtitles sheet (its Audio tab).
+const G_AUDIO: usize = 4;
+const G_LIST: usize = 5;
+/// FIX-1 #5: the second-subtitles list (Subtitle options…).
+const G_SEC: usize = 6;
+const G_SUB_OFFSET: usize = 7;
+const G_SUB_POS: usize = 8;
+const G_SUB_SIZE: usize = 9;
+const G_SUB_FONT: usize = 10;
+const G_SUB_WEIGHT: usize = 11;
+const G_SUB_SHADOW: usize = 12;
+const G_SUB_TEXT: usize = 13;
+const G_SUB_BACK: usize = 14;
+const GROUP_COUNT: usize = 15;
+
+/// FIX-1 #5: which view of the Audio & Subtitles sheet is showing.
+const SUB_TAB_AUDIO: u8 = 0;
+const SUB_TAB_SUBS: u8 = 1;
+const SUB_TAB_OPTIONS: u8 = 2;
+
+/// FIX-1 #5: a row of the Subtitles list — a track (index into the subtitle entries, "Off" first), or the
+/// "Subtitle options…" row after the last track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetRow {
+    Track(usize),
+    Options,
+}
+
+/// FIX-1 #5: what row `i` of the Subtitles list is, with `tracks` entries before the options row.
+pub fn sheet_row(i: usize, tracks: usize) -> Option<SheetRow> {
+    match i.cmp(&tracks) {
+        std::cmp::Ordering::Less => Some(SheetRow::Track(i)),
+        std::cmp::Ordering::Equal => Some(SheetRow::Options),
+        std::cmp::Ordering::Greater => None,
+    }
+}
 
 /// One subtitle-panel focus group as drawn: (group, x of each entry, hovered entry, clicked entry).
 type PanelGroup = (usize, Vec<f32>, Option<usize>, Option<usize>);
@@ -160,6 +187,53 @@ pub fn quality_label(choice: Option<u32>, settings_kbps: u32) -> String {
 fn mbps(bps: f64) -> String {
     format!("{:.1} Mbit/s", bps / 1_000_000.0)
 }
+
+/// FIX-1 #6: an audio track's channel layout in words ("Mono", "Stereo", "5.1 Surround", "7.1 Surround").
+pub fn channel_words(s: &MediaStream) -> Option<String> {
+    let from_layout = s.channel_layout.as_deref().map(|l| l.to_lowercase()).and_then(|l| {
+        if l.starts_with("7.1") {
+            Some(8)
+        } else if l.starts_with("5.1") {
+            Some(6)
+        } else if l.contains("stereo") {
+            Some(2)
+        } else if l.contains("mono") {
+            Some(1)
+        } else {
+            None
+        }
+    });
+    Some(match s.channels.or(from_layout)? {
+        1 => "Mono".to_string(),
+        2 => "Stereo".to_string(),
+        6 => "5.1 Surround".to_string(),
+        8 => "7.1 Surround".to_string(),
+        n => format!("{n} channels"),
+    })
+}
+
+/// FIX-1 #6: the codec a person may know by name ("Dolby Digital", "DTS"), or its short name in capitals.
+pub fn codec_words(s: &MediaStream) -> Option<String> {
+    let c = s.codec.as_deref()?.to_lowercase();
+    Some(
+        match c.as_str() {
+            "ac3" => "Dolby Digital",
+            "eac3" => "Dolby Digital Plus",
+            "truehd" => "Dolby TrueHD",
+            "dts" => "DTS",
+            "aac" => "AAC",
+            "mp3" => "MP3",
+            "flac" => "FLAC",
+            "opus" => "Opus",
+            "vorbis" => "Vorbis",
+            _ => return Some(c.to_uppercase()),
+        }
+        .to_string(),
+    )
+}
+
+/// FIX-1 #1: seconds the start cover takes to fade into the first frame.
+const COVER_FADE: f64 = 0.4;
 
 /// G6 / P-PLAY-20: the label/value rows of the stats overlay. Rows whose value is unknown are left out
 /// (method is always there).
@@ -231,6 +305,8 @@ pub enum OsdAct {
     Seek(f64),
     /// Show the OSD, focus on the timeline.
     Wake,
+    /// FIX-1 #16: show the OSD with the button row focused (Down while hidden).
+    WakeButtons,
     HideOsd,
     Leave,
     /// Arrow keys move the focus.
@@ -247,7 +323,8 @@ pub fn osd_key(visible: bool, focus: OsdFocus, key: Key, skip_back: f64, skip_fo
     let seek = |k: Key| OsdAct::Seek(if k == Key::Left { -skip_back } else { skip_forward });
     match (visible, key) {
         (false, Key::Left | Key::Right) => seek(key),
-        (false, Key::Up | Key::Down | Key::Enter) => OsdAct::Wake,
+        (false, Key::Down) => OsdAct::WakeButtons,
+        (false, Key::Up | Key::Enter) => OsdAct::Wake,
         (false, Key::Back) => OsdAct::Leave,
         (true, Key::Back) => OsdAct::HideOsd,
         (true, Key::Left | Key::Right | Key::Up | Key::Down) if focus == OsdFocus::VolumeBar => {
@@ -257,6 +334,19 @@ pub fn osd_key(visible: bool, focus: OsdFocus, key: Key, skip_back: f64, skip_fo
         (true, Key::Left | Key::Right | Key::Up | Key::Down) => OsdAct::Move,
         (true, Key::Enter) => OsdAct::Activate,
         _ => OsdAct::None,
+    }
+}
+
+/// FIX-1 #3: seconds the OSD stays up when playback starts, so the title and tracks are seen.
+pub const OSD_START_SECS: f64 = 5.0;
+/// FIX-1 #16: seconds without input before the OSD hides while a button (not the timeline) has focus.
+pub const OSD_BUTTON_HOLD_SECS: f64 = 10.0;
+
+/// FIX-1 #3: the "what's playing" line under the title: the audio track, plus the subtitles when they are on.
+pub fn now_playing_line(audio: &str, subtitle: Option<&str>) -> String {
+    match subtitle {
+        Some(s) => format!("{audio} · {s} subtitles"),
+        None => audio.to_string(),
     }
 }
 
@@ -340,8 +430,14 @@ pub fn track_labels(streams: &[MediaStream]) -> Vec<String> {
         .zip(&base)
         .map(|(s, b)| {
             let twins: Vec<&MediaStream> = streams.iter().zip(&base).filter(|(_, o)| *o == b).map(|(t, _)| t).collect();
-            // Only say embedded / external when the twins really differ in that.
-            if twins.len() > 1 && twins.iter().any(|t| t.is_external != s.is_external) {
+            // FIX-1 #6: tell twins apart by what really differs, in plain words: the channel layout first
+            // ("English — 5.1 Surround" / "English — Stereo"), then the codec ("Dolby Digital"), then where it lives.
+            let differ = |f: &dyn Fn(&MediaStream) -> Option<String>| twins.iter().any(|t| f(t) != f(s));
+            if twins.len() > 1 && differ(&channel_words) && channel_words(s).is_some() {
+                format!("{b} — {}", channel_words(s).unwrap_or_default())
+            } else if twins.len() > 1 && differ(&codec_words) && codec_words(s).is_some() {
+                format!("{b} — {}", codec_words(s).unwrap_or_default())
+            } else if twins.len() > 1 && twins.iter().any(|t| t.is_external != s.is_external) {
                 format!("{b} ({})", if s.is_external { "external" } else { "embedded" })
             } else {
                 b.clone()
@@ -431,6 +527,8 @@ pub struct PlayerScreen {
     sub_lifted: bool,
     /// UXP2: Back hid the OSD while paused (a paused player otherwise keeps it up).
     osd_dismissed: bool,
+    /// FIX-1 #3: the OSD is up only because playback just started; keys act as if it were hidden.
+    osd_auto: bool,
     // G6: quality (max kbps chosen here; None = the Settings cap), speed, stats, transcoding state
     quality_open: bool,
     speed_open: bool,
@@ -463,6 +561,12 @@ pub struct PlayerScreen {
     queue_sel: usize,
     /// Scroll the focused queue row into view on the next frame (set by keys and on open).
     queue_scroll: bool,
+    /// FIX-1 #1: when the first video frame showed (the start cover fades out from then).
+    first_frame_at: Option<f64>,
+    /// D4: the focus the Audio & Subtitles card last scrolled to (scroll again when it moves).
+    panel_seen: Option<Focus>,
+    /// FIX-1 #5: the sheet's view (SUB_TAB_*).
+    sub_tab: u8,
     up_next: Option<Item>,
     up_next_deadline: Option<f64>,
     handling_end: bool,
@@ -533,6 +637,7 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         more_open: false,
         sub_lifted: false,
         osd_dismissed: false,
+        osd_auto: false,
         quality_open: false,
         speed_open: false,
         aspect_open: false,
@@ -557,6 +662,9 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         queue_open: false,
         queue_sel: 0,
         queue_scroll: false,
+        first_frame_at: None,
+        panel_seen: None,
+        sub_tab: SUB_TAB_SUBS,
         up_next: None,
         up_next_deadline: None,
         handling_end: false,
@@ -659,6 +767,23 @@ impl PlayerScreen {
 
     fn repeat_labels(&self) -> Vec<String> {
         Repeat::ALL.iter().map(|r| r.label().to_string()).collect()
+    }
+
+    /// FIX-1 #16: the OSD waits longer before hiding while a button has focus.
+    fn osd_hide_secs(&self, t: &Theme) -> f64 {
+        if self.focus.group == G_BTN {
+            OSD_BUTTON_HOLD_SECS
+        } else {
+            t.osd_hide_after as f64
+        }
+    }
+
+    /// FIX-1 #3: subtitles by name when they are on.
+    fn subtitles_on(&self) -> Option<String> {
+        match self.subtitle {
+            Some(Some(_)) => Some(self.subtitle_label()),
+            _ => None,
+        }
     }
 
     /// UXP2: the audio track playing now, by name (the choice, else the source's default).
@@ -874,9 +999,11 @@ impl PlayerScreen {
                 self.sub_delay = 0.0;
                 self.sub_style = cx.settings.subtitles.style.clone();
                 self.sec_subtitle = None;
-                self.osd_visible = false;
-                self.osd_last_input = cx.now;
-                self.focus = Focus { group: G_BTN, index: B_PLAY };
+                // FIX-1 #3: the OSD shows what's playing for OSD_START_SECS, timeline focused.
+                self.osd_visible = true;
+                self.osd_last_input = cx.now + OSD_START_SECS - cx.theme.osd_hide_after as f64;
+                self.osd_auto = true;
+                self.focus = Focus { group: G_BAR, index: 0 };
                 cx.player.load(&req);
                 cx.player.set_sub_style(&self.sub_style);
                 cx.player.set_sub_delay(0.0);
@@ -1274,20 +1401,32 @@ impl PlayerScreen {
     fn sub_choice(&mut self, cx: &mut Cx, group: usize, i: usize) {
         let delta = if i == 0 { -1.0 } else { 1.0 };
         match group {
-            // Two columns side by side: even entries pick the primary track, odd ones the secondary.
             G_AUDIO => {
                 if let Some(idx) = self.audio_entries().get(i).map(|(_, x)| *x) {
                     self.pick_audio(cx, idx);
                 }
                 return;
             }
+            G_TABS => {
+                self.sub_tab = if i == 0 { SUB_TAB_AUDIO } else { SUB_TAB_SUBS };
+                return;
+            }
             G_LIST => {
-                if let Some(v) = self.subtitle_entries().get(i / 2).map(|(_, v)| *v) {
-                    if i.is_multiple_of(2) {
-                        self.pick_subtitle(cx, v);
-                    } else {
-                        self.pick_secondary(cx, v);
+                let entries = self.subtitle_entries();
+                match sheet_row(i, entries.len()) {
+                    Some(SheetRow::Track(k)) => self.pick_subtitle(cx, entries[k].1),
+                    Some(SheetRow::Options) => {
+                        self.sub_tab = SUB_TAB_OPTIONS;
+                        let at = entries.iter().position(|(_, v)| *v == self.sec_subtitle).unwrap_or(0);
+                        self.focus = Focus { group: G_SEC, index: at };
                     }
+                    None => {}
+                }
+                return;
+            }
+            G_SEC => {
+                if let Some(v) = self.subtitle_entries().get(i).map(|(_, v)| *v) {
+                    self.pick_secondary(cx, v);
                 }
                 return;
             }
@@ -1335,8 +1474,9 @@ impl PlayerScreen {
             Action::OpenAudioSubs => {
                 self.close_menus();
                 self.subtitle_open = true;
+                self.sub_tab = SUB_TAB_SUBS;
                 let at = self.subtitle_entries().iter().position(|(_, v)| Some(*v) == self.subtitle).unwrap_or(0);
-                self.focus = Focus { group: G_LIST, index: at * 2 };
+                self.focus = Focus { group: G_LIST, index: at };
                 self.osd_visible = true;
                 self.osd_last_input = cx.now;
             }
@@ -1516,10 +1656,41 @@ impl PlayerScreen {
     }
 
     fn draw_loading(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
+        self.draw_cover(ui, cx, 1.0);
+    }
+
+    /// FIX-1 #1: the start cover — the item's backdrop dimmed full screen, its title centred and a spinner under
+    /// it, at opacity `a` (it cross-fades into the video once the first frame shows).
+    fn draw_cover(&mut self, ui: &mut egui::Ui, cx: &mut Cx, a: f32) {
         let t = cx.theme;
         let screen = ui.ctx().screen_rect();
-        ui.painter().rect_filled(screen, 0.0, t.scrim);
-        ui.painter().text(screen.center(), egui::Align2::CENTER_CENTER, "Loading…", t.font(t.body_size), t.muted);
+        let p = ui.painter();
+        p.rect_filled(screen, 0.0, t.bg.gamma_multiply(a));
+        let ppp = ui.ctx().pixels_per_point();
+        let url = cx
+            .client
+            .as_ref()
+            .and_then(|c| c.image_url(&self.item, ImageKind::Backdrop, image_width_bucket(screen.width(), ppp)));
+        if let Some(tex) = url.and_then(|u| cx.images.get(&u)) {
+            let tint = egui::Color32::WHITE.gamma_multiply(a * 0.45);
+            p.image(tex, screen, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
+        }
+        let title = self.req.as_ref().map(|r| r.title.clone()).unwrap_or_else(|| self.item.name.clone());
+        let g = ui.fonts(|f| f.layout_no_wrap(title, t.font_w(t.title_size, Weight::Bold), t.text));
+        let g = if g.size().x > screen.width() - 2.0 * t.margin {
+            let mut job = (*g.job).clone();
+            job.wrap = egui::text::TextWrapping::truncate_at_width(screen.width() - 2.0 * t.margin);
+            ui.fonts(|f| f.layout_job(job))
+        } else {
+            g
+        };
+        let at = screen.center() - egui::vec2(g.size().x / 2.0, g.size().y);
+        p.galley(at, g, t.text.gamma_multiply(a));
+        if a > 0.5 {
+            let sr =
+                egui::Rect::from_center_size(screen.center() + egui::vec2(0.0, t.gap * 1.5), egui::vec2(t.gap, t.gap));
+            ui.put(sr, egui::Spinner::new().size(t.gap).color(t.text));
+        }
     }
 
     fn draw_osd(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
@@ -1549,28 +1720,37 @@ impl PlayerScreen {
         let focus_btn_index = (self.focus.group == G_BTN).then_some(self.focus.index);
         let focus_vol = self.focus.group == G_VOL;
 
+        // D4 (Apple TV look): no boxes — the picture darkens towards the top and bottom edges instead.
+        let shade = t.hero_fade_h * 0.75;
+        shade_rect(ui, egui::Rect::from_min_size(screen.min, egui::vec2(screen.width(), shade)), t.scrim, true);
         // Title, top-left.
-        let title_rect = egui::Rect::from_min_size(
-            egui::pos2(screen.left() + t.margin, screen.top() + t.margin),
-            egui::vec2(content_w, t.title_size + t.gap / 2.0),
-        );
-        ui.painter().rect_filled(title_rect, t.radius, t.scrim);
-        ui.painter().text(
-            title_rect.min + egui::vec2(t.gap / 2.0, t.gap / 4.0),
+        let title_g = ui.fonts(|f| f.layout_no_wrap(title, t.font_w(t.title_size, Weight::Bold), t.text));
+        let title_h = title_g.size().y;
+        let clip = ui.painter().with_clip_rect(screen.shrink(t.margin));
+        clip.galley(egui::pos2(screen.left() + t.margin, screen.top() + t.margin), title_g, t.text);
+        // FIX-1 #3: what's playing — audio track, and the subtitles when on.
+        let line = now_playing_line(&self.audio_label(), self.subtitles_on().as_deref());
+        clip.text(
+            egui::pos2(screen.left() + t.margin, screen.top() + t.margin + title_h + t.gap / 4.0),
             egui::Align2::LEFT_TOP,
-            title,
-            t.font(t.title_size),
-            t.text,
+            line,
+            t.font_w(t.body_size, Weight::Medium),
+            t.muted,
         );
 
-        // Bottom bar: seek bar row, buttons row, then the volume row.
+        // Bottom: scrubber with times under it, the button row, then the volume row.
         let btn_h = t.button_h;
         let bottom_h = btn_h * 3.0 + t.gap * 2.0;
         let bottom_rect = egui::Rect::from_min_size(
             egui::pos2(screen.left() + t.margin, screen.bottom() - t.margin - bottom_h),
             egui::vec2(content_w, bottom_h),
         );
-        ui.painter().rect_filled(bottom_rect, t.radius, t.scrim);
+        shade_rect(
+            ui,
+            egui::Rect::from_min_max(egui::pos2(screen.left(), bottom_rect.top() - shade), screen.max),
+            t.scrim,
+            false,
+        );
 
         let mut bar_xs = vec![];
         let mut seek_click: Option<f32> = None;
@@ -1584,28 +1764,35 @@ impl PlayerScreen {
         let mut vol_hovered: Option<usize> = None;
 
         {
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bottom_rect.shrink(t.gap / 2.0)));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bottom_rect));
+            // Elapsed on the left, time left on the right, both under the bar (as on Apple TV).
             let pos_label = parts::clock(pos);
-            let dur_label = parts::clock(dur);
-            let pos_w = child.fonts(|f| f.layout_no_wrap(pos_label.clone(), t.font(t.body_size), t.text).size().x);
-            let dur_w = child.fonts(|f| f.layout_no_wrap(dur_label.clone(), t.font(t.body_size), t.text).size().x);
-            let bar_w = (bottom_rect.width() - t.gap - pos_w - dur_w - t.gap).max(0.0);
+            let dur_label = format!("-{}", parts::clock((dur - pos).max(0.0)));
+            let bar_w = bottom_rect.width();
 
-            child.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0; // bar_w accounts for every gap itself
-                ui.label(egui::RichText::new(pos_label).size(t.body_size).color(t.text));
-                ui.add_space(t.gap / 2.0);
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(bar_w, btn_h), egui::Sense::click());
+            child.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(bar_w, btn_h * 0.6), egui::Sense::click());
+                // A rounded track that thickens and grows a knob when focused.
+                let a = widgets::focus_amount(ui, t, ui.id().with("d4-scrub"), focus_bar);
+                let half = t.progress_h * (1.0 + a);
                 let bar = egui::Rect::from_min_max(
-                    egui::pos2(rect.left(), rect.center().y - t.progress_h),
-                    egui::pos2(rect.right(), rect.center().y + t.progress_h),
+                    egui::pos2(rect.left(), rect.center().y - half),
+                    egui::pos2(rect.right(), rect.center().y + half),
                 );
-                ui.painter().rect_filled(bar, 0.0, t.progress_track);
+                ui.painter().rect_filled(bar, half, t.progress_track);
                 let mut done = bar;
                 done.set_right(bar.left() + bar.width() * frac);
-                ui.painter().rect_filled(done, 0.0, t.progress);
-                if focus_bar {
-                    parts::focus_ring(ui, t, rect);
+                ui.painter().rect_filled(done, half, t.progress);
+                if a > 0.01 {
+                    let knob = egui::pos2(done.right(), bar.center().y);
+                    ui.painter().add(
+                        t.shadow(a).as_shape(
+                            egui::Rect::from_center_size(knob, egui::vec2(half * 4.0, half * 4.0)),
+                            half * 2.0,
+                        ),
+                    );
+                    ui.painter().circle_filled(knob, half * 2.0 * a, t.focus_fill);
                 }
                 bar_xs.push(rect.center().x);
                 bar_rect = rect;
@@ -1617,8 +1804,10 @@ impl PlayerScreen {
                         seek_click = Some(((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
                     }
                 }
-                ui.add_space(t.gap / 2.0);
-                ui.label(egui::RichText::new(dur_label).size(t.body_size).color(t.muted));
+                let times = ui.allocate_exact_size(egui::vec2(bar_w, t.body_size * 1.4), egui::Sense::hover()).0;
+                let font = t.font_w(t.small_size, Weight::Medium);
+                ui.painter().text(times.left_center(), egui::Align2::LEFT_CENTER, pos_label, font.clone(), t.text);
+                ui.painter().text(times.right_center(), egui::Align2::RIGHT_CENTER, dur_label, font, t.muted);
             });
 
             child.add_space(t.gap / 2.0);
@@ -1626,7 +1815,7 @@ impl PlayerScreen {
                 ui.spacing_mut().item_spacing.x = t.gap / 2.0;
                 for (i, (label, _)) in buttons.iter().enumerate() {
                     let focused = focus_btn_index == Some(i);
-                    let r = parts::button(ui, t, label, focused, i == B_PLAY);
+                    let r = widgets::pill_button(ui, t, label, focused, false);
                     btn_xs.push(r.rect.center().x);
                     if r.hovered() {
                         btn_hovered = Some(i);
@@ -1642,7 +1831,7 @@ impl PlayerScreen {
                 ui.spacing_mut().item_spacing.x = t.gap / 2.0;
                 let mute_label = if self.muted { "Unmute" } else { "Mute" };
                 let mute_focused = focus_vol && self.focus.index == B_VOL_MUTE;
-                let r = parts::button(ui, t, mute_label, mute_focused, false);
+                let r = widgets::pill_button(ui, t, mute_label, mute_focused, false);
                 vol_xs.push(r.rect.center().x);
                 if r.hovered() {
                     vol_hovered = Some(B_VOL_MUTE);
@@ -1658,13 +1847,19 @@ impl PlayerScreen {
                     egui::pos2(vrect.left(), vrect.center().y - t.progress_h),
                     egui::pos2(vrect.right(), vrect.center().y + t.progress_h),
                 );
-                ui.painter().rect_filled(vbar, 0.0, t.progress_track);
+                let vol_bar_focused = focus_vol && self.focus.index == B_VOL_BAR;
+                let va = widgets::focus_amount(ui, t, ui.id().with("d4-vol"), vol_bar_focused);
+                let vbar = vbar.expand2(egui::vec2(0.0, t.progress_h * va));
+                ui.painter().rect_filled(vbar, vbar.height() / 2.0, t.progress_track);
                 let mut vdone = vbar;
                 vdone.set_right(vbar.left() + vbar.width() * self.volume);
-                ui.painter().rect_filled(vdone, 0.0, t.progress);
-                let vol_bar_focused = focus_vol && self.focus.index == B_VOL_BAR;
-                if vol_bar_focused {
-                    parts::focus_ring(ui, t, vrect);
+                ui.painter().rect_filled(vdone, vbar.height() / 2.0, t.progress);
+                if va > 0.01 {
+                    ui.painter().circle_filled(
+                        egui::pos2(vdone.right(), vbar.center().y),
+                        vbar.height() * va,
+                        t.focus_fill,
+                    );
                 }
                 vol_xs.push(vrect.center().x);
                 if vresp.hovered() {
@@ -1678,7 +1873,7 @@ impl PlayerScreen {
                 }
                 ui.label(egui::RichText::new(pct_label).size(t.body_size).color(t.muted));
                 if has_queue {
-                    let r = parts::button(ui, t, "Queue", focus_vol && self.focus.index == B_VOL_QUEUE, false);
+                    let r = widgets::pill_button(ui, t, "Queue", focus_vol && self.focus.index == B_VOL_QUEUE, false);
                     vol_xs.push(r.rect.center().x);
                     if r.hovered() {
                         vol_hovered = Some(B_VOL_QUEUE);
@@ -1758,15 +1953,15 @@ impl PlayerScreen {
         let x = (bar.left() + bar.width() * frac - size.x / 2.0)
             .clamp(screen.left() + t.margin, (screen.right() - t.margin - size.x).max(screen.left() + t.margin));
         let rect = egui::Rect::from_min_size(egui::pos2(x, bottom - t.gap - size.y), size);
-        ui.painter().rect_filled(rect.expand(t.gap / 4.0), t.radius, t.scrim);
-        ui.painter().image(tex, rect, uv, egui::Color32::WHITE);
-        ui.painter().text(
-            egui::pos2(rect.center().x, rect.bottom() - t.gap / 4.0),
-            egui::Align2::CENTER_BOTTOM,
-            parts::clock(secs),
-            t.font(t.body_size),
-            t.text,
+        ui.painter().add(t.shadow(1.0).as_shape(rect, t.card_radius));
+        egui::Image::new((tex, size)).uv(uv).corner_radius(t.card_radius).paint_at(ui, rect);
+        let g = ui.fonts(|f| f.layout_no_wrap(parts::clock(secs), t.font_w(t.small_size, Weight::SemiBold), t.text));
+        let chip = egui::Rect::from_center_size(
+            egui::pos2(rect.center().x, rect.bottom() - g.size().y),
+            g.size() + egui::vec2(t.gap / 2.0, t.gap / 4.0),
         );
+        ui.painter().rect_filled(chip, chip.height() / 2.0, t.bar_fill);
+        ui.painter().galley(chip.center() - g.size() / 2.0, g, t.text);
     }
 
     fn draw_picker(&mut self, ui: &mut egui::Ui, cx: &mut Cx) -> (Vec<f32>, Option<usize>, Option<Action>) {
@@ -1795,14 +1990,28 @@ impl PlayerScreen {
         let mut xs = vec![];
         let mut hovered = None;
         let mut clicked = None;
-        let area = egui::Area::new(egui::Id::new("player-picker"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground);
-        area.show(ui.ctx(), |ui| {
-            ui.vertical_centered(|ui| {
+        let heading = if self.more_open {
+            "More"
+        } else if self.quality_open {
+            "Quality"
+        } else if self.speed_open {
+            "Speed"
+        } else if self.aspect_open {
+            "Aspect ratio"
+        } else if self.repeat_open {
+            "Repeat"
+        } else {
+            "Chapters"
+        };
+        let max_h = screen.height() - 2.0 * t.margin;
+        card(ui.ctx(), t, "player-picker", heading, t.dropdown_w + 2.0 * t.dialog_pad, max_h, |ui| {
+            egui::ScrollArea::vertical().max_height(max_h - t.title_size * 2.0).show(ui, |ui| {
                 for (i, label) in labels.iter().enumerate() {
                     let focused = focus_list_index == Some(i);
-                    let r = parts::button(ui, t, label, focused, false);
+                    let r = widgets::pill_button_width(ui, t, label, focused, false, t.dropdown_w);
+                    if focused {
+                        ui.scroll_to_rect(r.rect, None);
+                    }
                     xs.push(r.rect.center().x);
                     if r.hovered() {
                         hovered = Some(i);
@@ -1859,7 +2068,7 @@ impl PlayerScreen {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-t.margin, t.margin))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::NONE.fill(t.surface).corner_radius(t.radius).inner_margin(t.gap).show(ui, |ui| {
+                card_frame(t).show(ui, |ui| {
                     ui.set_width(t.queue_w);
                     ui.set_height(panel_h);
                     parts::heading(ui, t, &format!("Queue · {} of {}", q.current_index() + 1, q.len()));
@@ -1867,7 +2076,7 @@ impl PlayerScreen {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = t.gap / 2.0;
                         for (i, (label, _)) in acts.iter().enumerate() {
-                            let r = parts::button(ui, t, label, focus.group == G_BTN && focus.index == i, false);
+                            let r = widgets::pill_button(ui, t, label, focus.group == G_BTN && focus.index == i, false);
                             act_xs.push(r.rect.center().x);
                             if r.hovered() {
                                 act_hover = Some(i);
@@ -1886,10 +2095,17 @@ impl PlayerScreen {
                                 egui::Sense::click(),
                             );
                             let current = i == q.current_index();
-                            let ink = if q.is_played(i) { t.muted } else { t.text };
-                            if current || resp.hovered() {
-                                ui.painter().rect_filled(rect, t.radius, t.surface_hi);
-                            }
+                            let focused = focus.group == G_LIST && focus.index == i;
+                            let a = widgets::focus_amount(ui, t, resp.id, focused);
+                            let rest = if current || resp.hovered() { t.glass } else { egui::Color32::TRANSPARENT };
+                            let plate_ink = widgets::plate(ui, t, rect, t.field_radius, rest, a, 1.0);
+                            let ink = if a > 0.5 {
+                                plate_ink
+                            } else if q.is_played(i) {
+                                t.muted
+                            } else {
+                                t.text
+                            };
                             let label =
                                 if current { format!("▶ {}", queue_row_label(item)) } else { queue_row_label(item) };
                             ui.painter().with_clip_rect(rect).text(
@@ -1899,12 +2115,8 @@ impl PlayerScreen {
                                 t.font(t.body_size),
                                 ink,
                             );
-                            let focused = focus.group == G_LIST && focus.index == i;
-                            if focused {
-                                parts::focus_ring(ui, t, rect);
-                                if scroll {
-                                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                                }
+                            if focused && scroll {
+                                ui.scroll_to_rect(rect, Some(egui::Align::Center));
                             }
                             row_xs.push(rect.center().x);
                             if resp.hovered() {
@@ -1937,13 +2149,14 @@ impl PlayerScreen {
         }
     }
 
-    /// The subtitle panel (P-PLAY-6/7/8/9): primary and secondary track lists, sync offset, size, position,
-    /// font, weight, shadow, text colour and background colour. Fills the subtitle focus groups
-    /// (G_LIST … G_SUB_BACK) and applies hover/click.
+    /// FIX-1 #5: the Audio & Subtitles sheet (P-PLAY-6/7/8/9), tvOS style: a card along the bottom with an
+    /// **Audio | Subtitles** segmented control and one scrolling list per tab (✔ on the current track). The
+    /// Subtitles list ends with "Subtitle options…", which opens the second subtitles, offset, position and style.
+    /// Fills the sheet's focus groups (G_TABS … G_SUB_BACK) and applies hover/click.
     fn draw_sub_panel(&mut self, ui: &mut egui::Ui, cx: &mut Cx, groups: &mut [Group]) {
         let t = cx.theme;
         let screen = ui.ctx().screen_rect();
-        ui.painter().rect_filled(screen, 0.0, t.scrim);
+        ui.painter().rect_filled(screen, 0.0, t.dim_scrim);
 
         let entries = self.subtitle_entries();
         let audio = self.audio_entries();
@@ -1982,138 +2195,173 @@ impl PlayerScreen {
 
         // (group, xs, hovered, clicked) per focus group, filled while drawing.
         let mut found: Vec<PanelGroup> = vec![];
-
-        let area = egui::Area::new(egui::Id::new("player-sub-panel"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground);
-        area.show(ui.ctx(), |ui| {
-            ui.vertical_centered(|ui| {
-                parts::heading(ui, t, "Audio & Subtitles");
-                ui.add_space(t.gap / 3.0);
-                parts::muted(ui, t, "Audio");
-                let (mut axs, mut ahover, mut aclick) = (vec![], None, None);
-                for (i, (label, idx)) in audio.iter().enumerate() {
-                    let focused = focus.group == G_AUDIO && focus.index == i;
-                    let label = if audio_now == Some(*idx) { format!("✔ {label}") } else { label.clone() };
-                    let r = parts::button_width(ui, t, &label, focused, false, t.dropdown_w);
-                    axs.push(r.rect.center().x);
-                    if r.hovered() {
-                        ahover = Some(i);
-                    }
-                    if r.clicked() {
-                        aclick = Some(i);
-                    }
-                    ui.add_space(t.gap / 3.0);
-                }
-                found.push((G_AUDIO, axs, ahover, aclick));
-                ui.add_space(t.gap / 3.0);
-                // Two lists side by side: the primary track, and the secondary one shown above it.
-                let mut cols: [Vec<(f32, bool, bool)>; 2] = [vec![], vec![]];
-                ui.horizontal(|ui| {
-                    for (c, (title, current)) in
-                        [("Primary", pri_idx), ("Secondary", Some(sec_idx))].into_iter().enumerate()
-                    {
-                        ui.vertical(|ui| {
-                            parts::muted(ui, t, title);
-                            for (i, (label, _)) in entries.iter().enumerate() {
-                                let focused = focus.group == G_LIST && focus.index == i * 2 + c;
-                                let label = if current == Some(i) { format!("✔ {label}") } else { label.clone() };
-                                let r = parts::button_width(ui, t, &label, focused, false, t.dropdown_w);
-                                cols[c].push((r.rect.center().x, r.hovered(), r.clicked()));
-                                ui.add_space(t.gap / 3.0);
+        let tab = self.sub_tab;
+        let scroll_now = self.panel_seen != Some(focus);
+        self.panel_seen = Some(focus);
+        let reveal = |ui: &mut egui::Ui, r: egui::Rect, focused: bool| {
+            if focused && scroll_now {
+                ui.scroll_to_rect(r, Some(egui::Align::Center));
+            }
+        };
+        let card_w = t.player_panel_w.min(screen.width() - 2.0 * t.margin);
+        let inner_w = card_w - 2.0 * t.dialog_pad;
+        // The sheet sits on the bottom margin and never reaches above the top margin.
+        let list_h = if tab == SUB_TAB_OPTIONS { screen.height() - 4.0 * t.margin } else { screen.height() / 2.0 };
+        // The list's height is set from its rows (not remembered from the other tab), up to `list_h`.
+        let rows = match tab {
+            SUB_TAB_AUDIO => audio.len(),
+            SUB_TAB_SUBS => entries.len() + 1,
+            _ => usize::MAX,
+        };
+        let list_h = (rows as f32 * (t.button_h + t.gap / 4.0)).min(list_h);
+        egui::Area::new(egui::Id::new("player-sub-panel"))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -t.margin))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                card_frame(t).show(ui, |ui| {
+                    ui.set_width(inner_w);
+                    let labels = ["Audio".to_string(), "Subtitles".to_string()];
+                    let shown = if tab == SUB_TAB_AUDIO { 0 } else { 1 };
+                    let out = widgets::tabs(ui, t, &labels, shown, (focus.group == G_TABS).then_some(focus.index));
+                    found.push((G_TABS, out.xs, out.hovered, out.clicked));
+                    ui.add_space(t.gap / 2.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt(("player-sheet", tab))
+                        .max_height(list_h)
+                        .min_scrolled_height(list_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = t.gap / 4.0;
+                            let mut list =
+                                |ui: &mut egui::Ui, group: usize, rows: Vec<String>, current: Option<usize>| {
+                                    let (mut xs, mut hover, mut click) = (vec![], None, None);
+                                    for (i, label) in rows.iter().enumerate() {
+                                        let focused = focus.group == group && focus.index == i;
+                                        let label =
+                                            if current == Some(i) { format!("✔ {label}") } else { label.clone() };
+                                        let r = widgets::pill_button_width(ui, t, &label, focused, false, inner_w);
+                                        reveal(ui, r.rect, focused);
+                                        xs.push(r.rect.center().x);
+                                        if r.hovered() {
+                                            hover = Some(i);
+                                        }
+                                        if r.clicked() {
+                                            click = Some(i);
+                                        }
+                                    }
+                                    found.push((group, xs, hover, click));
+                                };
+                            match tab {
+                                SUB_TAB_AUDIO => {
+                                    let rows = audio.iter().map(|(l, _)| l.clone()).collect();
+                                    list(ui, G_AUDIO, rows, audio.iter().position(|(_, i)| Some(*i) == audio_now));
+                                }
+                                SUB_TAB_SUBS => {
+                                    let mut rows: Vec<String> = entries.iter().map(|(l, _)| l.clone()).collect();
+                                    rows.push("Subtitle options…".to_string());
+                                    list(ui, G_LIST, rows, pri_idx);
+                                }
+                                _ => {
+                                    section(ui, t, "Second subtitles");
+                                    let rows = entries.iter().map(|(l, _)| l.clone()).collect();
+                                    list(ui, G_SEC, rows, Some(sec_idx));
+                                    section(ui, t, "Timing");
+                                    for (group, label, value) in [
+                                        (G_SUB_OFFSET, "Offset", off_label.clone()),
+                                        (G_SUB_POS, "Position", pos_label.clone()),
+                                    ] {
+                                        let mut xs = vec![];
+                                        let mut hover = None;
+                                        let mut click = None;
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = t.gap / 2.0;
+                                            row_label(ui, t, label, t.button_h);
+                                            for (k, sign) in ["−", "+"].into_iter().enumerate() {
+                                                let focused = focus.group == group && focus.index == k;
+                                                let r = widgets::pill_button_width(
+                                                    ui,
+                                                    t,
+                                                    sign,
+                                                    focused,
+                                                    false,
+                                                    t.button_h * 1.4,
+                                                );
+                                                reveal(ui, r.rect, focused);
+                                                xs.push(r.rect.center().x);
+                                                if r.hovered() {
+                                                    hover = Some(k);
+                                                }
+                                                if r.clicked() {
+                                                    click = Some(k);
+                                                }
+                                                if k == 0 {
+                                                    let g = ui.fonts(|f| {
+                                                        f.layout_no_wrap(
+                                                            value.clone(),
+                                                            t.font_w(t.body_size, Weight::SemiBold),
+                                                            t.text,
+                                                        )
+                                                    });
+                                                    let (vr, _) = ui.allocate_exact_size(
+                                                        egui::vec2(t.button_h * 1.8, t.button_h),
+                                                        egui::Sense::hover(),
+                                                    );
+                                                    ui.painter().galley(vr.center() - g.size() / 2.0, g, t.text);
+                                                }
+                                            }
+                                        });
+                                        found.push((group, xs, hover, click));
+                                    }
+                                    section(ui, t, "Subtitle style");
+                                    let size_labels =
+                                        ["S".to_string(), "M".to_string(), "L".to_string(), "XL".to_string()];
+                                    let size_sel: Vec<bool> = (0..4).map(|i| size_idx == i).collect();
+                                    let rows: [(usize, &str, &[String], &[bool]); 6] = [
+                                        (G_SUB_SIZE, "Size", &size_labels, &size_sel),
+                                        (G_SUB_FONT, "Font", &font_names, &font_sel),
+                                        (G_SUB_WEIGHT, "Weight", &weight_names, &weight_sel),
+                                        (G_SUB_SHADOW, "Shadow", &shadow_names, &shadow_sel),
+                                        (G_SUB_TEXT, "Text", &colour_names, &text_sel),
+                                        (G_SUB_BACK, "Background", &back_names, &back_sel),
+                                    ];
+                                    for (group, label, labels, selected) in rows {
+                                        ui.horizontal(|ui| {
+                                            row_label(ui, t, label, t.chip_h);
+                                            let top = ui.cursor().top();
+                                            let out = widgets::chips(
+                                                ui,
+                                                t,
+                                                labels,
+                                                selected,
+                                                (focus.group == group).then_some(focus.index),
+                                            );
+                                            let r = egui::Rect::from_min_size(
+                                                egui::pos2(ui.min_rect().left(), top),
+                                                egui::vec2(10.0, t.chip_h),
+                                            );
+                                            reveal(ui, r, focus.group == group);
+                                            found.push((group, out.xs, out.hovered, out.clicked));
+                                        });
+                                    }
+                                }
                             }
                         });
-                    }
                 });
-                let (mut xs, mut hover, mut click) = (vec![], None, None);
-                for i in 0..entries.len() {
-                    for (c, col) in cols.iter().enumerate() {
-                        let (x, h, k) = col[i];
-                        xs.push(x);
-                        if h {
-                            hover = Some(i * 2 + c);
-                        }
-                        if k {
-                            click = Some(i * 2 + c);
-                        }
-                    }
-                }
-                found.push((G_LIST, xs, hover, click));
-                ui.add_space(t.gap / 3.0);
-                for (group, label, value) in
-                    [(G_SUB_OFFSET, "Offset", off_label.clone()), (G_SUB_POS, "Position", pos_label.clone())]
-                {
-                    let mut xs = vec![];
-                    let mut hover = None;
-                    let mut click = None;
-                    ui.horizontal(|ui| {
-                        parts::muted(ui, t, label);
-                        ui.add_space(t.gap);
-                        let focused = focus.group == group && focus.index == 0;
-                        let r = parts::button(ui, t, "-", focused, false);
-                        xs.push(r.rect.center().x);
-                        if r.hovered() {
-                            hover = Some(0);
-                        }
-                        if r.clicked() {
-                            click = Some(0);
-                        }
-                        ui.label(egui::RichText::new(&value).size(t.body_size).color(t.text));
-                        let focused = focus.group == group && focus.index == 1;
-                        let r = parts::button(ui, t, "+", focused, false);
-                        xs.push(r.rect.center().x);
-                        if r.hovered() {
-                            hover = Some(1);
-                        }
-                        if r.clicked() {
-                            click = Some(1);
-                        }
-                    });
-                    found.push((group, xs, hover, click));
-                    ui.add_space(t.gap / 3.0);
-                }
-                let size_labels = ["S".to_string(), "M".to_string(), "L".to_string(), "XL".to_string()];
-                let size_sel: Vec<bool> = (0..4).map(|i| size_idx == i).collect();
-                let rows: [(usize, &str, &[String], &[bool]); 6] = [
-                    (G_SUB_SIZE, "Size", &size_labels, &size_sel),
-                    (G_SUB_FONT, "Font", &font_names, &font_sel),
-                    (G_SUB_WEIGHT, "Weight", &weight_names, &weight_sel),
-                    (G_SUB_SHADOW, "Shadow", &shadow_names, &shadow_sel),
-                    (G_SUB_TEXT, "Text", &colour_names, &text_sel),
-                    (G_SUB_BACK, "Background", &back_names, &back_sel),
-                ];
-                for (group, label, labels, selected) in rows {
-                    ui.horizontal(|ui| {
-                        parts::muted(ui, t, label);
-                        ui.add_space(t.gap);
-                        let out =
-                            widgets::chips(ui, t, labels, selected, (focus.group == group).then_some(focus.index));
-                        found.push((group, out.xs, out.hovered, out.clicked));
-                    });
-                    ui.add_space(t.gap / 3.0);
-                }
             });
-        });
 
         let mut click = None;
         for (group, xs, hover, clicked) in found {
             if let Some(i) = hover {
                 self.focus = Focus { group, index: i };
+                if group == G_TABS {
+                    self.sub_tab = if i == 0 { SUB_TAB_AUDIO } else { SUB_TAB_SUBS };
+                }
             }
             if let Some(i) = clicked {
                 click = Some((group, i));
             }
-            groups[group] = Group {
-                len: xs.len(),
-                cols: if group == G_LIST {
-                    2
-                } else if group == G_AUDIO {
-                    1
-                } else {
-                    xs.len()
-                },
-                xs,
-            };
+            let cols = if matches!(group, G_AUDIO | G_LIST | G_SEC) { 1 } else { xs.len() };
+            groups[group] = Group { len: xs.len(), cols, xs };
         }
         if let Some((group, i)) = click {
             self.sub_choice(cx, group, i);
@@ -2158,7 +2406,24 @@ impl PlayerScreen {
         let codec =
             ms.and_then(|m| m.media_streams.iter().find(|s| s.kind == StreamKind::Video)).and_then(|s| s.codec.clone());
         let codec = if self.transcoding { Some("h264".to_string()) } else { codec };
-        let rows = stats_rows(method, container.as_deref(), codec.as_deref(), self.source_bitrate, &cx.player.stats());
+        let mut rows =
+            stats_rows(method, container.as_deref(), codec.as_deref(), self.source_bitrate, &cx.player.stats());
+        // FIX-1 #6: which audio track is playing, with its layout and codec ("English · 5.1 Surround (AC3)").
+        if let Some(a) = self
+            .current_audio()
+            .and_then(|i| ms.and_then(|m| m.media_streams.iter().find(|s| s.kind == StreamKind::Audio && s.index == i)))
+        {
+            let lang = track_labels(std::slice::from_ref(a)).pop().unwrap_or_default();
+            let mut v = lang;
+            if let Some(ch) = channel_words(a) {
+                v.push_str(&format!(" · {ch}"));
+            }
+            if let Some(c) = a.codec.as_deref() {
+                v.push_str(&format!(" ({})", c.to_uppercase()));
+            }
+            let at = rows.iter().position(|(k, _)| *k == "Video").map(|i| i + 1).unwrap_or(rows.len());
+            rows.insert(at, ("Audio", v));
+        }
         egui::Area::new(egui::Id::new("player-stats"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-t.margin, t.margin * 3.0))
             .order(egui::Order::Foreground)
@@ -2255,9 +2520,21 @@ impl Screen for PlayerScreen {
         }
         if self.any_menu() {
             return match key {
+                // FIX-1 #5: Back from Subtitle options returns to the Subtitles list, on the options row.
+                Key::Back if self.subtitle_open && self.sub_tab == SUB_TAB_OPTIONS => {
+                    self.sub_tab = SUB_TAB_SUBS;
+                    self.focus = Focus { group: G_LIST, index: self.subtitle_entries().len() };
+                    true
+                }
                 Key::Back => {
                     self.close_menus();
                     self.focus = Focus { group: G_BTN, index: B_PLAY };
+                    true
+                }
+                // FIX-1 #5: Left/Right on the segmented control switch the tab as focus moves.
+                Key::Left | Key::Right if self.subtitle_open && self.focus.group == G_TABS => {
+                    self.focus = move_focus(&self.groups, self.focus, key);
+                    self.sub_tab = if self.focus.index == 0 { SUB_TAB_AUDIO } else { SUB_TAB_SUBS };
                     true
                 }
                 Key::Enter => {
@@ -2292,7 +2569,8 @@ impl Screen for PlayerScreen {
                 _ => true,
             };
         }
-        let was_visible = self.osd_visible && !self.osd_dismissed;
+        let was_visible = self.osd_visible && !self.osd_dismissed && !self.osd_auto;
+        self.osd_auto = false;
         let focus_kind = match (self.focus.group, self.focus.index) {
             (G_BAR, _) => OsdFocus::Timeline,
             (G_VOL, B_VOL_BAR) => OsdFocus::VolumeBar,
@@ -2390,6 +2668,10 @@ impl Screen for PlayerScreen {
                 if !was_visible {
                     self.focus = Focus { group: G_BAR, index: 0 };
                 }
+                true
+            }
+            OsdAct::WakeButtons => {
+                self.focus = Focus { group: G_BTN, index: B_PLAY };
                 true
             }
             OsdAct::Wake => {
@@ -2586,6 +2868,7 @@ impl Screen for PlayerScreen {
             self.osd_last_input = cx.now;
             self.osd_visible = true;
             self.osd_dismissed = false;
+            self.osd_auto = false;
         }
         // G4 / P-PLAY-18: double-click on the video toggles fullscreen.
         if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
@@ -2610,8 +2893,21 @@ impl Screen for PlayerScreen {
         }
 
         if self.loading {
+            self.first_frame_at = None;
             self.draw_loading(ui, cx);
             return;
+        }
+        // FIX-1 #1: no black gap after Play — the cover stays until mpv shows a frame, then fades.
+        if self.first_frame_at.is_none() && cx.player.stats().width.is_some() && cx.player.position() > 0.0 {
+            self.first_frame_at = Some(cx.now);
+        }
+        let cover = match self.first_frame_at {
+            None => 1.0,
+            Some(at) => 1.0 - ((cx.now - at) / COVER_FADE).clamp(0.0, 1.0) as f32,
+        };
+        if cover > 0.0 {
+            self.draw_cover(ui, cx, cover);
+            ui.ctx().request_repaint();
         }
 
         self.tick_reports(cx);
@@ -2633,8 +2929,9 @@ impl Screen for PlayerScreen {
         let was_up = self.osd_visible;
         if (paused && !self.osd_dismissed) || self.any_menu() {
             self.osd_visible = true;
-        } else if cx.now - self.osd_last_input > t.osd_hide_after as f64 {
+        } else if cx.now - self.osd_last_input > self.osd_hide_secs(t) {
             self.osd_visible = false;
+            self.osd_auto = false;
         }
         // UXP2: the OSD always comes back with the timeline focused.
         if was_up && !self.osd_visible {
@@ -2652,4 +2949,52 @@ impl Screen for PlayerScreen {
             self.draw_stats(ui, cx);
         }
     }
+}
+
+// ---------- D4: Apple TV look helpers (docs/DESIGN-appletv.md) ----------
+
+/// A vertical shade over `r`: `c` at the screen edge (top or bottom), clear towards the middle.
+fn shade_rect(ui: &egui::Ui, r: egui::Rect, c: egui::Color32, from_top: bool) {
+    let clear = egui::Color32::TRANSPARENT;
+    let (top, bottom) = if from_top { (c, clear) } else { (clear, c) };
+    let mut m = egui::Mesh::default();
+    for (p, col) in [(r.left_top(), top), (r.right_top(), top), (r.right_bottom(), bottom), (r.left_bottom(), bottom)] {
+        m.colored_vertex(p, col);
+    }
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    ui.painter().add(m);
+}
+
+/// The translucent card the player's panels live in (menu material, big radius, soft shadow).
+fn card_frame(t: &Theme) -> egui::Frame {
+    egui::Frame::NONE.fill(t.menu_fill).corner_radius(t.dialog_radius).inner_margin(t.dialog_pad).shadow(t.shadow(1.0))
+}
+
+/// A centred card `w` wide and at most `max_h` tall with a heading; `add` draws the body.
+fn card(ctx: &egui::Context, t: &Theme, id: &str, heading: &str, w: f32, max_h: f32, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Area::new(egui::Id::new(id))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            card_frame(t).show(ui, |ui| {
+                ui.set_width(w - 2.0 * t.dialog_pad);
+                ui.set_max_height(max_h - 2.0 * t.dialog_pad);
+                ui.label(egui::RichText::new(heading).font(t.font_w(t.heading_size, Weight::Bold)).color(t.text));
+                ui.add_space(t.gap / 2.0);
+                add(ui);
+            });
+        });
+}
+
+/// A small section heading inside a card.
+fn section(ui: &mut egui::Ui, t: &Theme, text: &str) {
+    ui.add_space(t.gap / 4.0);
+    ui.label(egui::RichText::new(text).font(t.font_w(t.small_size, Weight::SemiBold)).color(t.muted));
+}
+
+/// The fixed-width label column of a setting row, vertically centred on the row's controls.
+fn row_label(ui: &mut egui::Ui, t: &Theme, text: &str, h: f32) {
+    let (r, _) = ui.allocate_exact_size(egui::vec2(t.form_label_w * 0.6, h), egui::Sense::hover());
+    ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, text, t.font(t.body_size), t.text);
 }

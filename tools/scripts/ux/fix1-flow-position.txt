@@ -1,0 +1,30 @@
+# FIX-1 #17 regression (tester: 'Poster Flow has no position indicator'): the flow says "N of M" under the title.
+wait-screen connect
+wait 2500
+idle
+key down
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+# Down to the Libraries row, then to the Mixed tile (Archive, Collections, Mixed, Movies, Shows → index 2).
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+key info
+wait-screen posterflow
+key right 3
+wait 900
+idle
+shot fix1-flow-position
+quit

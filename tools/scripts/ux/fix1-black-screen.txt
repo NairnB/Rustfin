@@ -1,0 +1,36 @@
+# FIX-1 #1 regression (tester: 'plain black screen after Play'): right after Enter on Play the start cover shows
+# (backdrop, title, spinner), then the video once its first frame is up.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait 150
+shot fix1-cover
+wait-screen player
+wait 3000
+idle
+shot fix1-playing
+quit

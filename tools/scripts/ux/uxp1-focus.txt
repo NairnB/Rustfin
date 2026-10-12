@@ -1,8 +1,10 @@
+# args: --tv
 # UXP1: focus lands where you expect (remote keys only)
+# Remote tour on the TV shell (top bar): the desktop shell has the sidebar since NAV; keys as on a remote.
 wait-screen connect
 wait 2500
 idle
-key down
+key down 10
 key up
 type http://jf-test:8096
 key enter
@@ -27,9 +29,7 @@ shot uxp1-home-return
 key up 20
 wait 300
 shot uxp1-home-top
-key left 6
-key right
-key enter
+key search
 wait-screen search
 type the
 wait 2500

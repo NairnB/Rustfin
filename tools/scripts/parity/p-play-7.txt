@@ -37,7 +37,10 @@ key right 2
 key enter
 wait 400
 shot p-play-7-panel
-key right
+# FIX-1 #5: second subtitles live under "Subtitle options…" (after Off, German, English).
+key down 3
+key enter
+wait 300
 key down 2
 key enter
 wait 400

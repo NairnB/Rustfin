@@ -236,6 +236,8 @@ pub struct Theme {
     pub slide_secs: f32,
     /// RR3: width of the play queue side panel.
     pub queue_w: f32,
+    /// D4: the player's Audio & Subtitles card.
+    pub player_panel_w: f32,
 }
 
 impl Theme {
@@ -397,6 +399,7 @@ impl Theme {
             flow_sub_frac: 0.032,
             slide_secs: 8.0,
             queue_w: 640.0,
+            player_panel_w: 1080.0,
         }
     }
 

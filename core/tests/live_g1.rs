@@ -48,6 +48,20 @@ fn archive_sort_and_random() {
     assert_eq!(random.items.len(), 100);
 }
 
+/// Puts a film's watched flag back as it was, also when an assertion fails (a failed run used to leave the film
+/// watched for tester, and later runs failed on the counts).
+struct PutBack {
+    client: Client,
+    id: String,
+    was_played: bool,
+}
+
+impl Drop for PutBack {
+    fn drop(&mut self) {
+        let _ = self.client.set_played(&self.id, self.was_played);
+    }
+}
+
 #[test]
 fn mixed_unplayed_filter_and_put_back() {
     let Some(u) = url() else { return };
@@ -56,31 +70,28 @@ fn mixed_unplayed_filter_and_put_back() {
 
     let all = c.library_query(&mixed.id, 0, 100, &LibraryQuery::default()).unwrap();
     assert_eq!(all.total_record_count, 9);
-    let film = all.items.iter().find(|i| i.kind == ItemKind::Movie).expect("a film").clone();
+    // An unwatched film, so the test never depends on (or changes) a mark it did not make.
+    let film = all
+        .items
+        .iter()
+        .find(|i| i.kind == ItemKind::Movie && !i.user_data.as_ref().is_some_and(|d| d.played))
+        .expect("an unwatched film")
+        .clone();
+    let query =
+        |f: Filters| c.library_query(&mixed.id, 0, 100, &LibraryQuery { filters: f, ..Default::default() }).unwrap();
+    let unplayed_before = query(Filters { unplayed: true, ..Default::default() }).total_record_count;
 
+    let _back = PutBack { client: c.clone(), id: film.id.clone(), was_played: false };
     c.set_played(&film.id, true).unwrap();
 
-    let unplayed = c
-        .library_query(
-            &mixed.id,
-            0,
-            100,
-            &LibraryQuery { filters: Filters { unplayed: true, ..Default::default() }, ..Default::default() },
-        )
-        .unwrap();
-    assert_eq!(unplayed.total_record_count, 8, "unplayed filter excludes the marked film");
+    let unplayed = query(Filters { unplayed: true, ..Default::default() });
+    assert_eq!(unplayed.total_record_count, unplayed_before - 1, "unplayed filter excludes the marked film");
     assert!(unplayed.items.iter().all(|i| i.id != film.id));
 
-    let played = c
-        .library_query(
-            &mixed.id,
-            0,
-            100,
-            &LibraryQuery { filters: Filters { played: true, ..Default::default() }, ..Default::default() },
-        )
-        .unwrap();
-    assert_eq!(played.total_record_count, 1, "played filter is the marked film only");
-    assert_eq!(played.items[0].id, film.id);
+    let played = query(Filters { played: true, ..Default::default() });
+    assert!(played.items.iter().any(|i| i.id == film.id), "played filter has the marked film");
+    assert!(played.items.iter().all(|i| unplayed.items.iter().all(|x| x.id != i.id)), "the two filters never overlap");
+    assert_eq!(played.total_record_count + unplayed.total_record_count, 9, "played + unplayed = everything");
 
     c.set_played(&film.id, false).unwrap();
     let back = c.library_query(&mixed.id, 0, 100, &LibraryQuery::default()).unwrap();

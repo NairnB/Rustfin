@@ -1,0 +1,36 @@
+# FIX-1 #3 regression (tester: 'the player shows no title'): right after Play the OSD stays up ~5 s with the
+# title and the audio / subtitle line, no mouse needed; then it hides.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 2500
+shot fix1-now-playing
+wait 6000
+idle
+shot fix1-now-playing-hidden
+quit

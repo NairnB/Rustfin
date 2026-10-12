@@ -82,6 +82,9 @@ pub struct MediaStream {
     pub is_default: bool,
     pub is_forced: bool,
     pub delivery_url: Option<String>,
+    /// FIX-1 #6: audio channel count (2, 6, 8 …) and the server's layout name ("stereo", "5.1").
+    pub channels: Option<i32>,
+    pub channel_layout: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]

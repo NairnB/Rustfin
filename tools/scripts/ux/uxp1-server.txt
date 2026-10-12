@@ -1,8 +1,10 @@
+# args: --tv
 # UXP1: Settings > Server row moves with Left/Right
+# Remote tour on the TV shell (top bar): the desktop shell has the sidebar since NAV; keys as on a remote.
 wait-screen connect
 wait 2500
 idle
-key down
+key down 10
 key up
 type http://jf-test:8096
 key enter
@@ -15,8 +17,9 @@ key enter
 wait-screen home
 idle
 key up 20
-key left 6
-key right 2
+key right 10
+key enter
+key down 2
 key enter
 wait-screen settings
 idle

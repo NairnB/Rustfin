@@ -1,7 +1,11 @@
+# args: --tv
 # UXP3 (D10 / R9): Switch user picker — viewer → tester (typed once) → viewer straight from the picker.
+# Remote tour on the TV shell (top bar): the desktop shell has the sidebar since NAV; keys as on a remote.
 wait-screen connect
 wait 2500
 idle
+key down 10
+key up
 type http://jf-test:8096
 key enter
 wait-screen signin
@@ -13,9 +17,9 @@ key enter
 wait-screen home
 idle
 key up 20
-key right 5
+key right 10
 key enter
-key down
+key down 3
 key enter
 wait-screen signin
 idle
@@ -30,9 +34,9 @@ key enter
 wait-screen home
 idle
 key up 20
-key right 5
+key right 10
 key enter
-key down
+key down 3
 key enter
 wait-screen signin
 idle

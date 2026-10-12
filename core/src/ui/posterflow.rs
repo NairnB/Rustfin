@@ -262,6 +262,11 @@ pub fn labels(item: &Item, full: Option<&Item>) -> (String, String) {
     (it.name.clone(), v.join(" · "))
 }
 
+/// FIX-1 #17: where the centre cover is in the flow, "7 of 15" (1-based); "7 of 15+" while more are loading.
+pub fn position_label(centre: usize, len: usize, complete: bool) -> String {
+    format!("{} of {}{}", centre + 1, len, if complete { "" } else { "+" })
+}
+
 /// Where the flow's items come from.
 enum Src {
     /// A library: the flow loads every page itself (the grid hands over what it already has).
@@ -741,6 +746,7 @@ impl PosterFlow {
             return;
         }
         let (title, sub) = labels(item, self.full.get(&item.id));
+        let rows = if sub.is_empty() { 1.3 } else { 2.6 };
         let vh = cam.view.height();
         let bottom = cam.centre.y + cam.cover_h() / 2.0;
         let y = bottom + vh * 0.035;
@@ -762,6 +768,14 @@ impl PosterFlow {
                 t.flow_sub.gamma_multiply(a),
             );
         }
+        // FIX-1 #17: the position, so a named item can be found without guessing the steps.
+        p.text(
+            pos2(cam.view.center().x, y + ts * rows),
+            Align2::CENTER_TOP,
+            position_label(self.centre(), self.items.len(), self.complete),
+            t.font_w(t.body_size, Weight::SemiBold),
+            t.muted.gamma_multiply(a),
+        );
     }
 
     /// The flipped back, in the app's own look (docs/DESIGN-appletv.md): a rounded card with the backdrop fading in
@@ -1349,6 +1363,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(labels(&show, None).1, "2008 · 3 seasons");
+        assert_eq!(position_label(6, 15, true), "7 of 15");
+        assert_eq!(position_label(0, 50, false), "1 of 50+");
     }
 
     #[test]

@@ -1,0 +1,39 @@
+# FIX-1 #16 regression (tester: 'focus gets stuck on the seek bar'): with the OSD hidden, Down brings the
+# controls back with Play focused; Right then reaches the Audio & Subtitles button.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 8000
+idle
+key down
+wait 400
+shot fix1-down-buttons
+key right
+wait 400
+shot fix1-down-right
+quit

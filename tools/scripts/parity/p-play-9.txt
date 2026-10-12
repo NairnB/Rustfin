@@ -38,6 +38,10 @@ wait 400
 shot p-play-9
 
 # Size XL, font Serif, weight Bold, shadow Heavy, text Yellow, background Black.
+# FIX-1 #5: style is under "Subtitle options…" (Off, German, English, then Offset, Position, Size).
+key down 3
+key enter
+wait 300
 key down 5
 key right 3
 key enter

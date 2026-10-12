@@ -20,7 +20,8 @@ fn hidden_left_right_seek_by_the_skip_sizes() {
 
 #[test]
 fn hidden_up_down_enter_wake_the_osd() {
-    for k in [Key::Up, Key::Down, Key::Enter] {
+    // FIX-1 #16: Down wakes onto the buttons instead (tests/fix1_player.rs).
+    for k in [Key::Up, Key::Enter] {
         assert_eq!(osd_key(false, OsdFocus::Timeline, k, 10.0, 30.0), OsdAct::Wake, "{k:?}");
     }
 }
@@ -125,4 +126,26 @@ fn info_rows_show_what_is_playing() {
             ("Subtitles", "German".to_string()),
         ]
     );
+}
+
+fn audio(idx: i32, lang: &str, codec: &str, ch: i32) -> MediaStream {
+    MediaStream {
+        index: idx,
+        kind: StreamKind::Audio,
+        language: Some(lang.into()),
+        codec: Some(codec.into()),
+        channels: Some(ch),
+        ..Default::default()
+    }
+}
+
+/// FIX-1 #6: same-language audio twins are told apart by layout, then codec — never "English 1 / English 2".
+#[test]
+fn audio_twins_named_by_layout_then_codec() {
+    let v = [audio(1, "eng", "aac", 2), audio(2, "eng", "ac3", 6)];
+    assert_eq!(track_labels(&v), ["English — Stereo", "English — 5.1 Surround"]);
+    let v = [audio(1, "eng", "ac3", 6), audio(2, "eng", "dts", 6)];
+    assert_eq!(track_labels(&v), ["English — Dolby Digital", "English — DTS"]);
+    // A lone track stays plain.
+    assert_eq!(track_labels(&[audio(1, "eng", "ac3", 6)]), ["English"]);
 }
