@@ -75,9 +75,33 @@ class TasksFile(unittest.TestCase):
     def test_seed_specs(self):
         for t in self.tasks:
             if t.get("seed"):
-                s = t["seed"]
-                self.assertTrue(s.get("title") or s.get("series"), t["id"])
-                self.assertTrue(s.get("seconds") or s.get("played"), t["id"])
+                for s in t["seed"] if isinstance(t["seed"], list) else [t["seed"]]:
+                    self.assertTrue(s.get("title") or s.get("series"), t["id"])
+                    self.assertTrue(s.get("seconds") or s.get("played"), t["id"])
+
+    def test_resume_seeds_read_as_part_way_and_the_check_still_proves_resuming(self):
+        for tid in ("resume-show", "resume-film"):
+            t = next(t for t in self.tasks if t["id"] == tid)
+            sec, want = t["seed"]["seconds"], t["check"]["args"]["min_position_s"]
+            self.assertGreaterEqual(sec, 240, tid)           # minutes in, not a 0:30 nudge
+            self.assertTrue(sec - 2 <= want < sec, tid)       # the same 2 s slack as before: resumed, not restarted
+
+    def test_filter_unwatched_has_watched_films_to_hide(self):
+        t = next(t for t in self.tasks if t["id"] == "filter-unwatched")
+        self.assertEqual(sum(1 for s in t["seed"] if s.get("played")), 2)
+        self.assertEqual(t["check"]["args"], {"path": "library_view.*.filters.unplayed", "equals": True})
+
+    def test_episode_goals_name_the_episode_not_the_first(self):
+        # the server's season starts part way in (its first episode is not E1): the goal names the episode instead
+        for tid in ("resume-show", "next-episode"):
+            g = next(t for t in self.tasks if t["id"] == tid)["goal"]
+            self.assertRegex(g, r"(watching|finished) [A-Z][\w' ]+, an episode of the TV show", tid)
+            self.assertNotIn("first episode", g, tid)
+
+    def test_playing_goals_say_start_watching(self):
+        for t in self.tasks:
+            if t["check"]["name"] == "now_playing":
+                self.assertNotRegex(t["goal"], r"(?i)(^|[.,] )(find and )?watch ", t["id"])
 
     def test_expand_replaces_uniq_everywhere(self):
         t = next(t for t in self.tasks if t["id"] == "admin-add-user")

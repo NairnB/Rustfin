@@ -52,6 +52,7 @@ def main(argv):
         os.makedirs(os.path.join(d, "shots"), exist_ok=True)
         os.makedirs(os.path.join(d, "data"), exist_ok=True)
         open(os.path.join(d, "out"), "a").close()
+        open(os.path.join(d, "cmds"), "a").close()
         json.dump({"user": arg(argv, "--user"), "pass": arg(argv, "--pass")}, open(os.path.join(d, ".fake-account"), "w"))
         jfapi.Api.login(jfapi.base_url(), arg(argv, "--user"), arg(argv, "--pass"))  # signing in makes the server session
         print(os.path.join(d, "shots", "000.jpg"))
@@ -66,6 +67,8 @@ def main(argv):
         effect(s, acc["user"], acc["pass"])
     with open(os.path.join(d, "out"), "a") as f:
         f.write(f"{n:03d} ok fake 1\n")
+    with open(os.path.join(d, "cmds"), "a") as f:
+        f.write(cmd + "\n")
     print(f"step {n}: ok — screenshot: {os.path.join(d, 'shots', '%03d.jpg' % n)}")
     return 0
 

@@ -52,11 +52,12 @@ DESK_HELP = """\
 - scroll DX DY     scroll the page under the pointer (DY negative = scroll down, e.g. scroll 0 -400; move the pointer over the part to scroll first)
 - key NAME [N]     press a key: Up Down Left Right Enter Back Esc (N = repeat count)
 - type TEXT        type text into the field that is selected
-- wait MS          wait for that many milliseconds"""
+- wait MS          wait for that many milliseconds (at most 10000, i.e. 10 seconds, per command)"""
 TV_HELP = """\
 You only have a TV remote: 
 - key NAME [N]     press a remote button: Up Down Left Right Enter Back Info PlayPause (N = repeat count)
-- wait MS          wait for that many milliseconds"""
+- wait MS          wait for that many milliseconds (at most 10000, i.e. 10 seconds, per command)"""
+BUDGET_MIN = 40  # commands a tester gets before giving up; more when the shortest route itself is long
 
 
 # ---------------------------------------------------------------- tasks
@@ -102,6 +103,11 @@ def ideal_steps(route):
         m = re.fullmatch(r"key \S+ (\d+)", c.strip())
         n += int(m.group(1)) if m else 1
     return n
+
+
+def budget(task, mode):
+    """Commands the tester may send before giving up: max(40, 2 x the commands in the task's (validated) route)."""
+    return max(BUDGET_MIN, 2 * len(task.get("route_" + mode) or []))
 
 
 def tv_allowed(cmd):
@@ -223,6 +229,15 @@ def out_lines(session):
         return 0
 
 
+def tester_commands(session, base):
+    """The commands the tester sent (rf-drive logs one line per step in `cmds`, in step with `out`), or None without a log."""
+    try:
+        with open(os.path.join(FLEET_HOME, session, "cmds")) as f:
+            return [l.rstrip("\n") for l in f][base:]
+    except OSError:
+        return None
+
+
 class Account:
     def __init__(self, session, admin):
         self.session, self.name, self.pw = session, f"fleet-{session}", None
@@ -248,8 +263,35 @@ def cleanup_active():
         acc.delete()
 
 
+def resume_window(api):
+    """The server's resume rules: (MinResumePct, MaxResumePct, MinResumeDurationSeconds), Jellyfin's defaults if unread."""
+    try:
+        c = api.get("/System/Configuration") or {}
+    except jfapi.ApiError:
+        c = {}
+    return c.get("MinResumePct", 5), c.get("MaxResumePct", 90), c.get("MinResumeDurationSeconds", 300)
+
+
+def check_resumable(item, seconds, window):
+    """A seeded resume position the server would keep as one: inside its min/max percent, on media long enough to resume."""
+    lo, hi, min_dur = window
+    run = (item.get("RunTimeTicks") or 0) / checks.TICKS
+    if not run:
+        return
+    if run < min_dur:
+        raise RuntimeError(f"seed: {item.get('Name')!r} runs {run:.0f}s, under the server's {min_dur}s minimum to resume")
+    pct = 100 * seconds / run
+    if not lo <= pct <= hi:
+        raise RuntimeError(f"seed: {seconds}s is {pct:.0f}% of {item.get('Name')!r} ({run:.0f}s), outside the server's {lo}-{hi}% resume window")
+
+
 def seed(api, acc, spec):
-    """Give the throwaway user history before the tester starts: a resume position (seconds) or `played`."""
+    """Give the throwaway user history before the tester starts: a resume position (seconds) or `played`; a list of
+    specs seeds each one."""
+    if isinstance(spec, list):
+        for s in spec:
+            seed(api, acc, s)
+        return
     me = jfapi.Api.login(api.base, acc.name, acc.pw)
     item = checks.find_item(me, me.user_id, title=spec.get("title"), series=spec.get("series"), nth=spec.get("nth"))
     if not item:
@@ -264,6 +306,7 @@ def seed(api, acc, spec):
         else:
             raise RuntimeError("seed: cannot mark played")
     if spec.get("seconds"):
+        check_resumable(item, spec["seconds"], resume_window(api))
         body = {"PlaybackPositionTicks": int(spec["seconds"] * checks.TICKS)}
         for path in (f"/UserItems/{item['Id']}/UserData?userId={me.user_id}", f"/Users/{me.user_id}/Items/{item['Id']}/UserData"):
             try:
@@ -361,7 +404,7 @@ def validate_one(api, task0, mode, rnd):
             if r.returncode or " error" in (r.stdout + r.stderr).lower():
                 return {"ok": False, "reason": f"{c!r} failed: {(r.stdout + r.stderr).strip()[:200]}"}
         res = run_checks(api, acc, task, session, t0, dev, "2006" if task["check"]["name"] == "answer_contains" else "")
-        return {"ok": res["pass"], "reason": res["reason"], "steps": ideal_steps(route)}
+        return {"ok": res["pass"], "reason": res["reason"], "steps": ideal_steps(route), "commands": len(route)}
     except Exception as e:  # a broken session is a failed route, not a crashed run
         return {"ok": False, "reason": f"{type(e).__name__}: {e}"}
     finally:
@@ -385,6 +428,7 @@ def tester_prompt(task, mode, session):
     jpgs = sorted(f for f in os.listdir(shots) if f.endswith(".jpg")) if os.path.isdir(shots) else []
     first_shot = os.path.join(shots, jpgs[-1]) if jpgs else shots
     return tpl.format(goal=task["goal"], session=session, drive=drive, shots=shots, first_shot=first_shot, commands=DESK_HELP if mode == "desk" else TV_HELP,
+                      budget=budget(task, mode),
                       example="click 700 300" if mode == "desk" else "key Down")
 
 
@@ -431,6 +475,7 @@ def test_one(api, task0, mode, rnd, k, stop_event):
     task = expand(task0, uniq)
     ideal = ideal_steps(task["route_" + mode])
     rec = {"task": task["id"], "mode": mode, "kind": task["kind"], "run": k, "session": session, "ideal": ideal,
+           "ideal_commands": len(task["route_" + mode]), "budget": budget(task, mode),
            "shots": os.path.join(FLEET_HOME, session, "shots")}
     if stop_event.is_set() or plan_full():
         stop_event.set()
@@ -440,11 +485,15 @@ def test_one(api, task0, mode, rnd, k, stop_event):
         t0 = time.time()
         acc, dev, base = start_session(api, task, mode, session)
         tpath, tj, last, err = run_tester(task, mode, session)
-        steps = max(out_lines(session) - base, 0)
+        commands = max(out_lines(session) - base, 0)
+        sent = tester_commands(session, base)
+        steps = ideal_steps(sent) if sent is not None else commands  # presses, counted like the ideal (`key X n` = n)
         res = run_checks(api, acc, task, session, t0, dev, (tj or {}).get("answer", "") or last)
         sc = scores_of(tj)
         rec.update(claim=(tj or {}).get("result", "no-json"), claimed_steps=(tj or {}).get("steps"), notes=(tj or {}).get("notes", ""),
                    check=res, steps=steps, ratio=round(steps / ideal, 2) if ideal else None,
+                   # rounds 1-2 compared tester commands with ideal presses: kept so round 3 compares both ways
+                   commands=commands, ratio_cmd=round(commands / ideal, 2) if ideal else None,
                    scores=[{"screen": a, "score": b, "why": c} for a, b, c in sc], transcript=tpath)
         if err:
             rec["error"] = err
@@ -472,7 +521,9 @@ def summarize(records, rnd, notes=()):
     skipped = [r for r in records if r.get("skipped")]
     if skipped:
         L += [f"**{len(skipped)} runs not started: {skipped[0]['skipped']}**", ""]
-    L += ["## Success", "", "| mode | runs | passed | success % | everyday success % | median steps/ideal (passed runs) |", "|---|---|---|---|---|---|"]
+    L += ["## Success", "", "Steps are presses on both sides (`key X n` = n). The last column is the rounds 1-2 measure: tester commands / ideal presses.", "",
+          "| mode | runs | passed | success % | everyday success % | median steps/ideal (passed runs) | median commands/ideal (rounds 1-2 way) |",
+          "|---|---|---|---|---|---|---|"]
     for m in MODES:
         rs = [r for r in ran if r["mode"] == m]
         if not rs:
@@ -481,8 +532,10 @@ def summarize(records, rnd, notes=()):
         ev = [r for r in rs if r["kind"] == "everyday"]
         evok = [r for r in ev if r["check"]["pass"]]
         ratios = [r["ratio"] for r in ok if r.get("ratio") is not None]
+        cratios = [r["ratio_cmd"] for r in ok if r.get("ratio_cmd") is not None]
         L.append(f"| {m} | {len(rs)} | {len(ok)} | {100 * len(ok) // len(rs)} | "
-                 f"{(100 * len(evok) // len(ev)) if ev else '-'} | {statistics.median(ratios) if ratios else '-'} |")
+                 f"{(100 * len(evok) // len(ev)) if ev else '-'} | {statistics.median(ratios) if ratios else '-'} | "
+                 f"{statistics.median(cratios) if cratios else '-'} |")
     by = {}
     for r in ran:
         for s in r.get("scores", []):
@@ -499,7 +552,8 @@ def summarize(records, rnd, notes=()):
         if not r["check"]["pass"]:
             why.append("check failed: " + r["check"]["reason"])
         if (r.get("ratio") or 0) > SLOW:
-            why.append(f"{r['steps']} steps vs ideal {r['ideal']} (x{r['ratio']})")
+            why.append(f"{r['steps']} presses vs ideal {r['ideal']} (x{r['ratio']}"
+                       + (f"; {r['commands']} commands, x{r['ratio_cmd']} the rounds 1-2 way)" if r.get("ratio_cmd") is not None else ")"))
         low = [s for s in r.get("scores", []) if s["score"] <= LOW_SCORE]
         if low:
             why.append("low scores: " + "; ".join(f"{s['screen']} {s['score']} ({s['why']})" for s in low))

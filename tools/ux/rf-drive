@@ -5,7 +5,7 @@
 #   rf-drive stop NAME
 # Commands (desk; x y are pixels in the 1280-wide screenshot you were shown): click x y · move x y · scroll dx dy · drag x1 y1 x2 y2 ms · key <name> [n] · type <text> · wait <ms>
 # TV: key Up/Down/Left/Right/Enter/Back/Info/PlayPause and wait only (the app enforces it).
-# Session folder $RF_FLEET_HOME/NAME: in (FIFO) · out (one line per step) · shots/NNN.jpg · data/ · run.sh · launch.log
+# Session folder $RF_FLEET_HOME/NAME: in (FIFO) · out (one line per step) · cmds (the command of each step) · shots/NNN.jpg · data/ · run.sh · launch.log
 # At most 8 sessions at once: each holds $RF_LOCKS/drive1..8 for as long as its container lives.
 set -euo pipefail
 # Optional private settings (RF_FLEET_HOME, RF_LOCKS, RF_RUNNER, ...): KEY=VALUE lines; variables already set win.
@@ -40,6 +40,7 @@ step() {
   [ -d "$d" ] || die "no session $1"
   case "$*" in '!'*|*$'\n'*) die "unknown command";; esac   # '!' lines are the wrapper's own; one line per step
   local r n res; r=$(send "$d" "$*" 30)
+  printf '%s\n' "$*" >> "$d/cmds"   # what was sent, one line per step (fleet-run counts presses from it)
   n=${r%% *}; res=${r#* }
   # The tester sees ok / the error, not the app's internal screen name.
   case "$res" in ok*) res=ok;; esac
@@ -101,7 +102,7 @@ LAUNCH
     fi
   fi
   printf '%s\n' '!ready' > "$d/in"                  # restart numbering; TV sessions lock to remote keys
-  sleep 0.3; find "$d/shots" -name '*.jpg' -delete; : > "$d/out"
+  sleep 0.3; find "$d/shots" -name '*.jpg' -delete; : > "$d/out"; : > "$d/cmds"
   step "$name" wait 100
 }
 

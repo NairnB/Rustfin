@@ -77,12 +77,14 @@ class Signal(unittest.TestCase):
 
 class Summary(unittest.TestCase):
     def test_summary_numbers_and_failures(self):
-        rs = [rec(), rec(task="u", check={"pass": False, "reason": "wrong film"}, ratio=2.5, steps=10, scores=[{"screen": "Home", "score": 1, "why": "dark"}]),
-              rec(mode="tv", ratio=2.0, steps=8)]
+        rs = [rec(ratio_cmd=0.75, commands=3), rec(task="u", check={"pass": False, "reason": "wrong film"}, ratio=2.5, steps=10, commands=8, ratio_cmd=2.0,
+                                  scores=[{"screen": "Home", "score": 1, "why": "dark"}]),
+              rec(mode="tv", ratio=2.0, steps=8, commands=6, ratio_cmd=1.5)]
         md = F.summarize(rs, 1, ["note one"])
         self.assertIn("note one", md)
-        self.assertIn("| desk | 2 | 1 | 50 | 50 | 1.0 |", md)
-        self.assertIn("| tv | 1 | 1 | 100 | 100 | 2.0 |", md)
+        self.assertIn("| desk | 2 | 1 | 50 | 50 | 1.0 | 0.75 |", md)
+        self.assertIn("| tv | 1 | 1 | 100 | 100 | 2.0 | 1.5 |", md)
+        self.assertIn("10 presses vs ideal 4 (x2.5; 8 commands, x2.0 the rounds 1-2 way)", md)
         self.assertIn("| home | 3 | 3.0 | 1 |", md)
         self.assertIn("**u** / desk (run 1): check failed: wrong film", md)
         self.assertIn("[transcript](/t.txt)", md)
@@ -102,6 +104,18 @@ class Prompt(unittest.TestCase):
             for w in ("jellyfin", "rustfin", "repo"):
                 self.assertNotIn(w, p.lower())
         self.assertNotIn("click", F.tester_prompt(t, "tv", "s"))
+
+    def test_prompt_states_the_budget_and_the_wait_cap(self):
+        short = {"goal": "g", "route_tv": ["key Enter"] * 5}
+        long = {"goal": "g", "route_tv": ["key Down"] * 57, "route_desk": ["click 1 1"]}
+        self.assertEqual(F.budget(short, "tv"), 40)
+        self.assertEqual(F.budget(long, "tv"), 114)
+        self.assertEqual(F.budget(long, "desk"), 40)
+        p = F.tester_prompt(long, "tv", "s")
+        self.assertIn("You have 114 commands", p)
+        self.assertNotIn("after 40 commands", p)
+        for mode in ("desk", "tv"):
+            self.assertIn("10 seconds", F.tester_prompt(short, mode, "s"))
 
     def test_tester_is_locked_down(self):
         a = F.tester_argv("s1")
@@ -157,3 +171,48 @@ class StartOrder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Counting(unittest.TestCase):
+    def test_presses_come_from_the_command_log_after_the_baseline(self):
+        import tempfile
+        saved = F.FLEET_HOME
+        try:
+            F.FLEET_HOME = tempfile.mkdtemp()
+            os.makedirs(os.path.join(F.FLEET_HOME, "s"))
+            with open(os.path.join(F.FLEET_HOME, "s", "cmds"), "w") as f:
+                f.write("wait 100\nkey Down 3\nkey Enter\ntype hello there\n")
+            sent = F.tester_commands("s", 1)
+            self.assertEqual(sent, ["key Down 3", "key Enter", "type hello there"])
+            self.assertEqual(F.ideal_steps(sent), 5)  # counted like the ideal: `key X n` = n
+            self.assertIsNone(F.tester_commands("nope", 0))
+        finally:
+            F.FLEET_HOME = saved
+
+
+class Seeding(unittest.TestCase):
+    def test_resume_seed_must_sit_inside_the_servers_window(self):
+        sintel = {"Name": "Sintel", "RunTimeTicks": 630 * F.checks.TICKS}
+        F.check_resumable(sintel, 250, (5, 90, 300))
+        with self.assertRaises(RuntimeError):
+            F.check_resumable(sintel, 1200, (5, 90, 300))  # past the end: 20 min does not fit a 10 min film
+        with self.assertRaises(RuntimeError):
+            F.check_resumable(sintel, 20, (5, 90, 300))  # under 5 %: the server would not offer to resume
+        with self.assertRaises(RuntimeError):
+            F.check_resumable({"Name": "short", "RunTimeTicks": 200 * F.checks.TICKS}, 80, (5, 90, 300))
+
+    def test_a_list_seeds_each_spec(self):
+        got = []
+        saved = F.jfapi.Api.login, F.checks.find_item
+        class Me:
+            user_id = "u"
+            def post(self, path, body=None): got.append(path)
+        try:
+            F.jfapi.Api.login = classmethod(lambda cls, b, n, p: Me())
+            F.checks.find_item = lambda api, uid, title=None, series=None, nth=None: {"Id": title}
+            acc = type("A", (), {"name": "fleet-s", "pw": "p"})()
+            F.seed(type("Api", (), {"base": "b"})(), acc, [{"title": "A", "played": True}, {"title": "B", "played": True}])
+        finally:
+            F.jfapi.Api.login, F.checks.find_item = saved
+        self.assertEqual(got, ["/UserPlayedItems/A?userId=u", "/UserPlayedItems/B?userId=u"])
+

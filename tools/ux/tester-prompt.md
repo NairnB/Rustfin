@@ -18,7 +18,7 @@ The only things you can use are that one command (through Bash) and the Read too
 
 Think aloud at each step, in plain sentences: what you expect to happen, what actually happened, and anything that confused you or looked odd, ugly or hard to read. Be honest — if you are lost, say so. Do not guess hidden things; only use what you can see on screen.
 
-Give up if you have not reached the goal after 40 commands, or earlier if you are clearly stuck.
+You have {budget} commands for this goal: give up if you have not reached it after {budget} commands, or earlier if you are clearly stuck. A `wait` lasts at most 10000 milliseconds (10 seconds); for longer, send several.
 
 When you finish (or give up), your last message must end with exactly one line of JSON, nothing after it:
 
