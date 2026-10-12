@@ -653,6 +653,9 @@ fn library_page(name: String) -> Box<dyn Screen> {
         confirm: false,
         confirm_focus: 0,
         form: FormState::new(),
+        scan_watch: None,
+        scan_seen: false,
+        last_poll: 0.0,
     })
 }
 
@@ -674,6 +677,10 @@ struct LibraryPage {
     confirm: bool,
     confirm_focus: usize,
     form: FormState,
+    /// FIX-2 #11: a scan started here at this time (s) is polled until it ends (same rule as the list).
+    scan_watch: Option<f64>,
+    scan_seen: bool,
+    last_poll: f64,
 }
 
 enum Act {
@@ -810,6 +817,21 @@ impl Screen for LibraryPage {
                     Err(e) => self.error = fail(cx, e),
                 }
             }
+            "scanpoll" => {
+                let Ok(r) = payload.downcast::<Result<Option<VirtualFolderInfo>>>() else { return };
+                let Ok(Some(f)) = *r else { return };
+                // Only the scan state: the form keeps what the user is editing.
+                let scanning = is_scanning(&f);
+                self.scan_seen |= scanning;
+                if let Some(start) = self.scan_watch {
+                    if scan_finished(self.scan_seen, scanning, cx.now - start, 30.0) {
+                        self.scan_watch = None;
+                        self.notice = Some("Scan finished.".into());
+                    } else if scanning {
+                        self.notice = Some(scan_status(&f));
+                    }
+                }
+            }
             "avail" => {
                 let Ok(r) = payload.downcast::<Result<AvailableOptions>>() else { return };
                 match *r {
@@ -836,7 +858,12 @@ impl Screen for LibraryPage {
                             self.load(cx);
                         }
                         "options" => self.notice = Some("Saved.".into()),
-                        _ => self.notice = Some("Scanning.".into()),
+                        _ => {
+                            self.notice = Some("Scanning…".into());
+                            self.scan_watch = Some(cx.now);
+                            self.scan_seen = false;
+                            self.last_poll = cx.now;
+                        }
                     },
                     Err(e) => self.error = fail(cx, e),
                 }
@@ -850,6 +877,17 @@ impl Screen for LibraryPage {
         if !self.started {
             self.started = true;
             self.load(cx);
+        }
+        // FIX-2 #11: while a scan runs, ask the server every few seconds so the notice moves and then finishes.
+        if self.scan_watch.is_some() {
+            if cx.now - self.last_poll > 2.0 {
+                self.last_poll = cx.now;
+                let (c, name) = (cx.api(), self.name.clone());
+                cx.spawn("scanpoll", move || -> Result<Option<VirtualFolderInfo>> {
+                    Ok(c.virtual_folders()?.into_iter().find(|f| f.name.as_deref() == Some(name.as_str())))
+                });
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
         }
         let moving = ui.input(|i| i.pointer.is_moving());
         ui.add_space(t.margin);

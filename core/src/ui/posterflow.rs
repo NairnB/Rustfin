@@ -18,6 +18,9 @@ use std::collections::{HashMap, HashSet};
 // covers), so a 2:3 poster keeps the iPod's strip widths and spacing. ----
 /// Side covers turn this far about their vertical axis (outer edge towards you).
 pub const SIDE_ANGLE_DEG: f32 = 84.0;
+/// FIX-2 #7: how bright the poster on the turning back is (it sits under the title).
+const BACK_DIM: f32 = 0.35;
+
 /// Camera distance from the plane of the side covers.
 pub const CAM_DIST: f32 = 3.7;
 /// How far the centre cover stands forward of the side covers.
@@ -338,6 +341,8 @@ pub struct PosterFlow {
     /// Cover outlines on screen, front first (for clicks).
     hits: Vec<(usize, [Pos2; 4])>,
     back_rect: Option<Rect>,
+    /// FIX-2 #7: the back while it turns (item index, screen rect), for its title + year.
+    turning: Option<(usize, Rect)>,
 }
 
 /// Poster Flow over a library. `items` are what the grid has loaded so far (in its order), `complete` when
@@ -384,6 +389,7 @@ impl PosterFlow {
             dt: 0.0,
             hits: vec![],
             back_rect: None,
+            turning: None,
         }
     }
 
@@ -660,12 +666,20 @@ impl PosterFlow {
         pl
     }
 
-    /// The back's panel in GL while it turns: a plain card in the app's surface colour. Once it faces you, egui
-    /// draws the same card with its rounded corners and contents, so the GL one steps aside.
-    fn back_quads(&self, t: &Theme, cam: &Cam, pl: &Placed, out: &mut Vec<Quad>) -> [Pos2; 4] {
-        // Seen from behind: local x runs the other way.
-        let c = rgba(t.surface);
-        let (q, s) = quad(cam, pl, (0.5, -0.5), (0.5, -0.5), None, [c; 4]);
+    /// The back's panel in GL while it turns. FIX-2 #7: the item's own poster, dimmed (title + year go on top in
+    /// `draw_turning`), so the turn never shows a blank grey slab; a plain surface card only when there is no art.
+    /// Once it faces you, egui draws the full card with its rounded corners and contents, so the GL one steps aside.
+    fn back_quads(
+        &self,
+        t: &Theme,
+        cam: &Cam,
+        pl: &Placed,
+        tex: Option<egui::TextureId>,
+        out: &mut Vec<Quad>,
+    ) -> [Pos2; 4] {
+        let c = if tex.is_some() { [BACK_DIM, BACK_DIM, BACK_DIM, 1.0] } else { rgba(t.surface) };
+        // Seen from behind: local x runs the other way (so the poster reads the right way round).
+        let (q, s) = quad(cam, pl, (0.5, -0.5), (0.5, -0.5), tex, [c; 4]);
         if self.flip < 1.0 {
             out.push(q);
         }
@@ -699,6 +713,7 @@ impl PosterFlow {
         let mut quads = vec![];
         let mut hits = vec![];
         self.back_rect = None;
+        self.turning = None;
         for &i in &order {
             let item = &self.items[i];
             let pl = self.placed(i, cam);
@@ -712,10 +727,12 @@ impl PosterFlow {
             let col = if tex.is_some() { white } else { placeholder };
             let showing_back = pl.angle.cos() < 0.0 && pl.sy > 1.0;
             if showing_back {
-                let s = self.back_quads(t, cam, &pl, &mut quads);
+                let s = self.back_quads(t, cam, &pl, tex, &mut quads);
                 hits.push((i, s));
                 if self.flip >= 1.0 {
                     self.back_rect = Some(Rect::from_two_pos(s[0], s[2]).intersect(cam.view));
+                } else {
+                    self.turning = Some((i, Rect::from_two_pos(s[0], s[2]).intersect(cam.view)));
                 }
             } else {
                 quads.push(reflection(cam, &pl, tex, col));
@@ -776,6 +793,25 @@ impl PosterFlow {
             t.font_w(t.body_size, Weight::SemiBold),
             t.muted.gamma_multiply(a),
         );
+    }
+
+    /// FIX-2 #7: title and year centred on the back while it turns, from the first frame of the flip.
+    fn draw_turning(&self, ui: &egui::Ui, cx: &Cx) {
+        let t = cx.theme;
+        let Some((i, r)) = self.turning else { return };
+        let Some(item) = self.items.get(i) else { return };
+        let (title, sub) = labels(item, self.full.get(&item.id));
+        let p = ui.painter().with_clip_rect(r);
+        let tr = p.text(r.center(), Align2::CENTER_BOTTOM, title, t.font_w(t.heading_size, Weight::Bold), t.text);
+        if !sub.is_empty() {
+            p.text(
+                pos2(r.center().x, tr.bottom() + t.gap / 4.0),
+                Align2::CENTER_TOP,
+                sub,
+                t.font(t.body_size),
+                t.muted,
+            );
+        }
     }
 
     /// The flipped back, in the app's own look (docs/DESIGN-appletv.md): a rounded card with the backdrop fading in
@@ -1256,6 +1292,7 @@ impl Screen for PosterFlow {
         }
         self.draw_flow(ui, cx, &cam);
         self.draw_labels(ui, cx, &cam);
+        self.draw_turning(ui, cx);
         if let Some(r) = self.back_rect {
             self.draw_back(ui, cx, r);
         }

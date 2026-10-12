@@ -1,0 +1,40 @@
+# FIX-2 #7 regression (tester: 'a blank grey slab shows for about 1.5 s'): mid-flip, the back shows the poster
+# (dimmed) with title + year; then the full back.
+wait-screen connect
+wait 2500
+idle
+key down
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+key info
+idle
+key down 9
+key enter
+wait-screen posterflow
+idle
+wait 600
+key right
+wait 900
+idle
+key enter
+wait 250
+shot fix2-flow-turn
+wait 1500
+idle
+shot fix2-flow-back
+quit

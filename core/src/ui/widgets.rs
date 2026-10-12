@@ -492,8 +492,19 @@ pub fn chips(ui: &mut Ui, t: &Theme, labels: &[String], selected: &[bool], focus
             let size = vec2(galley.size().x + tick_w + 2.0 * t.chip_pad, t.chip_h);
             let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
             let a = focus_amount(ui, t, resp.id, focus == Some(i));
-            let rest = if on || resp.hovered() { t.glass_hi } else { t.glass };
+            // FIX-2 #13: selection and focus never look alike — selected = an outline + tick on the resting glass,
+            // focused = the white plate.
+            let rest = if resp.hovered() { t.glass_hi } else { t.glass };
             let ink = plate(ui, t, rect, t.chip_h / 2.0, rest, a, t.pill_focus_scale);
+            if on && a < 0.5 {
+                let r = lift(rect, t.pill_focus_scale, a);
+                ui.painter().rect_stroke(
+                    r.shrink(t.badge_stroke / 2.0),
+                    t.chip_h / 2.0,
+                    Stroke::new(t.badge_stroke, t.text),
+                    egui::StrokeKind::Inside,
+                );
+            }
             let x0 = rect.center().x - (galley.size().x + tick_w) / 2.0;
             if on {
                 icon(ui, t, Icon::Tick, pos2(x0 + t.small_size / 2.0, rect.center().y), t.small_size * 0.8, ink);
@@ -550,16 +561,17 @@ pub fn tabs(ui: &mut Ui, t: &Theme, labels: &[String], selected: usize, focus: O
         let resp = ui.interact(rect, ui.id().with(("w0-tab", i)), Sense::click());
         {
             let a = focus_amount(ui, t, resp.id, focus == Some(i));
-            let rest = if i == selected {
-                t.glass_hi
-            } else if resp.hovered() {
-                t.glass
-            } else {
-                Color32::TRANSPARENT
-            };
+            // FIX-2 #3: only focus gets a plate. The selected tab is white text with a short underline (tvOS), so
+            // a page never shows two lit things; with the tabs focused it keeps a faint glass behind it.
+            let rest =
+                if (i == selected && focus.is_some()) || resp.hovered() { t.glass } else { Color32::TRANSPARENT };
             let ink = plate(ui, t, rect, seg_h / 2.0, rest, a, t.pill_focus_scale);
             let ink = if i == selected || a > 0.5 { ink } else { t.muted };
-            ui.painter().galley(rect.center() - galley.size() / 2.0, galley, ink);
+            let at = rect.center() - galley.size() / 2.0;
+            if i == selected && a < 0.5 {
+                selected_mark(ui, t, rect, galley.size().x, ink);
+            }
+            ui.painter().galley(at, galley, ink);
             out.xs.push(rect.center().x);
             if resp.hovered() {
                 out.hovered = Some(i);
@@ -570,6 +582,14 @@ pub fn tabs(ui: &mut Ui, t: &Theme, labels: &[String], selected: usize, focus: O
         }
     }
     out
+}
+
+/// FIX-2 #3: the selected-but-not-focused tab's mark — a short rounded underline under the label.
+pub fn selected_mark(ui: &Ui, t: &Theme, rect: Rect, label_w: f32, ink: Color32) {
+    let w = (label_w * 0.6).max(t.gap / 2.0);
+    let y = rect.bottom() - t.bar_inset;
+    let r = Rect::from_center_size(pos2(rect.center().x, y), vec2(w, t.badge_stroke * 2.0));
+    ui.painter().rect_filled(r, t.badge_stroke, ink);
 }
 
 // ---------- 5. Text field (wraps parts) and number field ----------

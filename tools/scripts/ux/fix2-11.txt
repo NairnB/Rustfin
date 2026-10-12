@@ -1,0 +1,43 @@
+# FIX-2 #11: Scan this library (one library's page) moves and then says 'Scan finished.' Tester task: r2-admin-rescan.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+click 130 1038
+idle
+click 380 939
+wait-screen settings
+idle
+key right 6
+key down 3
+key enter
+wait-screen admin
+idle
+key down 5
+key enter
+wait-screen libraries
+wait 1500
+idle
+key down
+key enter
+wait-screen adminlibrary
+wait 1500
+idle
+key enter
+wait 1500
+shot fix2-11-scanning
+wait 33000
+idle
+shot fix2-11-finished
+quit

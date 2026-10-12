@@ -533,6 +533,10 @@ impl App {
         if physical_typing(self.tv_text_at, now) && self.tv_kb.is_none() {
             return keys.to_vec();
         }
+        // FIX-2 #1d: a screen asked for the keyboard on its focused field (e.g. a picked user's password).
+        if self.tv_kb.is_none() && ui::keyboard::take_request(ctx) {
+            self.tv_kb = Some(KeyboardState::new());
+        }
         if self.tv_kb.is_none() && self.screen_name() == "search" && self.tv_kb_auto != top_id {
             self.tv_kb_auto = top_id;
             self.tv_kb = Some(KeyboardState::new());

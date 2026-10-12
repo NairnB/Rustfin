@@ -1,0 +1,58 @@
+# args: --tv
+# FIX-2 regression (D1, TV keyboard): #1b eight quick Rights land on the 8th key (no overshoot); #1a Up from the
+# keyboard's top row leaves it, the results stay in view (#1c slimmer panel); #1d Switch user: the picker, a user
+# with a password (or "Other user…") gets the keyboard at once (jf-test lists no public users: Other user here). Tester tasks: r2-actor-films-tv, r2-switch-user-tv.
+# The sign-in prelude types text (a physical keyboard): wait out the 30 s quiet spell before the remote keyboard.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 31000
+key up
+key right 10
+key left
+key enter
+wait-screen search
+idle
+wait 300
+shot fix2-osk-open
+key right 8
+idle
+wait 300
+shot fix2-osk-eight-rights
+key enter
+idle
+wait 600
+key up
+idle
+wait 600
+shot fix2-osk-up-leaves
+key back
+wait-screen home
+idle
+key up 20
+key right 10
+key enter
+key down 3
+key enter
+wait-screen signin
+idle
+wait 600
+shot fix2-who-is-watching
+key right
+key enter
+idle
+wait 600
+shot fix2-picked-user-keyboard
+quit

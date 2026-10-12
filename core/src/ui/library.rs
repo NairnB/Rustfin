@@ -282,6 +282,8 @@ pub struct Library {
     /// FIX-1 #7: the empty filtered page's "Clear filters" button is the G_SECTIONS group this frame.
     empty_clear: bool,
     items: Vec<Option<Item>>,
+    /// FIX-2 #8: the Info menu of a poster (Play, Details, Mark watched, Favourite, Poster Flow).
+    card_menu: Option<super::card_menu::CardMenu>,
     total: usize,
     next_start: usize,
     in_flight: bool,
@@ -325,6 +327,7 @@ pub fn screen(view: Item) -> Box<dyn Screen> {
     Box::new(Library {
         view,
         items: vec![],
+        card_menu: None,
         total: 0,
         next_start: 0,
         in_flight: false,
@@ -633,6 +636,20 @@ impl Library {
     }
 
     /// The flat (ordered-list) index of the currently focused card, if the focus is on a section grid.
+    /// FIX-2 #8: act on a pick from the poster's Info menu; the toggles show at once on the card.
+    fn card_menu_act(&mut self, cx: &mut Cx, act: super::card_menu::MenuAct) {
+        let Some(m) = self.card_menu.take() else { return };
+        if act == super::card_menu::MenuAct::PosterFlow {
+            self.open_flow(cx);
+            return;
+        }
+        if let Some(next) = super::card_menu::run(cx, &m.item, act, Some(tags::place_id(&self.view.id))) {
+            for it in self.items.iter_mut().flatten().filter(|i| i.id == next.id) {
+                it.user_data = next.user_data.clone();
+            }
+        }
+    }
+
     fn focused_flat_index(&self) -> Option<usize> {
         if self.focus.group < G_SECTIONS {
             return None;
@@ -1423,6 +1440,14 @@ impl Screen for Library {
 
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
         self.first_focus = false;
+        if let Some(m) = self.card_menu.as_mut() {
+            match m.key(key) {
+                super::card_menu::MenuKey::Stay => {}
+                super::card_menu::MenuKey::Close => self.card_menu = None,
+                super::card_menu::MenuKey::Pick(act) => self.card_menu_act(cx, act),
+            }
+            return true;
+        }
         if self.dlg.is_some() {
             return self.dlg_key(cx, key);
         }
@@ -1488,9 +1513,12 @@ impl Screen for Library {
                 return true;
             }
         }
-        // BRIEF-coverflow: Info (i / the remote's Info) opens Poster Flow.
+        // FIX-2 #8: Info on a poster opens its menu (Poster Flow is one of its rows, and the control-row pill).
         if key == Key::Info && self.tab.is_items() {
-            self.open_flow(cx);
+            match self.item_at(self.focus) {
+                Some(item) => self.card_menu = Some(super::card_menu::CardMenu::new(item)),
+                None => self.open_flow(cx),
+            }
             return true;
         }
         // P-LIB-13: the A–Z bar is vertical, so Up/Down walk the letters and Left returns to the grid.
@@ -1613,6 +1641,12 @@ impl Screen for Library {
     }
 
     fn on_done(&mut self, cx: &mut Cx, tag: &'static str, payload: Box<dyn std::any::Any + Send>) {
+        if tag == "cardmenu" {
+            if let Some(e) = super::card_menu::done(cx, payload) {
+                self.error = Some(e);
+            }
+            return;
+        }
         if tag == "playall" {
             self.play_loading = false;
             let Ok(r) = payload.downcast::<Result<Vec<Item>>>() else { return };
@@ -1796,6 +1830,9 @@ impl Screen for Library {
         }
 
         self.dialog_ui(ui, cx, pointer_moved);
+        if let Some(act) = self.card_menu.as_mut().and_then(|m| m.draw(ui, cx)) {
+            self.card_menu_act(cx, act);
+        }
     }
 }
 

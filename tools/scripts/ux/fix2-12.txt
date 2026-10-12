@@ -1,0 +1,26 @@
+# FIX-2 #12: a spinner while searching; a title in Top results is not repeated in its type row. Task: r2-actor-films.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key search
+wait-screen search
+type Star
+wait 150
+shot fix2-12-spinner
+wait 1500
+idle
+wait 300
+shot fix2-12-results
+quit

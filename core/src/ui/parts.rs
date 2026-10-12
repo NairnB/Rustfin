@@ -146,6 +146,14 @@ pub fn resume_fraction(item: &Item) -> Option<f32> {
     (pos > 0 && total > 0).then(|| (pos as f64 / total as f64) as f32)
 }
 
+/// FIX-2 #16: the hero's main button says where it starts — "Resume from 0:30", else "Play".
+pub fn resume_label(item: &Item) -> String {
+    match (resume_fraction(item), item.user_data.as_ref()) {
+        (Some(_), Some(u)) => format!("Resume from {}", clock(ticks_to_secs(u.playback_position_ticks))),
+        _ => "Play".to_string(),
+    }
+}
+
 /// "2019 · 1h 32m · PG" (parts that exist only).
 pub fn meta_line(item: &Item) -> String {
     meta_line_with(item, true, true)
@@ -632,15 +640,14 @@ pub fn pill_bar(
     for (i, rect) in rects.iter().take(n).enumerate() {
         let resp = ui.interact(*rect, ui.id().with(("topbar", i)), Sense::click());
         let a = widgets::focus_amount(ui, t, resp.id, focused == Some(i));
-        let rest = if i == current {
-            t.glass_hi
-        } else if resp.hovered() {
-            t.glass
-        } else {
-            Color32::TRANSPARENT
-        };
+        // FIX-2 #3: the current tab is text + underline while focus is elsewhere — only the focused item has a plate.
+        let rest = if (i == current && focused.is_some()) || resp.hovered() { t.glass } else { Color32::TRANSPARENT };
         let ink = widgets::plate(ui, t, *rect, seg_h / 2.0, rest, a, t.pill_focus_scale);
-        let ink = if i == current || a > 0.5 { ink } else { t.text.gamma_multiply(0.8) };
+        let ink = if i == current || a > 0.5 { ink } else { t.text.gamma_multiply(0.7) };
+        if i == current && a < 0.5 && i != user_i {
+            let w = ui.fonts(|f| f.layout_no_wrap(labels[i].to_string(), font.clone(), ink).size().x);
+            widgets::selected_mark(ui, t, *rect, w, ink);
+        }
         if i == user_i {
             let name = user.unwrap_or_default();
             let c = pos2(rect.left() + t.bar_inset + avatar / 2.0, rect.center().y);
@@ -939,7 +946,10 @@ pub fn thumb_card(ui: &mut Ui, cx: &mut Cx, item: &Item, focused: bool) -> Respo
     if !ui.is_rect_visible(rect) {
         return resp;
     }
-    let img_rect = Rect::from_min_size(rect.min, size);
+    // FIX-2 #5: the same focus as poster cards — lift, shadow and the soft white glow (was a thin ring).
+    let lifted = (focused && super::shell::keyboard_focus(ui.ctx())) || resp.hovered();
+    let a = t.ease(ui.ctx().animate_bool_with_time(resp.id.with("focus"), lifted, t.focus_time));
+    let img_rect = card_lift(ui, t, Rect::from_min_size(rect.min, size), a);
     let w = image_width_bucket(size.x, ui.ctx().pixels_per_point());
     let pick = [ImageKind::Thumb, ImageKind::Backdrop, ImageKind::Primary]
         .into_iter()
@@ -953,10 +963,13 @@ pub fn thumb_card(ui: &mut Ui, cx: &mut Cx, item: &Item, focused: bool) -> Respo
             } else {
                 (0.0, 1.0)
             };
-            ui.painter().image(tex, img_rect, Rect::from_min_max(pos2(0.0, v0), pos2(1.0, v1)), egui::Color32::WHITE);
+            egui::Image::from_texture(egui::load::SizedTexture::new(tex, img_rect.size()))
+                .uv(Rect::from_min_max(pos2(0.0, v0), pos2(1.0, v1)))
+                .corner_radius(t.card_radius)
+                .paint_at(ui, img_rect);
         }
         None => {
-            ui.painter().rect_filled(img_rect, t.radius, t.skeleton);
+            ui.painter().rect_filled(img_rect, t.card_radius, t.skeleton);
             if pick.is_none() {
                 ui.painter().text(
                     img_rect.center(),
@@ -971,11 +984,9 @@ pub fn thumb_card(ui: &mut Ui, cx: &mut Cx, item: &Item, focused: bool) -> Respo
     if let Some(f) = resume_fraction(item) {
         progress_bar(ui, t, img_rect, f);
     }
-    if focused {
-        focus_ring(ui, t, img_rect);
-    }
     let (title, sub) = card_labels(item);
-    label_line(ui, t, pos2(rect.left(), img_rect.bottom() + 6.0), size.x, &title, t.body_size, t.text);
+    let title_ink = if a > 0.5 { t.text } else { t.text.gamma_multiply(0.85) };
+    label_line(ui, t, pos2(rect.left(), img_rect.bottom() + 6.0), size.x, &title, t.body_size, title_ink);
     if !sub.is_empty() {
         label_line(
             ui,
@@ -1197,13 +1208,13 @@ pub fn hero(ui: &mut Ui, cx: &mut Cx, item: &Item, focus: Option<usize>) -> RowO
     }
 
     // Buttons.
-    let label = if resume_fraction(item).is_some() { "Resume" } else { "Play" };
+    let label = resume_label(item);
     let row = Rect::from_min_size(pos2(x0, pills_top), vec2(t.hero_text_w, t.pill_h));
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            let r = widgets::play_pill(ui, t, label, focus == Some(0));
+            let r = widgets::play_pill(ui, t, &label, focus == Some(0));
             let m = widgets::round_button(ui, t, Icon::More, focus == Some(1));
             for (i, r) in [r, m].iter().enumerate() {
                 out.xs.push(r.rect.center().x);

@@ -1,0 +1,33 @@
+# FIX-2 #13: a selected filter chip (outline + tick) never looks like the focused one (white). Task: r21-filter-unwatched.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key right 2
+key enter
+wait-screen library
+idle
+key up
+key left 20
+key right 2
+key enter
+idle
+key right
+wait 400
+shot fix2-13-chips
+key left 2
+key enter
+quit

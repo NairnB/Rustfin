@@ -22,7 +22,11 @@ key right 2
 key enter
 wait-screen library
 idle
+# FIX-2 #8: Info on a poster opens its menu; Poster Flow is the last row.
 key info
+idle
+key down 9
+key enter
 wait-screen posterflow
 idle
 # Warm the posters either side, then film ~11 s at a fixed 30 fps (preview video for BRIEF-coverflow).

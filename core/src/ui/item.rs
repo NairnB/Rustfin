@@ -112,6 +112,8 @@ enum AddAct {
 }
 
 pub struct ItemScreen {
+    /// FIX-2 #6: the user's preferred subtitle language (3-letter code), listed first after Off.
+    pref_sub: String,
     item: Item,
     kind: ItemKind,
     full: Option<Item>,
@@ -182,6 +184,7 @@ pub fn screen_in(item: Item, place: Option<String>) -> Box<dyn Screen> {
         _ => {
             let kind = item.kind.clone();
             Box::new(ItemScreen {
+                pref_sub: String::new(),
                 item,
                 kind,
                 full: None,
@@ -325,7 +328,25 @@ impl ItemScreen {
 
     fn subtitle_entries(&self) -> Vec<(String, Option<i32>)> {
         let mut v = vec![("Off".to_string(), None)];
-        v.extend(self.track_names(StreamKind::Subtitle).into_iter().map(|(i, l)| (l, Some(i))));
+        let langs: Vec<(i32, Option<String>)> = self
+            .source()
+            .map(|ms| {
+                ms.media_streams
+                    .iter()
+                    .filter(|s| s.kind == StreamKind::Subtitle)
+                    .map(|s| (s.index, s.language.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tracks = self.track_names(StreamKind::Subtitle);
+        let rows: Vec<(i32, String, Option<String>)> = tracks
+            .into_iter()
+            .map(|(i, l)| {
+                let lang = langs.iter().find(|(j, _)| *j == i).and_then(|(_, g)| g.clone());
+                (i, l, lang)
+            })
+            .collect();
+        v.extend(order_tracks(rows, &self.pref_sub).into_iter().map(|(i, l)| (l, Some(i))));
         v
     }
 
@@ -787,10 +808,15 @@ impl ItemScreen {
             Action::OpenAudio => {
                 self.close_pickers();
                 self.audio_open = true;
+                // FIX-2 #6: the list opens on the current choice, so the first Down moves within it.
+                let at = self.audio.and_then(|a| self.audio_entries().iter().position(|(_, i)| *i == a));
+                self.focus = Focus { group: G_LIST, index: at.unwrap_or(0) };
             }
             Action::OpenSubtitles => {
                 self.close_pickers();
                 self.subtitle_open = true;
+                let at = self.subtitle.and_then(|v| self.subtitle_entries().iter().position(|(_, s)| *s == v));
+                self.focus = Focus { group: G_LIST, index: at.unwrap_or(0) };
             }
             // G8 (P-ITEM-11)
             Action::OpenVersion => {
@@ -2246,6 +2272,7 @@ impl Screen for ItemScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
+        self.pref_sub = cx.settings.subtitles.language.clone();
         // G8: the movie / episode page is taller than the screen once the extra rows are in, so it scrolls.
         if matches!(self.kind, ItemKind::Movie | ItemKind::Episode) {
             egui::ScrollArea::vertical()
@@ -2377,5 +2404,31 @@ mod tests {
         let src = MediaSource { id: "s1".into(), ..Default::default() };
         assert_eq!(version_label(0, Some(&src), &[info()]), "Ember Rising - 4K");
         assert_eq!(version_label(1, None, &[]), "Version 2");
+    }
+}
+
+/// FIX-2 #6: subtitle tracks in picker order — the preferred language (3-letter code) first, then A–Z by label.
+fn order_tracks(mut rows: Vec<(i32, String, Option<String>)>, preferred: &str) -> Vec<(i32, String)> {
+    let pref =
+        |l: &Option<String>| !preferred.is_empty() && l.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(preferred));
+    rows.sort_by(|a, b| pref(&b.2).cmp(&pref(&a.2)).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    rows.into_iter().map(|(i, l, _)| (i, l)).collect()
+}
+
+#[cfg(test)]
+mod fix2_tests {
+    use super::order_tracks;
+
+    #[test]
+    fn subtitles_list_the_preferred_language_then_a_to_z() {
+        let rows = vec![
+            (3, "Japanese".to_string(), Some("jpn".to_string())),
+            (4, "German".to_string(), Some("ger".to_string())),
+            (5, "English".to_string(), Some("eng".to_string())),
+            (6, "Chinese".to_string(), Some("chi".to_string())),
+        ];
+        let names = |v: Vec<(i32, String)>| v.into_iter().map(|(_, l)| l).collect::<Vec<_>>();
+        assert_eq!(names(order_tracks(rows.clone(), "eng")), ["English", "Chinese", "German", "Japanese"]);
+        assert_eq!(names(order_tracks(rows, "")), ["Chinese", "English", "German", "Japanese"]);
     }
 }

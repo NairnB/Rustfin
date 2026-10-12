@@ -385,15 +385,19 @@ fn user_row(ui: &mut Ui, t: &Theme, rect: Rect, v: &View, focused: bool) -> Opti
     let initials: String = v.user.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect();
     let initials = if initials.is_empty() { "?".to_string() } else { initials.to_uppercase() };
     ui.painter().text(c, Align2::CENTER_CENTER, initials, t.font(t.small_size), t.text);
+    let mut cut = v.collapsed;
     if !v.collapsed {
-        ui.painter().text(
-            pos2(rect.left() + t.sidebar_text_x, rect.center().y),
-            Align2::LEFT_CENTER,
-            v.user,
-            t.font(t.body_size),
-            if focused { t.focus_ink } else { t.text },
-        );
+        // FIX-2 #17: a long user name ends in "…" inside the row; the whole name shows on hover.
+        let ink = if focused { t.focus_ink } else { t.text };
+        let max_w = rect.right() - (rect.left() + t.sidebar_text_x) - t.sidebar_pad / 2.0;
+        let mut job = egui::text::LayoutJob::simple_singleline(v.user.to_string(), t.font(t.body_size), ink);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
+        let galley = ui.fonts(|f| f.layout_job(job));
+        cut = galley.elided;
+        let at = pos2(rect.left() + t.sidebar_text_x, rect.center().y - galley.size().y / 2.0);
+        ui.painter().galley(at, galley, ink);
     }
+    let r = if cut && !open { r.on_hover_text(v.user) } else { r };
     if r.clicked() {
         open = !open;
     }

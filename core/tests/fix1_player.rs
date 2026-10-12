@@ -44,3 +44,16 @@ fn subtitles_list_ends_with_the_options_row() {
     assert_eq!(sheet_row(3, 3), Some(SheetRow::Options));
     assert_eq!(sheet_row(4, 3), None);
 }
+
+#[test]
+fn trickplay_only_while_seeking_or_hovering() {
+    use jf_core::ui::player::{show_trickplay, TRICKPLAY_HOLD_SECS};
+    // FIX-2 #17: the bar focused at the start of play shows no thumbnail.
+    assert!(!show_trickplay(false, true, 5.0, None));
+    // Seeking with the bar focused shows it, for a short while.
+    assert!(show_trickplay(false, true, 5.0, Some(4.0)));
+    assert!(!show_trickplay(false, true, 5.0 + TRICKPLAY_HOLD_SECS + 0.1, Some(5.0)));
+    // A seek with the bar not focused (OSD hidden) shows nothing; the pointer over the bar always does.
+    assert!(!show_trickplay(false, false, 5.0, Some(4.9)));
+    assert!(show_trickplay(true, false, 5.0, None));
+}

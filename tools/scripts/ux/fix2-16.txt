@@ -1,0 +1,19 @@
+# FIX-2 #16: Home's hero button says where it resumes ('Resume from 0:30'). Task: r2-resume-film.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 300
+shot fix2-16-home
+quit

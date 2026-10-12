@@ -30,7 +30,9 @@ wait-screen player
 wait 3000
 
 # OSD hidden: Left seeks back (the film is only 40 s), Right seeks +30 s and shows the OSD on the timeline.
-key left
+# Left four times rewinds to 0:00: Amber Tide may resume part-way (earlier tours leave progress), and +30 s from
+# there would end the film and close the player.
+key left 4
 wait 300
 key right
 wait 400

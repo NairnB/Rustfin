@@ -131,11 +131,14 @@ impl Search {
         let top = top_results(&self.last_query, &items, &people);
         self.top_people = top.iter().filter(|(_, p)| *p).map(|(i, _)| i.id.clone()).collect();
         self.top = top.into_iter().map(|(i, _)| i).collect();
-        self.collections = items.iter().filter(|i| i.kind == ItemKind::BoxSet).cloned().collect();
-        self.people = people;
-        self.films = items.iter().filter(|i| i.kind == ItemKind::Movie).cloned().collect();
-        self.shows = items.iter().filter(|i| i.kind == ItemKind::Series).cloned().collect();
-        self.episodes = items.iter().filter(|i| i.kind == ItemKind::Episode).cloned().collect();
+        // FIX-2 #12: a title shown in Top results is not repeated in its type row.
+        let shown: Vec<String> = self.top.iter().map(|i| i.id.clone()).collect();
+        let rest = |k: ItemKind| not_in(&shown, items.iter().filter(|i| i.kind == k).cloned().collect());
+        self.collections = rest(ItemKind::BoxSet);
+        self.films = rest(ItemKind::Movie);
+        self.shows = rest(ItemKind::Series);
+        self.episodes = rest(ItemKind::Episode);
+        self.people = not_in(&shown, people);
     }
 
     fn result_at(&self, f: Focus) -> Option<Item> {
@@ -310,8 +313,12 @@ impl Screen for Search {
         let mut clicked_person = false;
 
         if (self.loading || self.deadline.is_some()) && !self.query.trim().is_empty() {
+            // FIX-2 #12: a spinner beside the words, the earlier results stay underneath until the new ones land.
             ui.add_space(t.gap / 2.0);
-            parts::muted(ui, t, "Searching…");
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(t.body_size).color(t.muted));
+                parts::muted(ui, t, "Searching…");
+            });
         }
 
         if !self.top.is_empty() {
@@ -460,6 +467,11 @@ impl Screen for Search {
     }
 }
 
+/// FIX-2 #12: `items` without the ones whose id is in `shown`.
+fn not_in(shown: &[String], items: Vec<Item>) -> Vec<Item> {
+    items.into_iter().filter(|i| !shown.contains(&i.id)).collect()
+}
+
 /// A person opens their page; everything else opens like any item.
 fn open(cx: &mut Cx, it: Item, person: bool) {
     if person {
@@ -471,6 +483,14 @@ fn open(cx: &mut Cx, it: Item, person: bool) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn top_results_are_not_repeated_in_type_rows() {
+        let it = |id: &str| Item { id: id.into(), ..Default::default() };
+        let left = not_in(&["a".to_string()], vec![it("a"), it("b")]);
+        assert_eq!(left.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["b"]);
+    }
+
     use super::*;
 
     fn item(name: &str, kind: ItemKind) -> Item {

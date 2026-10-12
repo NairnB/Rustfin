@@ -342,6 +342,15 @@ pub const OSD_START_SECS: f64 = 5.0;
 /// FIX-1 #16: seconds without input before the OSD hides while a button (not the timeline) has focus.
 pub const OSD_BUTTON_HOLD_SECS: f64 = 10.0;
 
+/// FIX-2 #17: seconds the trickplay thumbnail stays up after a seek from the remote/keyboard.
+pub const TRICKPLAY_HOLD_SECS: f64 = 2.0;
+
+/// FIX-2 #17: the trickplay thumbnail shows while the pointer is over the bar, or while seeking with the bar
+/// focused (up to TRICKPLAY_HOLD_SECS after the last seek) — not merely because the bar has focus (start of play).
+pub fn show_trickplay(hovering: bool, focus_bar: bool, now: f64, last_seek: Option<f64>) -> bool {
+    hovering || (focus_bar && last_seek.is_some_and(|t| now - t <= TRICKPLAY_HOLD_SECS))
+}
+
 /// FIX-1 #3: the "what's playing" line under the title: the audio track, plus the subtitles when they are on.
 pub fn now_playing_line(audio: &str, subtitle: Option<&str>) -> String {
     match subtitle {
@@ -576,6 +585,8 @@ pub struct PlayerScreen {
     auto_skipped: Vec<usize>,
     // RR4 / P-PLAY-21: trickplay info of the playing item (None = no thumbnails)
     trickplay: Option<TrickplayInfo>,
+    /// FIX-2 #17: when the last seek happened (cx.now), for the trickplay thumbnail.
+    last_seek: Option<f64>,
     // G4: volume (0.0..1.0), mute, fullscreen, chapters list, keys help
     volume: f32,
     muted: bool,
@@ -672,6 +683,7 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         segments: vec![],
         auto_skipped: vec![],
         trickplay: None,
+        last_seek: None,
         volume: 1.0,
         muted: false,
         fullscreen: false,
@@ -984,6 +996,7 @@ impl PlayerScreen {
                 self.segments = vec![];
                 self.auto_skipped = vec![];
                 self.trickplay = None;
+                self.last_seek = None;
                 self.up_next = None;
                 self.up_next_deadline = None;
                 self.next = None;
@@ -1326,6 +1339,7 @@ impl PlayerScreen {
     }
 
     fn seek_relative(&mut self, cx: &mut Cx, delta: f64) {
+        self.last_seek = Some(cx.now);
         let pos = cx.player.position();
         let dur = cx.player.duration().unwrap_or(f64::INFINITY).max(0.0);
         cx.player.seek((pos + delta).clamp(0.0, dur));
@@ -1888,7 +1902,7 @@ impl PlayerScreen {
         if let Some(rel) = seek_click {
             cx.player.seek(rel as f64 * dur);
         }
-        if bar_hover.is_some() || focus_bar {
+        if show_trickplay(bar_hover.is_some(), focus_bar, cx.now, self.last_seek) {
             self.draw_trickplay(ui, cx, bar_rect, bottom_rect.top(), bar_hover.unwrap_or(frac), dur);
         }
 
@@ -2941,7 +2955,13 @@ impl Screen for PlayerScreen {
             self.apply_sub_style(cx);
         }
 
-        if self.osd_visible {
+        // FIX-2 (FRICTION-3 player loading): the start-of-play OSD waits for the first frame, so the cover stays
+        // clean; its OSD_START_SECS count from the picture, not from Play.
+        let hold_for_cover = self.first_frame_at.is_none() && self.osd_auto;
+        if hold_for_cover {
+            self.osd_last_input = cx.now + OSD_START_SECS - t.osd_hide_after as f64;
+        }
+        if self.osd_visible && !hold_for_cover {
             self.draw_osd(ui, cx);
         }
         self.draw_skip_button(ui, cx);

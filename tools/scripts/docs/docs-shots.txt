@@ -54,7 +54,11 @@ idle
 click 130 289
 wait-screen library
 idle
+# FIX-2 #8: Info on a poster opens its menu; Poster Flow is the last row.
 key info
+idle
+key down 9
+key enter
 wait-screen posterflow
 idle
 wait 600

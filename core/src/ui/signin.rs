@@ -23,6 +23,8 @@ pub struct PickerEntry {
     pub name: String,
     /// The saved session, when this device has one for them (picking signs straight in).
     pub saved: Option<Session>,
+    /// FIX-2 #1d: a public user without a password signs in with one press; with one, only the password is typed.
+    pub needs_password: bool,
 }
 
 /// The picker list: saved users first (newest first, as given), then the server's public users who are not saved.
@@ -30,11 +32,21 @@ pub struct PickerEntry {
 pub fn picker_entries(saved: &[Session], public: &[PublicUser]) -> Vec<PickerEntry> {
     let mut out: Vec<PickerEntry> = saved
         .iter()
-        .map(|s| PickerEntry { user_id: s.user_id.clone(), name: s.user_name.clone(), saved: Some(s.clone()) })
+        .map(|s| PickerEntry {
+            user_id: s.user_id.clone(),
+            name: s.user_name.clone(),
+            saved: Some(s.clone()),
+            needs_password: false,
+        })
         .collect();
     for u in public {
         if !out.iter().any(|e| e.user_id == u.id) {
-            out.push(PickerEntry { user_id: u.id.clone(), name: u.name.clone(), saved: None });
+            out.push(PickerEntry {
+                user_id: u.id.clone(),
+                name: u.name.clone(),
+                saved: None,
+                needs_password: u.has_password,
+            });
         }
     }
     out
@@ -50,6 +62,8 @@ pub struct SignIn {
     password: String,
     error: Option<String>,
     busy: bool,
+    /// FIX-2 #1d: open the TV keyboard on the password field on the next frame (a picked user with a password).
+    want_keyboard: bool,
     quick_connect: bool,
     quick_connect_known: bool,
     disclaimer: Option<String>,
@@ -77,6 +91,7 @@ impl SignIn {
             password: String::new(),
             error: message,
             busy: false,
+            want_keyboard: false,
             quick_connect: false,
             quick_connect_known: false,
             disclaimer: None,
@@ -134,10 +149,19 @@ impl SignIn {
             self.username.clear();
             self.password.clear();
             self.focus = Focus { group: G_USERNAME, index: 0 };
+            // FIX-2 #1d: on the TV, straight to typing the name.
+            self.want_keyboard = true;
             return;
         };
         let Some(session) = e.saved.clone() else {
             self.pick_user(e.name.clone());
+            if e.needs_password {
+                self.want_keyboard = true;
+            } else {
+                // FIX-2 #1d: no password — one press signs in.
+                self.password.clear();
+                self.sign_in(cx);
+            }
             return;
         };
         if self.busy {
@@ -299,6 +323,10 @@ impl Screen for SignIn {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
+        if self.want_keyboard && matches!(self.focus.group, G_USERNAME | G_PASSWORD) {
+            self.want_keyboard = false;
+            super::keyboard::request(ui.ctx());
+        }
         if !self.started {
             self.started = true;
             if let Some(id) = self.server_id(cx) {
@@ -331,7 +359,9 @@ impl Screen for SignIn {
         let mut act: Option<Act> = None;
         ui.vertical_centered(|ui| {
             ui.add_space(t.margin * 2.0);
-            parts::title(ui, t, "Sign in");
+            // FIX-2 #1d: with users to pick from, the screen is a profile picker first (tvOS "Who's watching?").
+            let title = if self.entries().is_empty() { "Sign in" } else { "Who's watching?" };
+            parts::title(ui, t, title);
             ui.add_space(t.gap / 2.0);
             parts::muted(ui, t, &server);
             ui.add_space(t.gap);
@@ -739,5 +769,14 @@ mod tests {
     #[test]
     fn nobody_known_means_an_empty_picker() {
         assert!(picker_entries(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_public_user_without_a_password_needs_no_typing() {
+        // FIX-2 #1d: one press signs in a user with no password; saved users never ask.
+        let open = PublicUser { id: "4".into(), name: "kids".into(), has_password: false };
+        let list = picker_entries(&[session("1", "viewer")], &[public("2", "tester"), open]);
+        let needs: Vec<_> = list.iter().map(|e| (e.name.as_str(), e.needs_password)).collect();
+        assert_eq!(needs, [("viewer", false), ("tester", true), ("kids", false)]);
     }
 }

@@ -4,6 +4,7 @@ pub mod admin_actions;
 pub mod at_details;
 pub mod at_library;
 pub mod browse;
+pub mod card_menu;
 pub mod collection;
 pub mod connect;
 pub mod favourites;

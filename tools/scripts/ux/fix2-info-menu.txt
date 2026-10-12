@@ -1,0 +1,35 @@
+# args: --tv
+# FIX-2 #8 regression (tester: 'Info opened a cover-flow view … no watched toggle'): Info on a poster opens its
+# menu (Play, Details, Mark watched, Favourite, Poster Flow); Details opens the page. Nothing is changed on the server.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up 20
+key left 10
+key right 3
+key enter
+wait-screen library
+idle
+wait 600
+key info
+idle
+wait 300
+shot fix2-info-menu
+key down
+key enter
+wait-screen movie
+idle
+shot fix2-info-details
+quit

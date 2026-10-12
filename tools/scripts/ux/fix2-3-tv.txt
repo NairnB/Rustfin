@@ -1,0 +1,33 @@
+# args: --tv
+# FIX-2 #3 (TV): only the focused thing is lit — Play is the white plate, the Home tab is text + underline; the
+# library's Library tab likewise while the first poster has focus. Tester task: r2-play-elephants-tv / r2-mark-watched-tv.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 300
+shot fix2-3-home
+key up 20
+wait 300
+shot fix2-3-bar
+key right
+key enter
+wait-screen library
+idle
+wait 300
+shot fix2-3-library
+key up 3
+wait 300
+shot fix2-3-tabs
+quit

@@ -1,0 +1,37 @@
+# args: --tv
+# FIX-2 #17 regression (tester: trickplay box showing a black 0:00 frame at start): no thumbnail while the OSD
+# just shows at the start; Left seeks (the test film is 39 s, so back, not forward) and the thumbnail shows.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key search
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3500
+idle
+shot fix2-trick-start
+key left
+wait 400
+shot fix2-trick-seek
+quit

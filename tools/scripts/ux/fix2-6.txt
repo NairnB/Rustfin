@@ -1,0 +1,38 @@
+# FIX-2 #6: the film page's Subtitles picker opens on the current choice (Off), then the preferred language, then A–Z;
+# one Down moves within the list. Tester task: r2-subs-sintel / r2-audio-51 (jf-test: Amber Tide).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key search
+wait-screen search
+type Amber Tide
+wait 1200
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+key right 3
+key enter
+idle
+wait 300
+shot fix2-6-open
+key down
+key enter
+idle
+wait 300
+shot fix2-6-picked
+quit
