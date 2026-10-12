@@ -25,7 +25,7 @@ key enter
 wait-screen show
 wait 1000
 idle
-key down
+key down 2
 idle
 key enter
 wait-screen episode

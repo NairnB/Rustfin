@@ -1,0 +1,60 @@
+# FIX-2 #4 (D2): show page — seasons are tabs above the episode row (Down from the hero, Left/Right switch);
+# rows move with the mouse: the wheel over a row scrolls it sideways, arrows at its ends page it. Viewer.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Drift Rebels
+wait 600
+idle
+key down
+key enter
+wait-screen show
+wait 1000
+idle
+shot fix2-show-top
+key down
+idle
+key right
+idle
+wait 300
+shot fix2-show-season2
+key back
+wait-screen search
+key up
+key backspace 12
+type Amber Tide
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+move 1000 820
+wait 200
+scroll 0 -400
+wait 600
+idle
+shot fix2-row-wheel
+move 1100 820
+wait 200
+click 1880 815
+wait 600
+idle
+shot fix2-row-arrow
+quit

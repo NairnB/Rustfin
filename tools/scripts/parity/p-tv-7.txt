@@ -27,7 +27,7 @@ wait-screen show
 wait 2500
 idle
 # UX #5 / D8: "Missing episodes" lives in the ••• menu (last hero button): open it, Down to the entry, Enter.
-key right 5
+key right 4
 key enter
 idle
 key down

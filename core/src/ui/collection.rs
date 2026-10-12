@@ -22,6 +22,8 @@ pub struct ItemGrid {
     load: fn(&Client) -> Result<Vec<Item>>,
     open: fn(Item) -> Box<dyn Screen>,
     items: Option<Result<Vec<Item>>>,
+    // FIX-2 #15: for a collection with no artwork of its own, one of its films to show as its cover
+    covers: std::collections::HashMap<String, Item>,
     started: bool,
     focus: Focus,
     groups: Vec<Group>,
@@ -42,10 +44,25 @@ pub fn grid_screen(
         load,
         open,
         items: None,
+        covers: Default::default(),
         started: false,
         focus: Focus { group: GRID, index: 0 },
         groups: vec![],
     })
+}
+
+/// FIX-2 #15: how a grid cell shows `item` — itself, or (no artwork of its own) with `cover`'s poster in place of
+/// its own, keeping its name and kind for the card's labels.
+pub fn with_cover(item: &Item, cover: Option<&Item>) -> Item {
+    match cover.and_then(|c| c.image_tags.get("Primary").map(|t| (c, t))) {
+        Some((c, tag)) if !item.image_tags.contains_key("Primary") => {
+            let mut v = item.clone();
+            v.id = c.id.clone();
+            v.image_tags.insert("Primary".into(), tag.clone());
+            v
+        }
+        _ => item.clone(),
+    }
 }
 
 /// P-LIB-17: every collection on the server.
@@ -95,13 +112,36 @@ impl Screen for ItemGrid {
     }
 
     fn on_done(&mut self, cx: &mut Cx, tag: &'static str, payload: Box<dyn std::any::Any + Send>) {
+        if tag == "cover" {
+            if let Ok(r) = payload.downcast::<(String, Option<Item>)>() {
+                if let (id, Some(c)) = *r {
+                    self.covers.insert(id, c);
+                }
+            }
+            return;
+        }
         if tag != "items" {
             return;
         }
         let Ok(r) = payload.downcast::<Result<Vec<Item>>>() else { return };
         match &*r {
             Err(ApiError::Unauthorized) => cx.signed_out(),
-            _ => self.items = Some(*r),
+            _ => {
+                // FIX-2 #15: collections without artwork borrow a film's poster
+                if let Ok(v) = &*r {
+                    for it in v.iter().filter(|i| i.kind == ItemKind::BoxSet && !i.image_tags.contains_key("Primary")) {
+                        let (client, id) = (cx.api(), it.id.clone());
+                        cx.spawn("cover", move || {
+                            let first = client
+                                .collection_items(&id)
+                                .ok()
+                                .and_then(|v| v.into_iter().find(|c| c.image_tags.contains_key("Primary")));
+                            (id, first)
+                        });
+                    }
+                }
+                self.items = Some(*r)
+            }
         }
     }
 
@@ -152,7 +192,7 @@ impl Screen for ItemGrid {
         }
 
         let cols = nav::grid_cols(ui.available_width(), 0.0, t.poster_w, t.gap);
-        let cells: Vec<Option<Item>> = items.iter().cloned().map(Some).collect();
+        let cells: Vec<Option<Item>> = items.iter().map(|i| Some(with_cover(i, self.covers.get(&i.id)))).collect();
         let mut out = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             out = Some(parts::grid(
@@ -429,7 +469,13 @@ impl Screen for Collection {
                         ActionBtn::Play("Shuffle".into())
                     });
                 }
-                let rs = at::action_row(&mut col, t, &btns, (self.focus.group == G_PLAY).then_some(self.focus.index));
+                let rs = at::action_row(
+                    &mut col,
+                    t,
+                    &btns,
+                    (self.focus.group == G_PLAY).then_some(self.focus.index),
+                    cx.opts.desktop,
+                );
                 for (i, r) in rs.iter().enumerate() {
                     if r.hovered() {
                         hovered = Some(Focus { group: G_PLAY, index: i });

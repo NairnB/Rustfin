@@ -483,7 +483,9 @@ impl Screen for Playlist {
 // ---------- New playlist ----------
 
 const N_NAME: usize = 0;
-const N_BUTTONS: usize = 1;
+// FIX-2 #2: the "Use “film title”" pill under the field
+const N_USE: usize = 1;
+const N_BUTTONS: usize = 2;
 
 pub struct NewPlaylist {
     collection: bool,
@@ -493,8 +495,8 @@ pub struct NewPlaylist {
     error: Option<String>,
     focus: Focus,
     groups: Vec<Group>,
-    // FIX-1 #9: the suggested name (the film's) is the field's hint, not its text: typing starts a fresh name, and
-    // Create with the field left empty uses the suggestion.
+    // FIX-2 #2: the suggested name (the film's) is offered as a separate "Use …" pill; the field's hint is always
+    // "Playlist name", so nothing grey looks like typed text.
     suggest: String,
 }
 
@@ -508,19 +510,19 @@ pub fn new_collection_screen(ids: Vec<String>, default_name: String) -> Box<dyn 
     new_named(true, ids, default_name)
 }
 
-/// FIX-1 #9: what Create names it — what was typed, or the suggestion when nothing was.
-pub fn chosen_name(typed: &str, suggest: &str) -> String {
-    let t = typed.trim();
-    if t.is_empty() { suggest.trim() } else { t }.to_string()
+/// FIX-2 #2: the name field's hint — a plain label, never the film title (it read as real text on the TV).
+pub fn name_hint(collection: bool) -> &'static str {
+    if collection {
+        "Collection name"
+    } else {
+        "Playlist name"
+    }
 }
 
-/// FIX-1 #9: the field's hint — the suggestion itself (greyed) when there is one.
-fn hint_for(collection: bool, suggest: &str) -> String {
-    match suggest.trim() {
-        "" if collection => "Collection name".to_string(),
-        "" => "Playlist name".to_string(),
-        s => s.to_string(),
-    }
+/// FIX-2 #2: the pill under the field that takes the suggestion ("Use “Big Buck Bunny”"), if there is one.
+pub fn use_label(suggest: &str) -> Option<String> {
+    let s = suggest.trim();
+    (!s.is_empty()).then(|| format!("Use \u{201c}{s}\u{201d}"))
 }
 
 fn new_named(collection: bool, ids: Vec<String>, name: String) -> Box<dyn Screen> {
@@ -538,7 +540,7 @@ fn new_named(collection: bool, ids: Vec<String>, name: String) -> Box<dyn Screen
 
 impl NewPlaylist {
     fn create(&mut self, cx: &Cx) {
-        let name = chosen_name(&self.name, &self.suggest);
+        let name = self.name.trim().to_string();
         if self.busy {
             return;
         }
@@ -573,6 +575,10 @@ impl Screen for NewPlaylist {
             Key::Enter => {
                 match (self.focus.group, self.focus.index) {
                     (N_NAME, _) => self.create(cx),
+                    (N_USE, _) => {
+                        self.name = self.suggest.trim().to_string();
+                        self.focus = Focus { group: N_BUTTONS, index: 0 };
+                    }
                     (_, 0) => self.create(cx),
                     _ => cx.pop(),
                 }
@@ -618,14 +624,7 @@ impl Screen for NewPlaylist {
         ui.add_space(t.margin);
         parts::title(ui, t, if self.collection { "New collection" } else { "New playlist" });
         ui.add_space(t.gap / 2.0);
-        let r = parts::text_field(
-            ui,
-            t,
-            &mut self.name,
-            &hint_for(self.collection, &self.suggest),
-            self.focus.group == N_NAME,
-            false,
-        );
+        let r = parts::text_field(ui, t, &mut self.name, name_hint(self.collection), self.focus.group == N_NAME, false);
         let name_x = r.rect.center().x;
         if r.clicked() {
             self.focus = Focus { group: N_NAME, index: 0 };
@@ -633,6 +632,19 @@ impl Screen for NewPlaylist {
         if let Some(e) = &self.error {
             ui.add_space(t.gap / 3.0);
             parts::error_line(ui, t, e);
+        }
+        let mut use_xs = vec![];
+        if let Some(label) = use_label(&self.suggest) {
+            ui.add_space(t.gap / 2.0);
+            let r = widgets::pill_button(ui, t, &label, self.focus.group == N_USE, false);
+            use_xs.push(r.rect.center().x);
+            if r.hovered() && pointer_moved {
+                self.focus = Focus { group: N_USE, index: 0 };
+            }
+            if r.clicked() {
+                self.name = self.suggest.trim().to_string();
+                self.focus = Focus { group: N_BUTTONS, index: 0 };
+            }
         }
         ui.add_space(t.gap / 2.0);
         let mut xs = vec![];
@@ -657,7 +669,11 @@ impl Screen for NewPlaylist {
                 act = Some(false);
             }
         });
-        self.groups = vec![Group { len: 1, cols: 1, xs: vec![name_x] }, Group { len: 2, cols: 2, xs }];
+        self.groups = vec![
+            Group { len: 1, cols: 1, xs: vec![name_x] },
+            Group { len: use_xs.len(), cols: 1, xs: use_xs },
+            Group { len: 2, cols: 2, xs },
+        ];
         match act {
             Some(true) => self.create(cx),
             Some(false) => cx.pop(),

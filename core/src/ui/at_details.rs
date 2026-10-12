@@ -263,7 +263,40 @@ pub fn tex(cx: &mut Cx, ui: &Ui, item: &Item, kind: ImageKind, w: f32) -> Option
 pub fn logo(cx: &mut Cx, ui: &Ui, item: &Item) -> Option<TextureId> {
     let w = image_width_bucket(cx.theme.hero_logo_w, ui.ctx().pixels_per_point());
     let url = cx.client.as_ref()?.logo_url(item, w)?;
-    cx.images.get(&url)
+    let tex = cx.images.get(&url)?;
+    // FIX-2 #14: once per logo, find out (off the UI thread) whether it is too dark for the dark hero.
+    let key = Id::new(("at-logo-dark", tex));
+    if ui.data_mut(|d| d.get_temp::<Option<bool>>(key)).is_none() {
+        ui.data_mut(|d| d.insert_temp::<Option<bool>>(key, Some(false)));
+        if let Some(c) = cx.client.clone() {
+            let ctx = ui.ctx().clone();
+            std::thread::spawn(move || {
+                let dark = c.get_bytes(&url).map(|b| logo_is_dark(&b)).unwrap_or(false);
+                ctx.data_mut(|d| d.insert_temp::<Option<bool>>(key, Some(dark)));
+                ctx.request_repaint();
+            });
+        }
+    }
+    Some(tex)
+}
+
+/// FIX-2 #14: a logo is too dark for the hero when its visible pixels average below a quarter of full brightness
+/// (black-on-transparent logos vanish against the dark backdrop). Undecodable or empty → not dark.
+pub fn logo_is_dark(bytes: &[u8]) -> bool {
+    let Ok(img) = image::load_from_memory(bytes) else { return false };
+    let img = img.to_rgba8();
+    let (mut sum, mut weight) = (0.0_f64, 0.0_f64);
+    let step = ((img.width() * img.height()) / 20_000).max(1) as usize;
+    for p in img.pixels().step_by(step) {
+        let a = p[3] as f64 / 255.0;
+        if a < 0.1 {
+            continue;
+        }
+        let lum = (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 255.0;
+        sum += lum * a;
+        weight += a;
+    }
+    weight > 0.0 && sum / weight < 0.25
 }
 
 /// A cast member's photo texture.
@@ -489,6 +522,16 @@ pub fn hero_title(ui: &mut Ui, t: &Theme, name: &str, logo: Option<TextureId>) {
         let (rect, _) = ui.allocate_exact_size(vec2(t.hero_logo_w, size.y), Sense::hover());
         let r = Rect::from_min_size(pos2(rect.left(), rect.bottom() - size.y), size);
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        // FIX-2 #14: a dark logo gets a soft light glow behind it so it reads on the dark hero
+        if ui.data_mut(|d| d.get_temp::<Option<bool>>(Id::new(("at-logo-dark", tex)))).flatten() == Some(true) {
+            let glow = egui::epaint::Shadow {
+                offset: [0, 0],
+                blur: t.shadow_blur as u8,
+                spread: (t.gap / 2.0) as u8,
+                color: t.sheen.gamma_multiply(2.0),
+            };
+            ui.painter().add(glow.as_shape(r, r.height() / 2.0));
+        }
         ui.painter().image(tex, r, uv, Color32::WHITE);
         return;
     }
@@ -736,21 +779,50 @@ fn round_icon(ui: &Ui, t: &Theme, icon: RoundIcon, on: bool, c: Pos2, size: f32,
 }
 
 /// A round glass button with a painter icon; while focused, its caption fades in under it.
-pub fn round_button(ui: &mut Ui, t: &Theme, icon: RoundIcon, on: bool, caption: &str, focused: bool) -> Response {
+/// FIX-2 #10: with `labels` (desktop) the caption always shows under the button, muted until focused; without
+/// (TV) it shows on focus only.
+pub fn round_button(
+    ui: &mut Ui,
+    t: &Theme,
+    icon: RoundIcon,
+    on: bool,
+    caption: &str,
+    focused: bool,
+    labels: bool,
+) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(t.round_button, t.round_button), Sense::click());
     let a = widgets::focus_amount(ui, t, resp.id, focused);
     let rest = if resp.hovered() { t.glass_hi } else { t.glass };
     let ink = widgets::plate(ui, t, rect, t.round_button / 2.0, rest, a, t.pill_focus_scale);
     round_icon(ui, t, icon, on, rect.center(), t.round_button * 0.36, ink);
     // FIX-1 #4: desktop hover names the button even when focus is elsewhere
-    let resp = if caption.is_empty() || a > 0.01 { resp } else { resp.on_hover_text(caption) };
-    if a > 0.01 && !caption.is_empty() {
+    let resp = if caption.is_empty() || (a > 0.01 && !labels) { resp } else { resp.on_hover_text(caption) };
+    if (a > 0.01 || labels) && !caption.is_empty() {
         let font = t.font_w(t.small_size, Weight::Medium);
-        let g = ui.fonts(|f| f.layout_no_wrap(caption.to_string(), font, t.text.gamma_multiply(a)));
+        let ink = if labels { t.muted.lerp_to_gamma(t.text, a) } else { t.text.gamma_multiply(a) };
+        // always-on labels are one short word, so neighbours never collide; the full caption is the tooltip
+        let text = if labels { short_label(icon).to_string() } else { caption.to_string() };
+        let g = ui.fonts(|f| f.layout_no_wrap(text, font, ink));
         let at = pos2(rect.center().x - g.size().x / 2.0, rect.bottom() + t.gap / 2.0);
         ui.painter().galley(at, g, t.text);
     }
     resp
+}
+
+/// FIX-2 #10: the one-word label under a round button on the desktop.
+pub fn short_label(icon: RoundIcon) -> &'static str {
+    match icon {
+        RoundIcon::Add => "Add",
+        RoundIcon::Watched => "Watched",
+        RoundIcon::WatchedAll => "Series",
+        RoundIcon::Favourite => "Favourite",
+        RoundIcon::More => "More",
+        RoundIcon::Shuffle => "Shuffle",
+        RoundIcon::Restart => "Restart",
+        RoundIcon::Trailer => "Trailer",
+        RoundIcon::Previous => "Previous",
+        RoundIcon::Next => "Next",
+    }
 }
 
 /// A glass pill with a chevron after the label; focused → white plate.
@@ -796,9 +868,17 @@ pub fn menu_card(
         .collect()
 }
 
+/// A popover's muted line: none, only when it has no rows ("Loading…"), or a heading above the rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Note<'a> {
+    None,
+    WhenEmpty(&'a str),
+    Heading(&'a str),
+}
+
 /// D6: a menu card floating next to the control that opened it (no inline push): under `anchor`, or above it when
 /// there is no room; pill rows, focused = white plate, scrolls past `menu_max_h`. `note` is a muted line shown when
-/// there are no rows ("Loading…"). Returns one response per row.
+/// there are no rows ("Loading…"), or above the rows when `heading` ("No playlists yet"). Returns one response per row.
 pub fn popover(
     ui: &Ui,
     t: &Theme,
@@ -806,7 +886,7 @@ pub fn popover(
     anchor: Rect,
     labels: &[String],
     focus: Option<usize>,
-    note: Option<&str>,
+    note: Note,
 ) -> Vec<Response> {
     let font = t.font_w(t.body_size, Weight::SemiBold);
     let widest = labels
@@ -816,7 +896,8 @@ pub fn popover(
     let screen = ui.ctx().screen_rect();
     let w = (widest + 2.0 * t.button_pad).max(t.dropdown_w).min(screen.width() / 2.0);
     let row_h = t.button_h + t.gap / 4.0;
-    let rows_h = if labels.is_empty() { row_h } else { labels.len() as f32 * row_h };
+    let heading = matches!(note, Note::Heading(_));
+    let rows_h = if labels.is_empty() { row_h } else { (labels.len() + usize::from(heading)) as f32 * row_h };
     let size = vec2(w + 2.0 * t.menu_pad, rows_h.min(t.menu_max_h) + 2.0 * t.menu_pad);
     let x = (anchor.left() - t.menu_pad).clamp(screen.left(), (screen.right() - size.x).max(screen.left()));
     let below = anchor.bottom() + t.gap / 4.0;
@@ -834,12 +915,18 @@ pub fn popover(
             ui.painter().rect_filled(rect, t.menu_radius, t.menu_fill);
             let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(t.menu_pad)));
             inner.spacing_mut().item_spacing.y = t.gap / 4.0;
+            // the note is the whole menu when there are no rows, else a heading above them ("No playlists yet")
+            let text = match note {
+                Note::None => None,
+                Note::WhenEmpty(n) => labels.is_empty().then_some(n),
+                Note::Heading(n) => Some(n),
+            };
+            if let Some(n) = text {
+                let g = inner.fonts(|f| f.layout_no_wrap(n.to_string(), t.font(t.body_size), t.muted));
+                let (r, _) = inner.allocate_exact_size(vec2(w, t.button_h), Sense::hover());
+                inner.painter().galley(pos2(r.left() + t.button_pad, r.center().y - g.size().y / 2.0), g, t.muted);
+            }
             if labels.is_empty() {
-                if let Some(n) = note {
-                    let g = inner.fonts(|f| f.layout_no_wrap(n.to_string(), t.font(t.body_size), t.muted));
-                    let (r, _) = inner.allocate_exact_size(vec2(w, t.button_h), Sense::hover());
-                    inner.painter().galley(pos2(r.left() + t.button_pad, r.center().y - g.size().y / 2.0), g, t.muted);
-                }
                 return;
             }
             egui::ScrollArea::vertical()
@@ -884,7 +971,8 @@ pub fn toast(ui: &Ui, t: &Theme, text: &str, age: f64) -> bool {
 }
 
 /// The action row: buttons left to right with `gap / 2` between. Returns one response per button.
-pub fn action_row(ui: &mut Ui, t: &Theme, btns: &[ActionBtn], focus: Option<usize>) -> Vec<Response> {
+/// `labels`: the round buttons' captions always show (desktop; FIX-2 #10).
+pub fn action_row(ui: &mut Ui, t: &Theme, btns: &[ActionBtn], focus: Option<usize>, labels: bool) -> Vec<Response> {
     let mut out = vec![];
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(t.gap / 2.0, t.gap);
@@ -894,7 +982,7 @@ pub fn action_row(ui: &mut Ui, t: &Theme, btns: &[ActionBtn], focus: Option<usiz
                 ActionBtn::Play(label) => widgets::play_pill(ui, t, label, f),
                 ActionBtn::Pill(label) => widgets::pill_button(ui, t, label, f, false),
                 ActionBtn::Menu(label) => menu_pill(ui, t, label, f),
-                ActionBtn::Round { icon, on, caption } => round_button(ui, t, *icon, *on, caption, f),
+                ActionBtn::Round { icon, on, caption } => round_button(ui, t, *icon, *on, caption, f, labels),
             };
             out.push(r);
         }
@@ -932,34 +1020,126 @@ pub fn row(
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bleed).id_salt(id));
     child.set_clip_rect(bleed.intersect(Rect::from_x_y_ranges(screen.x_range(), ui.clip_rect().y_range())));
     let mut out = vec![];
-    let moved = focus_moved(ui, Id::new(("at-row", id)), focus);
-    egui::ScrollArea::horizontal()
+    let focus_changed = focus_moved(ui, Id::new(("at-row", id)), focus);
+    // FIX-2 #4: on the desktop the row moves with the mouse too — the wheel scrolls it sideways while the pointer is
+    // over it, arrows at its ends page it, and a fade on the right says there is more.
+    let key = Id::new(("at-row-scroll", id));
+    let (last_off, max_off): (f32, f32) = ui.data_mut(|d| d.get_temp(key)).unwrap_or((0.0, 0.0));
+    let pending: f32 = ui.data_mut(|d| d.remove_temp(key.with("page")).unwrap_or(0.0));
+    // by position, not layer: the end arrows sit on a layer above the row and must not hide themselves
+    let hovered = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| bleed.intersect(ui.clip_rect()).contains(p));
+    // a focus change under the mouse (hover focuses) must not scroll the row or the page out from under the pointer
+    let moved = focus_changed && !hovered;
+    if max_off > 0.0 {
+        // remember where the scrollable rows are: the page's scroller leaves the wheel over them (`row_wants_wheel`)
+        let pass = ui.ctx().cumulative_pass_nr();
+        let visible = bleed.intersect(ui.clip_rect());
+        ui.data_mut(|d| {
+            let rows = d.get_temp_mut_or_default::<(u64, Vec<Rect>)>(Id::new("at-row-rects"));
+            if rows.0 != pass {
+                *rows = (pass, vec![]);
+            }
+            rows.1.push(visible);
+        });
+    }
+    // a vertical wheel scrolls this sideways-only row
+    child.style_mut().always_scroll_the_only_direction = true;
+    let mut area = egui::ScrollArea::horizontal()
         .id_salt(id)
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-        .animated(true)
-        .show(&mut child, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = t.gap;
-                ui.add_space(slot.left() - screen.left());
-                for i in 0..count {
-                    let r = ui.vertical(|ui| {
-                        ui.add_space(lift);
-                        draw(ui, i)
-                    });
-                    let r = r.inner;
-                    if moved && focus == Some(i) {
-                        r.scroll_to_me(None);
-                    }
-                    out.push(r);
-                }
-                ui.add_space(t.margin - t.gap);
-            });
+        .animated(true);
+    if pending != 0.0 {
+        area = area.scroll_offset(vec2((last_off + pending).clamp(0.0, max_off), 0.0));
+    }
+    // the end arrows sit over the cards: while the pointer is on one, the cards take no clicks (look unchanged)
+    let arrow_at = |right: bool| {
+        let cy = bleed.top() + lift + cell_h.min(t.wide_h) / 2.0;
+        let cx = if right { bleed.right() - t.margin / 2.0 } else { bleed.left() + t.margin / 2.0 };
+        Rect::from_center_size(pos2(cx, cy), vec2(t.round_button, t.round_button))
+    };
+    let on_arrow = hovered
+        && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| {
+            (last_off > 1.0 && arrow_at(false).contains(p)) || (last_off < max_off - 1.0 && arrow_at(true).contains(p))
         });
+    let shown = area.show(&mut child, |ui| {
+        if on_arrow {
+            ui.visuals_mut().disabled_alpha = 1.0;
+            ui.disable();
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = t.gap;
+            ui.add_space(slot.left() - screen.left());
+            for i in 0..count {
+                let r = ui.vertical(|ui| {
+                    ui.add_space(lift);
+                    draw(ui, i)
+                });
+                let r = r.inner;
+                if moved && focus == Some(i) {
+                    r.scroll_to_me(None);
+                }
+                out.push(r);
+            }
+            ui.add_space(t.margin - t.gap);
+        });
+    });
+    let off = shown.state.offset.x;
+    let max = (shown.content_size.x - shown.inner_rect.width()).max(0.0);
+    ui.data_mut(|d| d.insert_temp(key, (off, max)));
+    let p = ui.painter().with_clip_rect(child.clip_rect());
+    let more_right = off < max - 1.0;
+    if more_right {
+        let fade = Rect::from_min_max(pos2(bleed.right() - t.margin, bleed.top()), bleed.max);
+        gradient(&p, fade, &fade_stops(t.bg, 0.0, 0.9), false);
+    }
+    // the end arrows: there whenever the row can move that way, shown and clickable while the pointer is over the row
+    {
+        let page = (bleed.width() - 2.0 * t.margin) * 0.8;
+        for (right, show) in [(false, off > 1.0), (true, more_right)] {
+            if !show {
+                continue;
+            }
+            let r = arrow_at(right);
+            // registered after the cards in the same layer, so it is the one under the pointer; drawn only while the
+            // pointer is over the row
+            let resp =
+                ui.interact(r, key.with(("arrow", right)), if hovered { Sense::click() } else { Sense::hover() });
+            if hovered {
+                let fill = if resp.hovered() { t.focus_fill } else { t.menu_fill };
+                let ink = if resp.hovered() { t.focus_ink } else { t.text };
+                p.circle_filled(r.center(), r.width() / 2.0, fill);
+                let h = t.round_button * 0.14;
+                let k = if right { 1.0 } else { -1.0 };
+                let pts = vec![
+                    pos2(r.center().x - k * h * 0.6, r.center().y - h),
+                    pos2(r.center().x + k * h * 0.6, r.center().y),
+                    pos2(r.center().x - k * h * 0.6, r.center().y + h),
+                ];
+                p.add(egui::Shape::line(pts, Stroke::new(t.icon_stroke, ink)));
+            }
+            if hovered && resp.clicked() {
+                ui.data_mut(|d| d.insert_temp(key.with("page"), if right { page } else { -page }));
+            }
+        }
+    }
     // The sideways scroller swallows the page's vertical scroll request: bring the row (and its title) into view.
     if moved {
         ui.scroll_to_rect(slot.with_min_y(slot.top() - t.row_gap), None);
     }
     out
+}
+
+/// FIX-2 #4: true when the pointer is over a row that could scroll sideways when last drawn — the page's own scroller
+/// then leaves the mouse wheel to that row (`ScrollArea::scroll_source`).
+pub fn row_wants_wheel(ui: &Ui) -> bool {
+    let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else { return false };
+    let (pass, rows) = ui.data_mut(|d| d.get_temp::<(u64, Vec<Rect>)>(Id::new("at-row-rects"))).unwrap_or_default();
+    pass + 2 >= ui.ctx().cumulative_pass_nr() && rows.iter().any(|r| r.contains(pos))
+}
+
+/// The page scroller's input sources: everything, except the wheel while it belongs to a row.
+pub fn page_scroll_source(ui: &Ui) -> egui::scroll_area::ScrollSource {
+    egui::scroll_area::ScrollSource { mouse_wheel: !row_wants_wheel(ui), ..egui::scroll_area::ScrollSource::ALL }
 }
 
 /// One 16:9 episode card for the show page's season row, all plain data.

@@ -25,7 +25,8 @@ key enter
 wait-screen show
 wait 2500
 idle
-key right 2
+# FIX-2 #4: Play, Shuffle, … (the season drop-down left the hero)
+key right 1
 key enter
 wait-screen player
 wait 3000

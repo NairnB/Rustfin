@@ -11,11 +11,11 @@ use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
 use crate::show::{self, PlayPick, ShowPlan};
-use crate::theme::Theme;
 
 const G_HERO: usize = 0;
-const G_LIST: usize = 1;
-const G_DROP: usize = 2;
+// FIX-2 #4: seasons as a segmented control between the hero and the episodes
+const G_SEASONS: usize = 1;
+const G_LIST: usize = 2;
 const G_RETRY: usize = 3;
 // D2: the sections below the episode row
 const G_NEXT: usize = 4;
@@ -41,7 +41,6 @@ pub struct ShowPage {
     error: Option<String>,
     initialized: bool,
     open_season: i32,
-    drop_open: bool,
     more_open: bool,
     confirm_series: bool,
     focus: Focus,
@@ -61,7 +60,6 @@ pub fn screen(series: Item, season: Option<i32>) -> Box<dyn Screen> {
         error: None,
         initialized: false,
         open_season: 0,
-        drop_open: false,
         more_open: false,
         confirm_series: false,
         focus: Focus { group: G_HERO, index: 0 },
@@ -207,7 +205,8 @@ impl ShowPage {
         v
     }
 
-    /// The hero buttons in order: Play, season drop-down, Shuffle, Mark season, heart, •••. UX #5 / D8: "Mark series"
+    /// The hero buttons in order: Play, Shuffle, Mark season, heart, ••• (FIX-2 #4: seasons are the tabs above the
+    /// episode row, not a drop-down here). UX #5 / D8: "Mark series"
     /// and "Missing episodes" live in the ••• menu (`more_entries`), one press further from an accident.
     fn hero_buttons(plan: &ShowPlan) -> Vec<Hero> {
         let mut v = vec![];
@@ -215,7 +214,6 @@ impl ShowPage {
             v.push(Hero::Play);
         }
         if !plan.seasons.is_empty() {
-            v.push(Hero::Drop);
             v.push(Hero::Shuffle);
             v.push(Hero::MarkSeason);
         }
@@ -252,10 +250,6 @@ impl ShowPage {
 
     fn hero_idx(plan: &ShowPlan, which: Hero) -> Option<usize> {
         Self::hero_buttons(plan).iter().position(|&h| h == which)
-    }
-
-    fn hero_drop_idx(plan: &ShowPlan) -> Option<usize> {
-        Self::hero_idx(plan, Hero::Drop)
     }
 
     /// Real episodes (with an episode number) of the open season / the whole series.
@@ -308,11 +302,6 @@ impl ShowPage {
                     self.play_pick(cx, &pick);
                 }
             }
-            Hero::Drop => {
-                self.drop_open = true;
-                let idx = plan.seasons.iter().position(|&s| s == self.open_season).unwrap_or(0);
-                self.focus = Focus { group: G_DROP, index: idx };
-            }
             Hero::Shuffle => self.shuffle(cx),
             Hero::MarkSeason => self.mark(cx, true),
             Hero::MarkSeries => {
@@ -326,7 +315,6 @@ impl ShowPage {
             Hero::Heart => self.toggle_favorite(cx),
             Hero::More => {
                 self.more_open = true;
-                self.drop_open = false;
                 self.focus = Focus { group: G_MORE, index: 0 };
             }
             Hero::Details => {
@@ -362,7 +350,6 @@ impl ShowPage {
             .into_iter()
             .map(|h| match h {
                 Hero::Play => ActionBtn::Play(plan.play.as_ref().map(|p| p.label.clone()).unwrap_or_default()),
-                Hero::Drop => ActionBtn::Menu(self.season_label(self.open_season)),
                 Hero::Shuffle => round(RoundIcon::Shuffle, false, "Shuffle"),
                 Hero::MarkSeason => {
                     let on = self.all_played(true);
@@ -403,6 +390,7 @@ impl ShowPage {
         }
         let focus = (self.focus.group == G_HERO).then_some(self.focus.index);
         let series = self.series.clone();
+        let desktop = cx.opts.desktop;
         at::hero_column(ui, t, rect, "show-hero", |col| {
             at::hero_title(col, t, &series.name, art.logo);
             col.add_space(t.gap / 2.0);
@@ -412,7 +400,7 @@ impl ShowPage {
                 at::overview(col, t, ov, false, OVERVIEW_LINES);
             }
             col.add_space(t.gap);
-            at::action_row(col, t, btns, focus)
+            at::action_row(col, t, btns, focus, desktop)
         })
     }
 
@@ -427,7 +415,7 @@ impl ShowPage {
         moving: bool,
     ) {
         let t = cx.theme;
-        at::section_title(ui, t, &self.season_label(self.open_season));
+        ui.add_space(t.gap / 2.0);
         let rows = self.season_rows();
         if rows.is_empty() {
             parts::muted(ui, t, "No episodes in this season.");
@@ -473,44 +461,11 @@ impl ShowPage {
             }
         }
     }
-
-    /// D2: the season drop-down as a translucent menu card under the hero (rows are pills; focused = white plate).
-    fn draw_season_menu(
-        &mut self,
-        ui: &mut egui::Ui,
-        t: &Theme,
-        plan: &ShowPlan,
-        xs: &mut Vec<f32>,
-        pick: &mut Option<i32>,
-        moving: bool,
-    ) {
-        ui.add_space(t.gap);
-        let n = plan.seasons.len() as f32;
-        let row_h = t.button_h + t.gap / 4.0;
-        let size = egui::vec2(t.dropdown_w + 2.0 * t.menu_pad, n * row_h + 2.0 * t.menu_pad);
-        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-        ui.painter().add(t.shadow(1.0).as_shape(rect, t.menu_radius));
-        ui.painter().rect_filled(rect, t.menu_radius, t.menu_fill);
-        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(t.menu_pad)));
-        inner.spacing_mut().item_spacing.y = t.gap / 4.0;
-        for (i, &s) in plan.seasons.iter().enumerate() {
-            let focused = self.focus.group == G_DROP && self.focus.index == i;
-            let r = widgets::pill_button_width(&mut inner, t, &self.season_label(s), focused, false, t.dropdown_w);
-            xs.push(r.rect.center().x);
-            if r.hovered() && moving {
-                self.focus = Focus { group: G_DROP, index: i };
-            }
-            if r.clicked() {
-                *pick = Some(s);
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Hero {
     Play,
-    Drop,
     Shuffle,
     MarkSeason,
     MarkSeries,
@@ -664,13 +619,9 @@ impl Screen for ShowPage {
         match key {
             Key::Enter => {
                 let plan = self.plan();
-                if self.drop_open {
-                    if let Some(&s) = plan.seasons.get(self.focus.index) {
-                        self.open_season = s;
-                        self.season_chosen = true;
-                        self.drop_open = false;
-                        self.focus = Focus { group: G_HERO, index: Self::hero_drop_idx(&plan).unwrap_or(0) };
-                    }
+                if self.focus.group == G_SEASONS {
+                    // the season under focus is already showing; Enter goes down to its episodes
+                    self.focus = move_focus(&self.groups, self.focus, Key::Down);
                     return true;
                 }
                 if self.focus.group == G_HERO {
@@ -700,18 +651,17 @@ impl Screen for ShowPage {
                 }
                 false
             }
-            Key::Back => {
-                if self.drop_open {
-                    self.drop_open = false;
-                    let plan = self.plan();
-                    self.focus = Focus { group: G_HERO, index: Self::hero_drop_idx(&plan).unwrap_or(0) };
-                    true
-                } else {
-                    false
-                }
-            }
             Key::Up | Key::Down | Key::Left | Key::Right => {
                 self.focus = move_focus(&self.groups, self.focus, key);
+                // FIX-2 #4: as on tvOS, the focused season tab is the season showing
+                if self.focus.group == G_SEASONS {
+                    if let Some(&s) = self.plan().seasons.get(self.focus.index) {
+                        if s != self.open_season {
+                            self.open_season = s;
+                            self.season_chosen = true;
+                        }
+                    }
+                }
                 true
             }
             _ => false,
@@ -841,7 +791,7 @@ impl Screen for ShowPage {
         let moving = ui.input(|i| i.pointer.is_moving());
         let btns = self.action_btns(&plan);
         let mut hero_xs = vec![];
-        let mut drop_xs = vec![];
+        let mut season_xs = vec![];
         let mut list_xs = vec![];
         let mut next_xs = vec![];
         let mut cast_xs = vec![];
@@ -850,114 +800,137 @@ impl Screen for ShowPage {
         let mut more_pick: Option<Hero> = None;
         let mut confirm_xs = vec![];
         let mut confirm_pick: Option<usize> = None;
-        let mut drop_pick: Option<i32> = None;
         let mut ep_click: Option<Item> = None;
         let mut ep_open: Option<Item> = None;
         let mut person: Option<crate::api::PersonRef> = None;
 
-        egui::ScrollArea::vertical().id_salt("show-page").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let rs = self.draw_hero(ui, cx, &btns);
-            let modal = self.more_open || self.confirm_series;
-            for (idx, (r, h)) in rs.iter().zip(Self::hero_buttons(&plan)).enumerate() {
-                hero_xs.push(r.rect.center().x);
-                if r.hovered() && moving && !modal {
-                    self.focus = Focus { group: G_HERO, index: idx };
-                }
-                if r.clicked() && !modal {
-                    pressed = Some(h);
-                }
-            }
-            if self.more_open {
-                let entries = self.more_entries(cx);
-                let labels: Vec<String> = entries.iter().map(|(l, _)| l.clone()).collect();
-                let focus = (self.focus.group == G_MORE).then_some(self.focus.index);
-                let left = hero_xs.last().copied().unwrap_or(0.0) - t.round_button / 2.0;
-                ui.add_space(t.gap);
-                for (i, r) in at::menu_card(ui, t, &labels, focus, left, t.dropdown_w).iter().enumerate() {
-                    more_xs.push(r.rect.center().x);
-                    if r.hovered() && moving && !self.confirm_series {
-                        self.focus = Focus { group: G_MORE, index: i };
+        egui::ScrollArea::vertical()
+            .id_salt("show-page")
+            .auto_shrink([false, false])
+            .scroll_source(at::page_scroll_source(ui))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let rs = self.draw_hero(ui, cx, &btns);
+                let modal = self.more_open || self.confirm_series;
+                for (idx, (r, h)) in rs.iter().zip(Self::hero_buttons(&plan)).enumerate() {
+                    hero_xs.push(r.rect.center().x);
+                    if r.hovered() && moving && !modal {
+                        self.focus = Focus { group: G_HERO, index: idx };
                     }
-                    if r.clicked() && !self.confirm_series {
-                        more_pick = Some(entries[i].1);
+                    if r.clicked() && !modal {
+                        pressed = Some(h);
                     }
                 }
-            } else if self.drop_open {
-                self.draw_season_menu(ui, t, &plan, &mut drop_xs, &mut drop_pick, moving);
-            } else {
-                self.draw_episode_row(ui, cx, &mut list_xs, &mut ep_click, &mut ep_open, moving);
-            }
-            // P-TV-2: the server's next-up episode as a wide card (Enter / click plays it).
-            if let Some(next) = self.next_up.clone() {
-                at::section_title(ui, t, "Up Next");
-                let focus = (self.focus.group == G_NEXT).then_some(0);
-                let h = at::wide_card_h(t, 2);
-                let name = self.series.name.clone();
-                let rs = at::row(ui, t, "show-next", 1, h, focus, |ui, _| {
-                    // N2: show name + "S1 · E3" on one line, the episode title under it
-                    let line1 = match (next.parent_index_number, next.index_number) {
-                        (Some(s), Some(e)) => format!("{name} · S{s} · E{e}"),
-                        _ => name.clone(),
-                    };
-                    let tx = at::tex(cx, ui, &next, ImageKind::Primary, t.wide_w);
-                    at::wide_card(ui, t, tx, "", &[&line1, &next.name], parts::resume_fraction(&next), focus.is_some())
-                });
-                for r in &rs {
-                    next_xs.push(r.rect.center().x);
-                    if r.hovered() && moving {
-                        self.focus = Focus { group: G_NEXT, index: 0 };
+                if self.more_open {
+                    let entries = self.more_entries(cx);
+                    let labels: Vec<String> = entries.iter().map(|(l, _)| l.clone()).collect();
+                    let focus = (self.focus.group == G_MORE).then_some(self.focus.index);
+                    let left = hero_xs.last().copied().unwrap_or(0.0) - t.round_button / 2.0;
+                    ui.add_space(t.gap);
+                    for (i, r) in at::menu_card(ui, t, &labels, focus, left, t.dropdown_w).iter().enumerate() {
+                        more_xs.push(r.rect.center().x);
+                        if r.hovered() && moving && !self.confirm_series {
+                            self.focus = Focus { group: G_MORE, index: i };
+                        }
+                        if r.clicked() && !self.confirm_series {
+                            more_pick = Some(entries[i].1);
+                        }
                     }
-                    if r.clicked() {
-                        ep_click = Some(next.clone());
+                } else {
+                    // FIX-2 #4: Episodes, the season tabs (when there is more than one), then the row
+                    at::section_title(ui, t, "Episodes");
+                    if plan.seasons.len() > 1 {
+                        let labels: Vec<String> = plan.seasons.iter().map(|&s| self.season_label(s)).collect();
+                        let sel = plan.seasons.iter().position(|&s| s == self.open_season).unwrap_or(0);
+                        let focus = (self.focus.group == G_SEASONS).then_some(self.focus.index);
+                        let out = widgets::tabs(ui, t, &labels, sel, focus);
+                        season_xs = out.xs.clone();
+                        if let (true, Some(i)) = (moving, out.hovered) {
+                            self.focus = Focus { group: G_SEASONS, index: i };
+                        }
+                        if let Some(i) = out.clicked {
+                            self.open_season = plan.seasons[i];
+                            self.season_chosen = true;
+                        }
+                    }
+                    self.draw_episode_row(ui, cx, &mut list_xs, &mut ep_click, &mut ep_open, moving);
+                }
+                // P-TV-2: the server's next-up episode as a wide card (Enter / click plays it).
+                if let Some(next) = self.next_up.clone() {
+                    at::section_title(ui, t, "Up Next");
+                    let focus = (self.focus.group == G_NEXT).then_some(0);
+                    let h = at::wide_card_h(t, 2);
+                    let name = self.series.name.clone();
+                    let rs = at::row(ui, t, "show-next", 1, h, focus, |ui, _| {
+                        // N2: show name + "S1 · E3" on one line, the episode title under it
+                        let line1 = match (next.parent_index_number, next.index_number) {
+                            (Some(s), Some(e)) => format!("{name} · S{s} · E{e}"),
+                            _ => name.clone(),
+                        };
+                        let tx = at::tex(cx, ui, &next, ImageKind::Primary, t.wide_w);
+                        at::wide_card(
+                            ui,
+                            t,
+                            tx,
+                            "",
+                            &[&line1, &next.name],
+                            parts::resume_fraction(&next),
+                            focus.is_some(),
+                        )
+                    });
+                    for r in &rs {
+                        next_xs.push(r.rect.center().x);
+                        if r.hovered() && moving {
+                            self.focus = Focus { group: G_NEXT, index: 0 };
+                        }
+                        if r.clicked() {
+                            ep_click = Some(next.clone());
+                        }
                     }
                 }
-            }
-            let people = self.series.people.clone();
-            if !people.is_empty() {
-                at::section_title(ui, t, "Cast & Crew");
-                let focus = (self.focus.group == G_CAST).then_some(self.focus.index);
-                let rs = at::row(ui, t, "show-cast", people.len(), at::person_h(t), focus, |ui, i| {
-                    let tx = at::person_tex(cx, ui, &people[i]);
-                    at::person_circle(ui, t, tx, &people[i].name, &at::role_of(&people[i]), focus == Some(i))
-                });
-                for (i, r) in rs.iter().enumerate() {
-                    cast_xs.push(r.rect.center().x);
-                    if r.hovered() && moving {
-                        self.focus = Focus { group: G_CAST, index: i };
-                    }
-                    if r.clicked() {
-                        person = Some(people[i].clone());
+                let people = self.series.people.clone();
+                if !people.is_empty() {
+                    at::section_title(ui, t, "Cast & Crew");
+                    let focus = (self.focus.group == G_CAST).then_some(self.focus.index);
+                    let rs = at::row(ui, t, "show-cast", people.len(), at::person_h(t), focus, |ui, i| {
+                        let tx = at::person_tex(cx, ui, &people[i]);
+                        at::person_circle(ui, t, tx, &people[i].name, &at::role_of(&people[i]), focus == Some(i))
+                    });
+                    for (i, r) in rs.iter().enumerate() {
+                        cast_xs.push(r.rect.center().x);
+                        if r.hovered() && moving {
+                            self.focus = Focus { group: G_CAST, index: i };
+                        }
+                        if r.clicked() {
+                            person = Some(people[i].clone());
+                        }
                     }
                 }
-            }
-            // D7: read-only facts take no presses; they come into view when focus reaches the last row above them.
-            let cols = at::info_columns(&self.series, None, cx.admin);
-            if !cols.is_empty() {
-                let top = ui.cursor().top();
-                at::section_title(ui, t, "Information");
-                at::info_section(ui, t, &cols, None);
-                let last = [G_CAST, G_NEXT, G_LIST].into_iter().find(|&g| match g {
-                    G_CAST => !cast_xs.is_empty(),
-                    G_NEXT => !next_xs.is_empty(),
-                    _ => true,
-                });
-                let at_last = (Some(self.focus.group) == last).then_some(self.focus.index);
-                if at::focus_moved(ui, egui::Id::new("show-info"), at_last) {
-                    let r = egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), top), ui.cursor().left_top());
-                    ui.scroll_to_rect(r, None);
+                // D7: read-only facts take no presses; they come into view when focus reaches the last row above them.
+                let cols = at::info_columns(&self.series, None, cx.admin);
+                if !cols.is_empty() {
+                    let top = ui.cursor().top();
+                    at::section_title(ui, t, "Information");
+                    at::info_section(ui, t, &cols, None);
+                    let last = [G_CAST, G_NEXT, G_LIST].into_iter().find(|&g| match g {
+                        G_CAST => !cast_xs.is_empty(),
+                        G_NEXT => !next_xs.is_empty(),
+                        _ => true,
+                    });
+                    let at_last = (Some(self.focus.group) == last).then_some(self.focus.index);
+                    let by_mouse = ui.input(|i| i.pointer.is_moving());
+                    if at::focus_moved(ui, egui::Id::new("show-info"), at_last) && !by_mouse {
+                        let r = egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), top), ui.cursor().left_top());
+                        ui.scroll_to_rect(r, None);
+                    }
                 }
-            }
-            ui.add_space(t.row_gap);
-        });
+                ui.add_space(t.row_gap);
+            });
 
         let mut groups = vec![Group::default(); N_GROUPS];
         groups[G_HERO] = Group { len: hero_xs.len(), cols: hero_xs.len(), xs: hero_xs };
-        if self.drop_open {
-            groups[G_DROP] = Group { len: drop_xs.len(), cols: 1, xs: drop_xs };
-        } else {
-            groups[G_LIST] = Group { len: list_xs.len(), cols: list_xs.len(), xs: list_xs };
-        }
+        groups[G_SEASONS] = Group { len: season_xs.len(), cols: season_xs.len(), xs: season_xs };
+        groups[G_LIST] = Group { len: list_xs.len(), cols: list_xs.len(), xs: list_xs };
         groups[G_NEXT] = Group { len: next_xs.len(), cols: next_xs.len(), xs: next_xs };
         groups[G_CAST] = Group { len: cast_xs.len(), cols: cast_xs.len(), xs: cast_xs };
         if self.confirm_series {
@@ -999,12 +972,6 @@ impl Screen for ShowPage {
                 self.mark(cx, false);
             }
             self.close_more(&plan);
-        }
-        if let Some(s) = drop_pick {
-            self.open_season = s;
-            self.season_chosen = true;
-            self.drop_open = false;
-            self.focus = Focus { group: G_HERO, index: Self::hero_drop_idx(&plan).unwrap_or(0) };
         }
         if let Some(ep) = ep_click {
             self.play_episode(cx, &ep);

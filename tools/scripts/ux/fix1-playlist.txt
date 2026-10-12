@@ -1,5 +1,5 @@
 # FIX-1 #9 (D2): Add to → Add to playlist… with no playlists offers "New playlist…"; the suggested name is selected,
-# so typing replaces it. Viewer, Amber Tide. Creates nothing (Back at the end).
+# so typing replaces it. Tester (owns no playlists; viewer's public one is not offered), Amber Tide. Creates nothing.
 wait-screen connect
 wait 2500
 idle
@@ -9,9 +9,9 @@ type http://jf-test:8096
 key enter
 wait-screen signin
 idle
-type viewer
+type tester
 key down
-type view-pass-1
+type test-pass-1
 key enter
 wait-screen home
 idle

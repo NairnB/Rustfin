@@ -1524,6 +1524,27 @@ impl Client {
         Ok(page.items)
     }
 
+    /// FIX-2 #9: the playlists this user may add to — `playlists()` also returns other users' public ones, which the
+    /// server refuses to change. One `/Playlists/{id}/Users/{userId}` per playlist: kept when it answers `CanEdit`
+    /// (the owner is listed too); 404 / 403 / no `CanEdit` → left out.
+    pub fn editable_playlists(&self) -> Result<Vec<Item>> {
+        let uid = self.user_id()?.to_string();
+        let mut out = vec![];
+        for p in self.playlists()? {
+            #[derive(serde::Deserialize, Default)]
+            #[serde(rename_all = "PascalCase", default)]
+            struct Perm {
+                can_edit: bool,
+            }
+            match self.get_json::<Perm>(&format!("/Playlists/{}/Users/{uid}", p.id)) {
+                Ok(perm) if perm.can_edit => out.push(p),
+                Ok(_) | Err(ApiError::NotFound) | Err(ApiError::Server(..)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
     /// D2 (Apple TV details hero): the item's title logo image, when it has one (no request; `width_px` bucketed).
     /// FIX-1 #12: always PNG — a re-encoded JPEG loses the transparency and paints a black box behind the title.
     pub fn logo_url(&self, item: &Item, width_px: u32) -> Option<String> {

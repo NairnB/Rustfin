@@ -80,8 +80,18 @@ enum Action {
     AddPick(AddAct),
 }
 
+/// FIX-2 #17: the subtitle the page shows before the viewer picks one — the source's default index, else a track
+/// the file flags as default or forced (what the server and player turn on by themselves), else Off. The page then
+/// says what will really play.
+pub fn page_default_subtitle(ms: &crate::api::MediaSource) -> Option<i32> {
+    ms.default_subtitle_stream_index.filter(|&i| i >= 0).or_else(|| {
+        let subs = || ms.media_streams.iter().filter(|s| s.kind == StreamKind::Subtitle);
+        subs().find(|s| s.is_default).or_else(|| subs().find(|s| s.is_forced)).map(|s| s.index)
+    })
+}
+
 /// D6: an open list picker — its rows, a note for when it has none, and the button that opened it.
-type Picker = (Vec<(String, Action)>, Option<&'static str>, Action);
+type Picker = (Vec<(String, Action)>, at::Note<'static>, Action);
 
 /// G8 / P-ITEM-8: where the Trailer button goes.
 #[derive(Debug, Clone, PartialEq)]
@@ -285,7 +295,7 @@ impl ItemScreen {
         let (default_audio, default_subtitle, first_audio) = match self.source() {
             Some(ms) => (
                 ms.default_audio_stream_index,
-                ms.default_subtitle_stream_index,
+                page_default_subtitle(ms),
                 ms.media_streams.iter().find(|s| s.kind == StreamKind::Audio).map(|s| s.index),
             ),
             None => (None, None, None),
@@ -491,7 +501,8 @@ impl ItemScreen {
         self.playlists = None;
         self.collections = None;
         let client = cx.api();
-        cx.spawn("playlists", move || client.playlists());
+        // FIX-2 #9: only playlists this user can change
+        cx.spawn("playlists", move || client.editable_playlists());
         if self.is_admin {
             let client = cx.api();
             cx.spawn("collections", move || client.collections());
@@ -1214,12 +1225,12 @@ impl ItemScreen {
         let list: Option<Picker> = if self.audio_open {
             Some((
                 self.audio_entries().into_iter().map(|(l, i)| (l, Action::AudioPick(i))).collect(),
-                None,
+                at::Note::None,
                 Action::OpenAudio,
             ))
         } else if self.subtitle_open {
             let v = self.subtitle_entries().into_iter().map(|(l, i)| (l, Action::SubtitlePick(i))).collect();
-            Some((v, None, Action::OpenSubtitles))
+            Some((v, at::Note::None, Action::OpenSubtitles))
         } else if self.add_open {
             let loading = match self.add_mode {
                 AddMode::Playlists => self.playlists.is_none(),
@@ -1227,22 +1238,31 @@ impl ItemScreen {
                 AddMode::Root => false,
             };
             let v = self.add_entries().into_iter().map(|(l, a)| (l, Action::AddPick(a))).collect();
-            Some((v, Some(if loading { "Loading…" } else { "Nothing here yet." }), Action::OpenAddTo))
+            // FIX-2 #2: say why the only row is "New playlist…"
+            let none_yet = self.add_mode == AddMode::Playlists && self.playlists.as_ref().is_some_and(|p| p.is_empty());
+            let note = if loading {
+                at::Note::WhenEmpty("Loading…")
+            } else if none_yet {
+                at::Note::Heading("No playlists yet")
+            } else {
+                at::Note::WhenEmpty("Nothing here yet.")
+            };
+            Some((v, note, Action::OpenAddTo))
         } else if self.version_open {
             Some((
                 self.version_entries().into_iter().map(|(l, i)| (l, Action::VersionPick(i))).collect(),
-                None,
+                at::Note::None,
                 Action::OpenVersion,
             ))
         } else if self.more_open {
-            Some((self.more_entries(), None, Action::MoreMenu))
+            Some((self.more_entries(), at::Note::None, Action::MoreMenu))
         } else if self.section.open {
             let v = admin_actions::CHOICES
                 .iter()
                 .enumerate()
                 .map(|(i, (l, _))| (l.to_string(), Action::SectionPick(i)))
                 .collect();
-            Some((v, None, Action::OpenSection))
+            Some((v, at::Note::None, Action::OpenSection))
         } else {
             None
         };
@@ -1342,40 +1362,57 @@ impl ItemScreen {
         xs: &mut Vec<f32>,
     ) -> Option<usize> {
         let items = if group == G_SPECIALS { self.specials.clone() } else { self.similar.clone() };
-        if items.is_empty() {
-            return None;
-        }
-        let focus = (self.focus.group == group).then_some(self.focus.index);
-        let pointer_moved = ui.input(|i| i.pointer.is_moving());
-        let out = parts::row(
-            ui,
-            cx,
-            &format!("g8-{group}"),
-            heading,
-            &items,
-            if group == G_SPECIALS { CardKind::Thumb } else { CardKind::Poster },
-            focus,
-        );
-        *xs = out.xs;
-        if let (true, Some(i)) = (pointer_moved, out.hovered) {
-            self.focus = Focus { group, index: i };
-        }
-        out.clicked
+        self.at_card_row(ui, cx, group, heading, &items, group == G_SPECIALS, xs)
     }
 
     // RR6 (P-ITEM-16): "Additional parts" row; click or Enter plays the film from that part.
     fn draw_parts_row(&mut self, ui: &mut egui::Ui, cx: &mut Cx, xs: &mut Vec<f32>) -> Option<usize> {
-        if self.parts.is_empty() {
+        let items = self.parts.clone();
+        self.at_card_row(ui, cx, G_PARTS, "Additional parts", &items, true, xs)
+    }
+
+    /// FIX-2 #4: the page's card rows in the details look (posters, or 16:9 cards when `wide`) — the same row as
+    /// episodes and cast, so the mouse wheel and the end arrows move it on the desktop. Returns the clicked index.
+    #[allow(clippy::too_many_arguments)]
+    fn at_card_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        cx: &mut Cx,
+        group: usize,
+        heading: &str,
+        items: &[Item],
+        wide: bool,
+        xs: &mut Vec<f32>,
+    ) -> Option<usize> {
+        if items.is_empty() {
             return None;
         }
-        let focus = (self.focus.group == G_PARTS).then_some(self.focus.index);
+        let t = cx.theme;
+        let focus = (self.focus.group == group).then_some(self.focus.index);
         let pointer_moved = ui.input(|i| i.pointer.is_moving());
-        let out = parts::row(ui, cx, "rr6-parts", "Additional parts", &self.parts, CardKind::Thumb, focus);
-        *xs = out.xs;
-        if let (true, Some(i)) = (pointer_moved, out.hovered) {
-            self.focus = Focus { group: G_PARTS, index: i };
+        at::section_title(ui, t, heading);
+        let h = if wide { at::wide_card_h(t, 1) } else { t.poster_h + t.card_title_gap + t.body_size * 1.3 };
+        let rs = at::row(ui, t, &format!("item-row-{group}"), items.len(), h, focus, |ui, i| {
+            let it = &items[i];
+            if wide {
+                let tx = at::tex(cx, ui, it, ImageKind::Primary, t.wide_w);
+                at::wide_card(ui, t, tx, "", &[&it.name], parts::resume_fraction(it), focus == Some(i))
+            } else {
+                let tx = at::tex(cx, ui, it, ImageKind::Primary, t.poster_w);
+                at::poster_card(ui, t, tx, &it.name, focus == Some(i))
+            }
+        });
+        let mut clicked = None;
+        for (i, r) in rs.iter().enumerate() {
+            xs.push(r.rect.center().x);
+            if pointer_moved && r.hovered() {
+                self.focus = Focus { group, index: i };
+            }
+            if r.clicked() {
+                clicked = Some(i);
+            }
         }
-        out.clicked
+        clicked
     }
 
     // G8 (P-ITEM-18): the technical facts of the chosen version. Path only for admins.
@@ -1404,8 +1441,10 @@ impl ItemScreen {
         let top = ui.cursor().top();
         at::section_title(ui, t, "Information");
         at::info_section(ui, t, &cols, None);
-        if std::mem::take(&mut self.info_jump) || at::focus_moved(ui, egui::Id::new("item-info"), bring_in.then_some(0))
-        {
+        // a focus change from the mouse (hover focuses) never scrolls the page
+        let by_mouse = ui.input(|i| i.pointer.is_moving());
+        let moved = at::focus_moved(ui, egui::Id::new("item-info"), bring_in.then_some(0));
+        if std::mem::take(&mut self.info_jump) || (moved && !by_mouse) {
             ui.scroll_to_rect(
                 egui::Rect::from_min_max(egui::pos2(ui.min_rect().left(), top), ui.cursor().left_top()),
                 None,
@@ -1802,6 +1841,7 @@ impl ItemScreen {
             };
             let badges = at::badges(&facts);
             let moving = ui.input(|i| i.pointer.is_moving());
+            let desktop = cx.opts.desktop;
             at::hero_column(ui, t, rect, "item-hero", |col| {
                 if let Some(line) = self.above_line(&item) {
                     at::kicker(col, t, &line);
@@ -1849,7 +1889,7 @@ impl ItemScreen {
                     col.add_space(t.gap);
                     let shown: Vec<ActionBtn> = btns.iter().map(|(b, _)| b.clone()).collect();
                     let focus = (self.focus.group == G_BTN).then_some(self.focus.index);
-                    let rs = at::action_row(col, t, &shown, focus);
+                    let rs = at::action_row(col, t, &shown, focus, desktop);
                     self.btn_rects = rs.iter().map(|r| r.rect).collect();
                     for (i, r) in rs.iter().enumerate() {
                         hero_xs.push(r.rect.center().x);
@@ -2279,6 +2319,7 @@ impl Screen for ItemScreen {
                 .id_salt("item-page")
                 .auto_shrink([false, false])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .scroll_source(at::page_scroll_source(ui))
                 .show(ui, |ui| self.page(ui, cx));
         } else {
             self.page(ui, cx);

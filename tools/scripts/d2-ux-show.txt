@@ -27,7 +27,7 @@ wait-screen show
 wait 2500
 idle
 shot ux-show-start
-key right 5
+key right 4
 key enter
 idle
 wait 300

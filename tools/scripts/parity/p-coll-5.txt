@@ -36,6 +36,10 @@ key down
 key enter
 wait-screen new-playlist
 idle
+# FIX-2 #2: the film title is the "Use …" pill under the empty box; take it, then Create
+key down
+key enter
+idle
 key enter
 wait-screen playlist
 wait 800

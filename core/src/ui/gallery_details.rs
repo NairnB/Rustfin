@@ -110,7 +110,8 @@ impl GalleryDetails {
         );
         col.spacing_mut().item_spacing.y = 0.0;
         col.add_space(t.gap);
-        let rs = at::action_row(&mut col, t, btns, (self.focus.group == G_ACT).then_some(self.focus.index));
+        let rs =
+            at::action_row(&mut col, t, btns, (self.focus.group == G_ACT).then_some(self.focus.index), cx.opts.desktop);
         groups[G_ACT] = Group { len: rs.len(), cols: rs.len(), xs: rs.iter().map(|r| r.rect.center().x).collect() };
         for (i, r) in rs.iter().enumerate() {
             if r.hovered() && col.input(|i| i.pointer.is_moving()) {
@@ -358,17 +359,21 @@ impl Screen for GalleryDetails {
             self.load(cx);
         }
         let mut groups = vec![Group::default(); N_GROUPS];
-        egui::ScrollArea::vertical().id_salt("gallery-details").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            if let Some(e) = &self.error {
-                super::parts::error_line(ui, cx.theme, e);
-            }
-            if self.show_page {
-                self.page_show(ui, cx, &mut groups);
-            } else {
-                self.page_film(ui, cx, &mut groups);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("gallery-details")
+            .auto_shrink([false, false])
+            .scroll_source(at::page_scroll_source(ui))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if let Some(e) = &self.error {
+                    super::parts::error_line(ui, cx.theme, e);
+                }
+                if self.show_page {
+                    self.page_show(ui, cx, &mut groups);
+                } else {
+                    self.page_film(ui, cx, &mut groups);
+                }
+            });
         self.groups = groups;
         self.focus = move_focus(&self.groups, self.focus, Key::Enter);
     }

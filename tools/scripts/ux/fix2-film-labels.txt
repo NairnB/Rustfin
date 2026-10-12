@@ -1,0 +1,30 @@
+# FIX-2 #10 #17 (D2): film page on the desktop — every round button has its small label under it; the Subtitles
+# pill says what will play (the file's default subtitle, else Off). Viewer, Amber Tide.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Amber Tide
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+shot fix2-film-labels
+quit

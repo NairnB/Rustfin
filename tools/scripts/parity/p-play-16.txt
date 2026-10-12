@@ -28,7 +28,8 @@ wait-screen show
 idle
 
 # Down to the episode row, right to S1E2, play it.
-key down
+# FIX-2 #4: Down, Down — past the season tabs — to the episode row
+key down 2
 key right
 key enter
 # FIX-1 #18: Enter on an episode opens its page; Play there

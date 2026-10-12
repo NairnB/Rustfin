@@ -1,0 +1,32 @@
+# FIX-2 #15 (D2): a collection with no artwork of its own shows one of its films' posters on the Collections grid.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key down 20
+key left 20
+key enter
+wait-screen library
+idle
+key up 3
+key left 10
+key right 3
+idle
+key enter
+wait-screen collections
+idle
+wait 800
+idle
+shot fix2-collections
+quit
