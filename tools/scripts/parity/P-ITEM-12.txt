@@ -25,12 +25,13 @@ key down
 key enter
 wait-screen movie
 idle
-# FIX-1 #14: ••• opens a menu; the admin screen is its last row ("Edit, identify, refresh…").
+# FIX-1 #14: ••• opens a menu; the admin screen is its last row ("Edit, identify, refresh…"), the 7th since the
+# poster picker's "Change poster…" (Down past the last row leaves the menu, so the count is exact).
 key right 30
 idle
 key enter
 idle
-key down 6
+key down 7
 idle
 key enter
 wait-screen more

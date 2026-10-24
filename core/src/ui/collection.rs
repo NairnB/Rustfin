@@ -2,6 +2,7 @@
 //! shared "title + poster grid of items loaded in one call" screen (the playlists list uses it too).
 use super::at_details::{self as at, ActionBtn, HeroArt, RoundIcon};
 use super::player::{self, PlayOptions};
+use super::playlists::{self, tile_art, TileArt};
 use super::{browse, parts, widgets};
 use crate::api::{ApiError, Client, ImageKind, Item, ItemKind, Result};
 use crate::app::{Cx, Screen};
@@ -24,6 +25,10 @@ pub struct ItemGrid {
     items: Option<Result<Vec<Item>>>,
     // FIX-2 #15: for a collection with no artwork of its own, one of its films to show as its cover
     covers: std::collections::HashMap<String, Item>,
+    // FIX-3 #9: per-tile art hook (a playlist's distinct posters), the tiles asked for, and the ones that came back
+    art: Option<fn(&Client, &Item) -> Vec<Item>>,
+    asked: std::collections::HashSet<String>,
+    mosaics: std::collections::HashMap<String, Vec<Item>>,
     started: bool,
     focus: Focus,
     groups: Vec<Group>,
@@ -37,6 +42,19 @@ pub fn grid_screen(
     load: fn(&Client) -> Result<Vec<Item>>,
     open: fn(Item) -> Box<dyn Screen>,
 ) -> Box<dyn Screen> {
+    grid_screen_art(name, title, empty, load, open, None)
+}
+
+/// `grid_screen` with a per-tile art hook: `art` is run once, off-thread, for each tile as it comes into view, and
+/// returns the posters to draw that tile from (none: the tile keeps its own image).
+pub fn grid_screen_art(
+    name: &'static str,
+    title: &'static str,
+    empty: &'static str,
+    load: fn(&Client) -> Result<Vec<Item>>,
+    open: fn(Item) -> Box<dyn Screen>,
+    art: Option<fn(&Client, &Item) -> Vec<Item>>,
+) -> Box<dyn Screen> {
     Box::new(ItemGrid {
         name,
         title,
@@ -45,6 +63,9 @@ pub fn grid_screen(
         open,
         items: None,
         covers: Default::default(),
+        art,
+        asked: Default::default(),
+        mosaics: Default::default(),
         started: false,
         focus: Focus { group: GRID, index: 0 },
         groups: vec![],
@@ -73,6 +94,8 @@ pub fn list() -> Box<dyn Screen> {
 impl ItemGrid {
     fn start(&mut self, cx: &Cx) {
         self.items = None;
+        self.asked.clear();
+        self.mosaics.clear();
         let client = cx.api();
         let load = self.load;
         cx.spawn("items", move || load(&client));
@@ -81,6 +104,83 @@ impl ItemGrid {
     fn item_at(&self, i: usize) -> Option<Item> {
         self.items.as_ref()?.as_ref().ok()?.get(i).cloned()
     }
+}
+
+impl ItemGrid {
+    /// FIX-3 #9: over each visible tile, its own distinct posters (M2); a tile not yet asked for is asked for now
+    /// (M4) and keeps the server image meanwhile. The tile geometry is `parts::grid`'s, from its `xs`.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_mosaics(
+        &mut self,
+        ui: &mut egui::Ui,
+        cx: &mut Cx,
+        items: &[Item],
+        cols: usize,
+        top: f32,
+        xs: &[f32],
+        focus: Option<usize>,
+    ) {
+        let Some(art) = self.art else { return };
+        let t = cx.theme;
+        let size = parts::CardKind::Poster.size(t);
+        let row_h = size.y + t.card_label_h + t.gap;
+        let clip = ui.clip_rect();
+        let scale = ui.ctx().pixels_per_point();
+        let w = crate::api::image_width_bucket(size.x, scale);
+        for (i, it) in items.iter().enumerate() {
+            let Some(&x) = xs.get(i) else { break };
+            let min = egui::pos2(x - size.x / 2.0, top + (i / cols.max(1)) as f32 * row_h);
+            let tile = egui::Rect::from_min_size(min, size);
+            if !tile.intersects(clip) {
+                continue;
+            }
+            if self.asked.insert(it.id.clone()) {
+                let (client, item) = (cx.api(), it.clone());
+                cx.spawn("mosaic", move || (item.id.clone(), art(&client, &item)));
+            }
+            let Some(posters) = self.mosaics.get(&it.id) else { continue };
+            let TileArt::Posters(posters) = tile_art(posters, it) else { continue };
+            let lifted = (focus == Some(i) && super::shell::keyboard_focus(ui.ctx())) || ui.rect_contains_pointer(tile);
+            let a = t.ease(ui.ctx().animate_bool_with_time(egui::Id::new(("mosaic", &it.id)), lifted, t.focus_time));
+            let lifted_rect = widgets::lift(tile, t.focus_scale, a);
+            ui.painter().rect_filled(lifted_rect, t.card_radius, t.skeleton);
+            let Some(client) = cx.client.as_ref() else { return };
+            let urls: Vec<Option<String>> =
+                posters.iter().map(|p| client.image_url(p, ImageKind::Primary, w)).collect();
+            for (rect, url) in playlists::mosaic_rects(posters.len(), lifted_rect).into_iter().zip(urls) {
+                if let Some(tex) = url.and_then(|u| cx.images.get(&u)) {
+                    paint_cell(ui, tex, rect, lifted_rect, t.card_radius);
+                }
+            }
+        }
+    }
+}
+
+/// One mosaic cell: the poster centre-cropped to `rect` with a hair of gap, rounded only on the tile's outer corners.
+fn paint_cell(ui: &egui::Ui, tex: egui::TextureId, rect: egui::Rect, tile: egui::Rect, radius: f32) {
+    let natural = ui.ctx().tex_manager().read().meta(tex).map(|m| egui::vec2(m.size[0] as f32, m.size[1] as f32));
+    let n = natural.filter(|n| n.x > 0.0 && n.y > 0.0).unwrap_or(rect.size());
+    let want = rect.width() / rect.height();
+    let have = n.x / n.y;
+    let (u, v) = if have > want { (want / have, 1.0) } else { (1.0, have / want) };
+    let uv = egui::Rect::from_min_max(
+        egui::pos2((1.0 - u) / 2.0, (1.0 - v) / 2.0),
+        egui::pos2((1.0 + u) / 2.0, (1.0 + v) / 2.0),
+    );
+    let draw = rect.shrink(1.0);
+    let r = radius as u8;
+    let edge = |on: bool| if on { r } else { 0 };
+    let (l, rt, tp, b) = (
+        rect.left() <= tile.left() + 0.5,
+        rect.right() >= tile.right() - 0.5,
+        rect.top() <= tile.top() + 0.5,
+        rect.bottom() >= tile.bottom() - 0.5,
+    );
+    let corners = egui::CornerRadius { nw: edge(l && tp), ne: edge(rt && tp), sw: edge(l && b), se: edge(rt && b) };
+    egui::Image::from_texture(egui::load::SizedTexture::new(tex, draw.size()))
+        .uv(uv)
+        .corner_radius(corners)
+        .paint_at(ui, draw);
 }
 
 impl Screen for ItemGrid {
@@ -117,6 +217,13 @@ impl Screen for ItemGrid {
                 if let (id, Some(c)) = *r {
                     self.covers.insert(id, c);
                 }
+            }
+            return;
+        }
+        if tag == "mosaic" {
+            if let Ok(r) = payload.downcast::<(String, Vec<Item>)>() {
+                let (id, posters) = *r;
+                self.mosaics.insert(id, posters);
             }
             return;
         }
@@ -195,14 +302,13 @@ impl Screen for ItemGrid {
         let cells: Vec<Option<Item>> = items.iter().map(|i| Some(with_cover(i, self.covers.get(&i.id)))).collect();
         let mut out = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            out = Some(parts::grid(
-                ui,
-                cx,
-                &cells,
-                cols,
-                (self.focus.group == GRID).then_some(self.focus.index),
-                items.len(),
-            ));
+            let top = ui.cursor().top();
+            let focus = (self.focus.group == GRID).then_some(self.focus.index);
+            let o = parts::grid(ui, cx, &cells, cols, focus, items.len());
+            if self.art.is_some() {
+                self.paint_mosaics(ui, cx, &items, cols, top, &o.xs, focus);
+            }
+            out = Some(o);
         });
         let out = out.unwrap();
         self.groups = vec![Group { len: items.len(), cols, xs: out.xs }];

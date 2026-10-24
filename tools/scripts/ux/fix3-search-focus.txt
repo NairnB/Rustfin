@@ -1,0 +1,46 @@
+# args: --tv
+# FIX-3 tv-search-focus (FRICTION-4 #1): type "si" on the TV keyboard, press Up out of it -> the first result (Sintel) is lit; then Down/Up back and "done" does the same.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+# the typed sign-in made the app stand down for 30 s (a physical keyboard); wait it out so Search opens the keyboard
+wait 31000
+key search
+wait-screen search
+idle
+shot fix3-search-keyboard-empty
+key down
+key right 8
+key enter
+key up
+key enter
+wait 1500
+idle
+shot fix3-search-keyboard-open
+key up
+idle
+wait 300
+shot fix3-search-after-up
+key up
+idle
+key enter
+idle
+wait 300
+shot fix3-search-field-ring
+key back
+idle
+wait 600
+shot fix3-search-after-close
+quit

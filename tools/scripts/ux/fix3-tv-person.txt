@@ -1,0 +1,45 @@
+# args: --tv
+# FIX-3 #3 (TV): person page — the focused cast circle and the focused poster show the white ring, no sheen.
+# viewer login, search Ember Rising, focus cast Rowan Pike (shot), open him, then Down onto the poster row.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+idle
+type Ember Rising
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+key down
+key right
+idle
+wait 400
+shot fix3-tv-cast
+key enter
+wait-screen person
+wait 1500
+idle
+shot fix3-tv-person
+key down
+idle
+wait 400
+shot fix3-tv-person-focus
+quit

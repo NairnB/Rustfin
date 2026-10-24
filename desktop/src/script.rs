@@ -17,7 +17,8 @@
 //! Mouse (x, y in screenshot pixels, top-left = 0 0):
 //!   move <x> <y>           move the pointer there (hover)
 //!   click <x> <y>          move, press, release the left button (three frames)
-//!   scroll <dx> <dy>       mouse wheel at the pointer, in pixels (dy < 0 = scroll down the page, like a wheel)
+//!   scroll <dx> <dy>       mouse wheel at the pointer, in pixels (dy < 0 = scroll down the page, like a wheel;
+//!                          dx < 0 = scroll a row to the right, dx > 0 = back toward its start)
 //!   mouse <back|forward>   the mouse side buttons 4 / 5 (same path as a real mouse)
 //!   drag <x1> <y1> <x2> <y2> <ms>   press at x1 y1, move to x2 y2 over ms (one move per frame), release (a flick
 //!                          when short)

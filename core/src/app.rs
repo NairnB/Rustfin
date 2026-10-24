@@ -545,11 +545,13 @@ impl App {
         }
         let Some((top_id, _)) = self.stack.last() else { return };
         let top_id = *top_id;
+        ui::parts::set_tv(ctx, !self.opts.desktop);
         let tv_keys;
         if !self.opts.desktop {
             tv_keys = self.tv_keys(ctx, top_id, now, keys);
             keys = &tv_keys;
         }
+        crate::ui::at_details::set_desktop(ctx, self.opts.desktop);
         let sidebar = self.opts.desktop && self.shell_on();
         if !sidebar {
             self.side = None;
@@ -676,17 +678,17 @@ impl App {
         }
         // FIX-2 #1d: a screen asked for the keyboard on its focused field (e.g. a picked user's password).
         if self.tv_kb.is_none() && ui::keyboard::take_request(ctx) {
-            self.tv_kb = Some(KeyboardState::new());
+            self.tv_kb = Some(KeyboardState::for_field(&field));
         }
         if self.tv_kb.is_none() && self.screen_name() == "search" && self.tv_kb_auto != top_id {
             self.tv_kb_auto = top_id;
-            self.tv_kb = Some(KeyboardState::new());
+            self.tv_kb = Some(KeyboardState::for_field(&field));
         }
         let mut out = vec![];
         for &k in keys {
             let Some(kb) = self.tv_kb.as_mut() else {
                 if k == Key::Enter {
-                    self.tv_kb = Some(KeyboardState::new());
+                    self.tv_kb = Some(KeyboardState::for_field(&field));
                 } else {
                     out.push(k);
                 }
@@ -708,7 +710,12 @@ impl App {
             match kb.press_at(k, Some(now)) {
                 Effect::None => {}
                 Effect::Type(c) => ctx.input_mut(|i| i.events.push(egui::Event::Text(c.to_string()))),
-                Effect::Delete => backspace(ctx, 1),
+                Effect::Delete => {
+                    backspace(ctx, 1);
+                    let mut rest = field.text.clone();
+                    rest.pop();
+                    kb.retitle(&rest);
+                }
                 Effect::Clear => backspace(ctx, field.text.chars().count()),
                 Effect::Close => self.tv_kb = None,
                 Effect::Leave(k) => {

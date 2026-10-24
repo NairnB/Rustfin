@@ -12,7 +12,7 @@ use crate::platform::{
     sub_colour_index, Aspect, Key, PlayRequest, PlayerState, PlayerStats, SubFont, SubShadow, SubSize, SubStyle,
     SubWeight, SUB_COLOURS,
 };
-use crate::playreq::build_plan;
+use crate::playreq::{build_plan_burnt, request_indexes};
 use crate::queue::Queue;
 use crate::repeat::{end_action, EndAction, Repeat};
 use crate::settings::SubPrefs;
@@ -28,6 +28,24 @@ pub struct PlayOptions {
     pub subtitle: Option<Option<i32>>,
     /// G8 / P-ITEM-11: the version (media source id) chosen on the item page; `None` = the first source.
     pub media_source_id: Option<String>,
+}
+
+/// C3-SUBS / R-SUBS-3: while transcoding the audio track and any burnt-in subtitle are part of the stream, so a
+/// track change asks the server for a new stream (at the current position); direct play switches the track in place.
+pub fn track_change_replans(transcoding: bool) -> bool {
+    transcoding
+}
+
+/// R-SUBS-3: a subtitle change re-plans only when the burnt-in stream changes (`before` / `after` = the subtitle
+/// index each request names): switching between Off and an external subtitle leaves the HLS stream as it is.
+pub fn subtitle_change_replans(transcoding: bool, before: Option<i32>, after: Option<i32>) -> bool {
+    transcoding && before != after
+}
+
+/// The `force` a track-change re-plan asks the server with: a stream that only transcodes because direct play
+/// failed (`fell_back`) must keep transcoding, or the server answers with the direct url mpv already failed on.
+pub fn track_change_force(transcoding: bool, fell_back: bool) -> bool {
+    transcoding && fell_back
 }
 
 /// G4 / P-PLAY-10 + P-ITEM-17: a chapter list into `(start seconds, "time · name")` rows, sorted by start.
@@ -874,15 +892,25 @@ impl PlayerScreen {
     fn begin(&mut self, cx: &mut Cx) {
         self.loading = true;
         let id = self.item.id.clone();
-        self.fetch_plan(cx, "info", id, false);
+        let (audio, sub) = request_indexes(None, None, self.opts.audio, self.opts.subtitle);
+        self.fetch_plan(cx, "info", id, false, audio, sub);
     }
 
     /// G6: PlaybackInfo for `id` under the current quality choice (or the Settings cap); `force` = transcode.
-    fn fetch_plan(&self, cx: &mut Cx, tag: &'static str, id: String, force: bool) {
+    /// `audio` / `sub` = the chosen stream indexes the request names (R-SUBS-1), `None` = the server's default.
+    fn fetch_plan(
+        &self,
+        cx: &mut Cx,
+        tag: &'static str,
+        id: String,
+        force: bool,
+        audio: Option<i32>,
+        sub: Option<i32>,
+    ) {
         let cap = self.quality_kbps.unwrap_or(cx.settings.max_streaming_bitrate);
         let fmp4 = cx.settings.prefer_fmp4;
         let client = cx.api();
-        cx.spawn(tag, move || client.playback_plan_with(&id, cap, force, fmp4));
+        cx.spawn(tag, move || client.playback_plan_for(&id, cap, force, fmp4, audio, sub));
     }
 
     /// G6: load the same item again through a new plan, at the current position (quality change, or the
@@ -891,7 +919,8 @@ impl PlayerScreen {
         self.reload_pos = cx.player.position();
         self.loading = true;
         let id = self.item.id.clone();
-        self.fetch_plan(cx, "reload", id, force);
+        let (audio, sub) = request_indexes(self.info.as_ref(), self.source_id.as_deref(), self.audio, self.subtitle);
+        self.fetch_plan(cx, "reload", id, force, audio, sub);
     }
 
     fn finish_reload(&mut self, cx: &mut Cx, plan: PlaybackPlan, forced: bool) {
@@ -908,12 +937,14 @@ impl PlayerScreen {
             subtitle: self.subtitle,
             media_source_id: self.source_id.clone(),
         };
-        let Some(mut req) = build_plan(&client, &self.item, &plan, &opts, &SubPrefs::default()) else {
+        let Some((mut req, burnt)) = build_plan_burnt(&client, &self.item, &plan, &opts, &SubPrefs::default()) else {
             self.loading = false;
             self.build_error = Some("No playable source on the server".to_string());
             return;
         };
         req.start_secs = self.reload_pos;
+        // The burnt-in subtitle stays the chosen one (header, menu, next re-plan).
+        self.subtitle = Some(burnt.or(req.subtitle));
         self.transcoding = plan.transcoding_url.is_some();
         self.source_bitrate = plan.source_bitrate;
         self.info = Some(plan.info);
@@ -973,10 +1004,10 @@ impl PlayerScreen {
 
     fn start_playback(&mut self, cx: &mut Cx, item: Item, plan: PlaybackPlan, opts: PlayOptions) {
         let client = cx.api();
-        let req = build_plan(&client, &item, &plan, &opts, &SubPrefs::default());
+        let req = build_plan_burnt(&client, &item, &plan, &opts, &SubPrefs::default());
         let info = plan.info;
         match req {
-            Some(req) => {
+            Some((req, burnt)) => {
                 self.source_id = opts.media_source_id.clone();
                 self.loading = false;
                 self.build_error = None;
@@ -987,7 +1018,7 @@ impl PlayerScreen {
                 self.source_bitrate = plan.source_bitrate;
                 self.fell_back = false;
                 self.audio = req.audio;
-                self.subtitle = Some(req.subtitle);
+                self.subtitle = Some(burnt.or(req.subtitle));
                 self.req = Some(req.clone());
                 self.reporter = Reporter::new();
                 self.stop_sent = false;
@@ -1174,7 +1205,7 @@ impl PlayerScreen {
         self.up_next_deadline = None;
         self.loading = true;
         let id = next.id.clone();
-        self.fetch_plan(cx, "nextinfo", id, false);
+        self.fetch_plan(cx, "nextinfo", id, false, None, None);
     }
 
     fn play_previous(&mut self, cx: &mut Cx) {
@@ -1189,7 +1220,7 @@ impl PlayerScreen {
         self.up_next_deadline = None;
         self.loading = true;
         let id = prev.id.clone();
-        self.fetch_plan(cx, "previnfo", id, false);
+        self.fetch_plan(cx, "previnfo", id, false, None, None);
     }
 
     /// RR3: make the queue's current item the one now playing; a single episode with no queue (or one from another
@@ -1378,12 +1409,20 @@ impl PlayerScreen {
 
     fn pick_audio(&mut self, cx: &mut Cx, index: i32) {
         self.audio = Some(index);
+        if track_change_replans(self.transcoding) {
+            return self.reload(cx, track_change_force(self.transcoding, self.fell_back));
+        }
         cx.player.set_audio(Some(index));
         self.report_now(cx);
     }
 
     fn pick_subtitle(&mut self, cx: &mut Cx, val: Option<i32>) {
+        let sub_of = |s: &Self, v| request_indexes(s.info.as_ref(), s.source_id.as_deref(), None, v).1;
+        let replan = subtitle_change_replans(self.transcoding, sub_of(self, self.subtitle), sub_of(self, Some(val)));
         self.subtitle = Some(val);
+        if replan {
+            return self.reload(cx, track_change_force(self.transcoding, self.fell_back));
+        }
         cx.player.set_subtitle(val);
         self.report_now(cx);
     }

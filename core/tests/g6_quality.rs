@@ -80,7 +80,8 @@ fn request_uses_the_transcoding_url_and_one_audio() {
     let plan =
         PlaybackPlan { info, transcoding_url: Some("http://h:8096/videos/x/master.m3u8".into()), source_bitrate: None };
     let r = build_plan(&client(), &item, &plan, &PlayOptions::default(), &Default::default()).unwrap();
-    assert_eq!(r.url, "http://h:8096/videos/x/master.m3u8");
+    // C3-SUBS: the url also names the chosen audio + subtitle (tests/c3_subs.rs).
+    assert!(r.url.starts_with("http://h:8096/videos/x/master.m3u8?"), "{}", r.url);
     assert_eq!(r.audio_indexes.len(), 1, "the transcode carries one audio track");
     assert_eq!(r.audio_indexes.first().copied(), r.audio);
     assert!(r.subtitle_indexes.is_empty(), "embedded subs are not in the HLS stream");

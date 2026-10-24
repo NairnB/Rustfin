@@ -123,6 +123,42 @@ enum AddAct {
     FromCollection(usize),
 }
 
+/// FIX-3 A1/A2: "Add to playlist…" is offered unless the user's playlists are known and there are none.
+fn add_root_has_playlists_row(playlists: Option<usize>) -> bool {
+    playlists != Some(0)
+}
+
+/// FIX-3: the root rows of the "Add to…" menu, by label (`playlists` = how many are known, `None` while loading).
+pub fn add_root_labels(playlists: Option<usize>, admin: bool) -> Vec<&'static str> {
+    let mut v = vec![];
+    if add_root_has_playlists_row(playlists) {
+        v.push("Add to playlist…");
+    }
+    v.push("New playlist…");
+    if admin {
+        v.extend(["Add to collection…", "New collection…"]);
+    }
+    v
+}
+
+/// FIX-3 A3: where focus goes when the "Add to…" menu opens — its first row, like the Audio / Subtitles pickers.
+pub fn add_menu_focus() -> Focus {
+    Focus { group: G_LIST, index: 0 }
+}
+
+/// FIX-3: when the playlists load while the root menu is open, "Add to playlist…" may vanish from the top;
+/// the focused row index moves up one so focus stays on the same action.
+pub fn root_focus_after_load(index: usize, before: Option<usize>, after: Option<usize>) -> usize {
+    if add_root_has_playlists_row(before) && !add_root_has_playlists_row(after) {
+        index.saturating_sub(1)
+    } else {
+        index
+    }
+}
+
+/// The group index of the pickers' list (for tests).
+pub const LIST_GROUP: usize = G_LIST;
+
 pub struct ItemScreen {
     /// FIX-2 #6: the user's preferred subtitle language (3-letter code), listed first after Off.
     pref_sub: String,
@@ -466,10 +502,11 @@ impl ItemScreen {
     fn add_entries(&self) -> Vec<(String, AddAct)> {
         match self.add_mode {
             AddMode::Root => {
-                let mut v = vec![
-                    ("Add to playlist…".to_string(), AddAct::Mode(AddMode::Playlists)),
-                    ("New playlist…".to_string(), AddAct::NewPlaylist),
-                ];
+                let mut v = vec![];
+                if add_root_has_playlists_row(self.playlists.as_ref().map(Vec::len)) {
+                    v.push(("Add to playlist…".to_string(), AddAct::Mode(AddMode::Playlists)));
+                }
+                v.push(("New playlist…".to_string(), AddAct::NewPlaylist));
                 if self.is_admin {
                     v.push(("Add to collection…".to_string(), AddAct::Mode(AddMode::Collections)));
                     v.push(("New collection…".to_string(), AddAct::NewCollection));
@@ -501,8 +538,18 @@ impl ItemScreen {
         }
     }
 
+    /// Store the loaded playlists; an open root menu that loses its first row keeps focus on the same action.
+    fn set_playlists(&mut self, v: Vec<Item>) {
+        if self.add_open && self.add_mode == AddMode::Root && self.focus.group == G_LIST {
+            let before = self.playlists.as_ref().map(Vec::len);
+            self.focus.index = root_focus_after_load(self.focus.index, before, Some(v.len()));
+        }
+        self.playlists = Some(v);
+    }
+
     fn open_add_menu(&mut self, cx: &mut Cx) {
         self.add_open = true;
+        self.focus = add_menu_focus();
         self.add_mode = AddMode::Root;
         self.add_note = None;
         self.audio_open = false;
@@ -2254,10 +2301,10 @@ impl Screen for ItemScreen {
             "playlists" => {
                 let Ok(r) = payload.downcast::<Result<Vec<Item>>>() else { return };
                 match *r {
-                    Ok(v) => self.playlists = Some(v),
+                    Ok(v) => self.set_playlists(v),
                     Err(ApiError::Unauthorized) => cx.signed_out(),
                     Err(e) => {
-                        self.playlists = Some(vec![]);
+                        self.set_playlists(vec![]);
                         self.add_note = Some(e.to_string());
                     }
                 }

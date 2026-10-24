@@ -5,6 +5,11 @@ use super::widgets;
 use crate::theme::{Theme, Weight};
 use egui::{pos2, vec2, Align2, Color32, Rect, Response, Sense, Stroke, Ui};
 
+/// FIX-3 Q2: the ring round a focused search field (none when it is not focused), so focus on it is plain to see.
+pub fn field_ring(t: &Theme, focused: bool) -> Option<Stroke> {
+    focused.then(|| Stroke::new(t.focus_stroke, t.focus_color))
+}
+
 /// Search: a wide rounded field centred at the top, magnifier on the left. Glass at rest; focused it turns into
 /// the white plate with dark text (the Apple TV search bar). Keyboard focus follows `focused` like
 /// `parts::text_field`.
@@ -15,6 +20,15 @@ pub fn search_field(ui: &mut Ui, t: &Theme, text: &mut String, hint: &str, focus
     let id = ui.id().with("at-search-field");
     let a = widgets::field_focus_amount(ui, t, id, focused);
     let ink = widgets::plate(ui, t, rect, t.search_h / 2.0, t.glass, a, 1.0 + (t.pill_focus_scale - 1.0) / 2.0);
+    if let Some(ring) = field_ring(t, focused) {
+        let lifted = widgets::lift(rect, 1.0 + (t.pill_focus_scale - 1.0) / 2.0, a);
+        ui.painter().rect_stroke(
+            lifted.expand(t.focus_gap),
+            t.search_h / 2.0 + t.focus_gap,
+            ring,
+            egui::StrokeKind::Outside,
+        );
+    }
     let icon_c = pos2(rect.left() + t.search_h / 2.0 + t.gap / 4.0, rect.center().y);
     magnifier(ui, t, icon_c, t.search_icon, ink);
     let text_rect = Rect::from_min_max(

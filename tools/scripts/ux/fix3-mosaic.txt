@@ -1,0 +1,100 @@
+# FIX-3 #9 (playlist-mosaic): a playlist tile shows its own different films. Viewer makes a playlist from "Amber Tide", adds
+# "Star Drift - Iron Tide", and the Playlists grid shows two posters side by side (not the first film four times). Then deletes it.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+# Home top bar → Search → "amber" → the film page
+key search
+wait-screen search
+idle
+type amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+# Add to… → New playlist… → name it after the film → Create
+key right 10
+key left 2
+key enter
+idle
+wait 300
+# FIX-3 A1/A3: Add to… opens lit on its first row; viewer owns no playlists yet, so that row is "New playlist…"
+key enter
+wait-screen new-playlist
+idle
+# FIX-3 A4: no "Use …" pill any more; type the film's name, Enter creates
+type Amber Tide
+idle
+key enter
+wait-screen playlist
+wait 800
+idle
+key back
+wait-screen movie
+key back
+wait-screen search
+key back
+wait-screen home
+idle
+# second film: "iron tide" → Add to… → Add to playlist… → the new playlist
+key search
+wait-screen search
+idle
+type iron tide
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 10
+key left 2
+key enter
+idle
+wait 300
+# the first row ("Add to playlist…") is lit → the new playlist is the only one listed
+key enter
+idle
+key enter
+wait 1500
+idle
+key back
+wait-screen search
+key back
+wait-screen home
+idle
+click 130 497
+wait-screen playlists
+wait 2500
+idle
+shot fix3-mosaic
+key enter
+wait-screen playlist
+wait 800
+idle
+key up 10
+idle
+key right
+idle
+key enter
+idle
+key right
+idle
+key enter
+wait 1500
+idle
+quit

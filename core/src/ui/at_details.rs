@@ -265,44 +265,235 @@ pub fn tex(cx: &mut Cx, ui: &Ui, item: &Item, kind: ImageKind, w: f32) -> Option
     cx.images.get(&url)
 }
 
-/// The title logo texture (None while loading or when the item has no logo).
+/// The title logo texture (None while loading or when the item has no logo). While the logo's final texture is not
+/// ready (its pass has not run, or a padded logo's wider fetch is on the way) `hero_title` is told to hold: the box is
+/// reserved but nothing is drawn, so the logo never appears small and then grows.
 pub fn logo(cx: &mut Cx, ui: &Ui, item: &Item) -> Option<TextureId> {
-    let w = image_width_bucket(cx.theme.hero_logo_w, ui.ctx().pixels_per_point());
-    let url = cx.client.as_ref()?.logo_url(item, w)?;
-    let tex = cx.images.get(&url)?;
-    // FIX-2 #14: once per logo, find out (off the UI thread) whether it is too dark for the dark hero.
-    let key = Id::new(("at-logo-dark", tex));
-    if ui.data_mut(|d| d.get_temp::<Option<bool>>(key)).is_none() {
-        ui.data_mut(|d| d.insert_temp::<Option<bool>>(key, Some(false)));
-        if let Some(c) = cx.client.clone() {
-            let ctx = ui.ctx().clone();
-            std::thread::spawn(move || {
-                let dark = c.get_bytes(&url).map(|b| logo_is_dark(&b)).unwrap_or(false);
-                ctx.data_mut(|d| d.insert_temp::<Option<bool>>(key, Some(dark)));
-                ctx.request_repaint();
-            });
-        }
+    let ppp = ui.ctx().pixels_per_point();
+    let hint_key = Id::new(("at-logo-w", &item.id));
+    let url = cx.client.as_ref()?.logo_url(item, image_width_bucket(cx.theme.hero_logo_w, ppp))?;
+    let ntex = cx.images.get(&url)?;
+    let ninfo = logo_pass(cx, ui, &url, ntex, hint_key);
+    // a heavily padded logo is fetched wider (once its bounds are known) so its visible part stays sharp
+    let hint: f32 = ui.data_mut(|d| d.get_temp(hint_key)).unwrap_or(1.0);
+    let wide = if ninfo.loaded && hint > 1.0 {
+        let wurl = cx.client.as_ref()?.logo_url(item, image_width_bucket(cx.theme.hero_logo_w * hint, ppp))?;
+        cx.images.get(&wurl).map(|wtex| (wtex, logo_pass(cx, ui, &wurl, wtex, hint_key)))
+    } else {
+        None
+    };
+    let wait_key = Id::new(("at-logo-wait", &item.id));
+    let now = ui.input(|i| i.time);
+    // when this wait began (a gap of over a second between frames means a fresh visit)
+    let (since, last): (f64, f64) = ui.data_mut(|d| d.get_temp(wait_key)).unwrap_or((now, now));
+    let since = if now - last > 1.0 { now } else { since };
+    ui.data_mut(|d| d.insert_temp(wait_key, (since, now)));
+    let (tex, draw) = logo_choice(Some((ntex, ninfo)), hint, wide, (now - since) as f32)?;
+    ui.data_mut(|d| d.insert_temp(Id::new(("at-logo-hold", tex)), !draw));
+    if !draw {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
     }
     Some(tex)
+}
+
+/// How long a padded logo's wider texture is waited for before the cropped narrow one is drawn instead (the wide fetch
+/// may have failed).
+pub const LOGO_WIDE_WAIT: f32 = 6.0;
+
+/// Which texture the title uses and whether to draw it yet. `narrow` is the normal-width logo with its pass result,
+/// `wide` the re-fetched wider one (only for `hint` > 1). Nothing is drawn until the final texture's bounds are known;
+/// if the wide one cannot be used (its pass failed, or it took longer than `LOGO_WIDE_WAIT`) the cropped narrow one is.
+pub fn logo_choice<T: Copy>(
+    narrow: Option<(T, LogoInfo)>,
+    hint: f32,
+    wide: Option<(T, LogoInfo)>,
+    waited_s: f32,
+) -> Option<(T, bool)> {
+    let (nt, ni) = narrow?;
+    if !ni.loaded {
+        return Some((nt, false));
+    }
+    if hint <= 1.0 {
+        return Some((nt, true));
+    }
+    match wide {
+        Some((wt, wi)) if wi.loaded && wi.ok => Some((wt, true)),
+        Some((_, wi)) if wi.loaded => Some((nt, true)),
+        _ => Some((nt, waited_s > LOGO_WIDE_WAIT)),
+    }
+}
+
+/// FIX-2 #14 / FIX-3: once per logo texture, find out (off the UI thread) whether it is too dark for the dark hero,
+/// where its visible pixels are, and (dark ones) build a glyph-shaped halo texture. Returns what is known so far.
+fn logo_pass(cx: &mut Cx, ui: &Ui, url: &str, tex: TextureId, hint_key: Id) -> LogoInfo {
+    let key = Id::new(("at-logo-info", tex));
+    if let Some(info) = ui.data_mut(|d| d.get_temp::<LogoInfo>(key)) {
+        return info;
+    }
+    ui.data_mut(|d| d.insert_temp(key, LogoInfo::default()));
+    if let Some(c) = cx.client.clone() {
+        let (ctx, url) = (ui.ctx().clone(), url.to_string());
+        std::thread::spawn(move || {
+            let bytes = c.get_bytes(&url);
+            let mut info = bytes.as_ref().map(|b| logo_info(b)).unwrap_or_default();
+            info.ok = bytes.is_ok();
+            if let Some(img) = bytes.as_ref().ok().filter(|_| info.dark).and_then(|b| logo_halo_image(b, info.bounds)) {
+                let h = ctx.load_texture("logo-halo", img, egui::TextureOptions::LINEAR);
+                ctx.data_mut(|d| d.insert_temp(Id::new(("at-logo-halo", tex)), h));
+            }
+            info.loaded = true;
+            ctx.data_mut(|d| {
+                if info.bounds.width() < 0.5 && d.get_temp::<f32>(hint_key).is_none() {
+                    d.insert_temp(hint_key, (1.0 / info.bounds.width()).min(LOGO_MAX_FETCH_SCALE));
+                }
+                d.insert_temp(key, info)
+            });
+            ctx.request_repaint();
+        });
+    }
+    LogoInfo::default()
+}
+
+/// Most a padded logo's fetch width is widened by (visible part → title width).
+const LOGO_MAX_FETCH_SCALE: f32 = 4.0;
+
+/// What one pass over a logo's pixels finds: whether it is too dark for the hero, and its visible bounds as a UV rect.
+/// `loaded` is false until the pass has run (the logo is then not drawn, so the title never jumps from uncropped).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogoInfo {
+    pub dark: bool,
+    pub bounds: Rect,
+    pub loaded: bool,
+    /// The bytes were fetched (false when the fetch failed, so a wider texture's whole-image default is not trusted).
+    pub ok: bool,
+}
+
+impl Default for LogoInfo {
+    fn default() -> Self {
+        LogoInfo { dark: false, bounds: Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), loaded: false, ok: false }
+    }
 }
 
 /// FIX-2 #14: a logo is too dark for the hero when its visible pixels average below a quarter of full brightness
 /// (black-on-transparent logos vanish against the dark backdrop). Undecodable or empty → not dark.
 pub fn logo_is_dark(bytes: &[u8]) -> bool {
-    let Ok(img) = image::load_from_memory(bytes) else { return false };
+    logo_info(bytes).dark
+}
+
+/// FIX-3 L1: the dark verdict and the bounds of the pixels with alpha above ~10 %, from one pass. Undecodable or
+/// fully transparent → not dark, whole image.
+pub fn logo_info(bytes: &[u8]) -> LogoInfo {
+    let Ok(img) = image::load_from_memory(bytes) else { return LogoInfo::default() };
     let img = img.to_rgba8();
+    let (w, h) = (img.width(), img.height());
     let (mut sum, mut weight) = (0.0_f64, 0.0_f64);
-    let step = ((img.width() * img.height()) / 20_000).max(1) as usize;
-    for p in img.pixels().step_by(step) {
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for (x, y, p) in img.enumerate_pixels() {
         let a = p[3] as f64 / 255.0;
         if a < 0.1 {
             continue;
         }
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x + 1);
+        y1 = y1.max(y + 1);
         let lum = (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 255.0;
         sum += lum * a;
         weight += a;
     }
-    weight > 0.0 && sum / weight < 0.25
+    if weight <= 0.0 {
+        return LogoInfo::default();
+    }
+    let (fw, fh) = (w as f32, h as f32);
+    LogoInfo {
+        dark: sum / weight < 0.25,
+        bounds: Rect::from_min_max(pos2(x0 as f32 / fw, y0 as f32 / fh), pos2(x1 as f32 / fw, y1 as f32 / fh)),
+        loaded: false,
+        ok: false,
+    }
+}
+
+/// Largest up-scale of a logo's own pixels (physical, not points): a heavily padded logo is not blown up past this.
+pub const LOGO_MAX_UPSCALE: f32 = 2.0;
+
+/// FIX-3 L1/L3: the on-screen size of the logo's visible part (`uv` of a `tex`-pixel texture) fitted into `boxsz`,
+/// aspect kept, up-scaled at most `LOGO_MAX_UPSCALE` physical pixels per texture pixel (`ppp` points → pixels).
+/// Padding never shrinks the glyphs.
+pub fn logo_fit(tex: Vec2, uv: Rect, boxsz: Vec2, ppp: f32) -> Vec2 {
+    let vis = vec2(tex.x * uv.width(), tex.y * uv.height());
+    if vis.x <= 0.0 || vis.y <= 0.0 {
+        return boxsz;
+    }
+    vis * (boxsz.x / vis.x).min(boxsz.y / vis.y).min(LOGO_MAX_UPSCALE / ppp.max(0.1))
+}
+
+/// FIX-3 L2: the halo texture reaches this many texture pixels past the glyph box (≤ 12 px on screen at the 2× cap).
+pub const LOGO_HALO_PAD: u32 = 6;
+/// FIX-3 L2: peak alpha of the halo, 63/255 = 24.7 % (≤ 25 %).
+pub const LOGO_HALO_ALPHA: u8 = 63;
+
+/// FIX-3 L2: a white, blurred copy of a dark logo's own alpha (cropped to `bounds`, padded by `LOGO_HALO_PAD`), peak
+/// alpha `LOGO_HALO_ALPHA`. Drawn under the logo it follows the glyph shapes — no plate.
+pub fn logo_halo_image(bytes: &[u8], bounds: Rect) -> Option<egui::ColorImage> {
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    let x0 = (bounds.min.x * w).round() as u32;
+    let y0 = (bounds.min.y * h).round() as u32;
+    let cw = ((bounds.max.x * w).round() as u32).saturating_sub(x0);
+    let ch = ((bounds.max.y * h).round() as u32).saturating_sub(y0);
+    if cw == 0 || ch == 0 {
+        return None;
+    }
+    let pad = LOGO_HALO_PAD;
+    let (ow, oh) = ((cw + 2 * pad) as usize, (ch + 2 * pad) as usize);
+    let mut a = vec![0.0_f32; ow * oh];
+    for y in 0..ch {
+        for x in 0..cw {
+            a[(y + pad) as usize * ow + (x + pad) as usize] = img.get_pixel(x0 + x, y0 + y)[3] as f32 / 255.0;
+        }
+    }
+    // two box-blur passes (radius pad/2 each) ≈ a soft falloff that dies before the edge of the padded image
+    let r = (pad / 2) as i32;
+    for _ in 0..2 {
+        for horizontal in [true, false] {
+            let src = a.clone();
+            for y in 0..oh as i32 {
+                for x in 0..ow as i32 {
+                    let mut sum = 0.0;
+                    for d in -r..=r {
+                        let (sx, sy) = if horizontal { (x + d, y) } else { (x, y + d) };
+                        if sx >= 0 && sy >= 0 && (sx as usize) < ow && (sy as usize) < oh {
+                            sum += src[sy as usize * ow + sx as usize];
+                        }
+                    }
+                    a[y as usize * ow + x as usize] = sum / (2 * r + 1) as f32;
+                }
+            }
+        }
+    }
+    // spread the blur's reach so the glyph edge itself is at about half the peak, then cap at the peak alpha
+    let pixels = a
+        .iter()
+        .map(|v| Color32::from_white_alpha(((v * 2.0).min(1.0) * LOGO_HALO_ALPHA as f32).round() as u8))
+        .collect();
+    Some(egui::ColorImage { size: [ow, oh], source_size: vec2(ow as f32, oh as f32), pixels })
+}
+
+/// Where `hero_title` puts a logo, relative to the bottom-left of its `boxsz` box: the glyph rect, the UV crop and (dark
+/// logos) the halo rect. One place, so the tests check what is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogoLayout {
+    pub rect: Rect,
+    pub uv: Rect,
+    pub halo: Option<Rect>,
+}
+
+pub fn logo_layout(tex: Vec2, info: &LogoInfo, boxsz: Vec2, ppp: f32) -> LogoLayout {
+    let size = logo_fit(tex, info.bounds, boxsz, ppp);
+    let rect = Rect::from_min_size(pos2(0.0, boxsz.y - size.y), size);
+    let vis_w = tex.x * info.bounds.width();
+    let halo = (info.dark && vis_w > 0.0).then(|| rect.expand(LOGO_HALO_PAD as f32 * size.x / vis_w));
+    LogoLayout { rect, uv: info.bounds, halo }
 }
 
 /// A cast member's photo texture.
@@ -410,8 +601,17 @@ fn art(
 ) -> Rect {
     let r = widgets::lift(rect, t.focus_scale, a);
     let p = ui.painter();
+    let tv = super::parts::is_tv(ui.ctx());
+    let st = poster_focus_style(tv, a > 0.01);
     if a > 0.01 {
         p.add(t.shadow(a).as_shape(r, t.card_radius));
+        // FIX-3 #3: on TV the same glow + white ring as `parts::card`; desktop keeps shadow + sheen only.
+        if st.glow {
+            super::parts::card_glow(ui, t, r, a);
+        }
+        if st.ring {
+            super::parts::card_ring(ui, t, r, a);
+        }
     }
     match tex {
         Some(tex) => paint_cover(ui, p, tex, r, t.card_radius, 0.5),
@@ -436,7 +636,9 @@ fn art(
         done.set_right(bar.left() + bar.width() * f.clamp(0.0, 1.0));
         p.rect_filled(done, t.progress_h / 2.0, t.progress);
     }
-    sheen(p, t, r, a);
+    if st.sheen {
+        sheen(p, t, r, a);
+    }
     r
 }
 
@@ -522,23 +724,26 @@ pub fn hero(ui: &mut Ui, t: &Theme, art: HeroArt, height: f32) -> Rect {
 /// name in `hero_title_size` bold (two lines at most). Allocates its height in `ui`.
 pub fn hero_title(ui: &mut Ui, t: &Theme, name: &str, logo: Option<TextureId>) {
     if let Some(tex) = logo {
-        let s = tex_size(ui, tex).unwrap_or(vec2(t.hero_logo_w, t.hero_logo_h));
-        let k = (t.hero_logo_w / s.x).min(t.hero_logo_h / s.y);
-        let size = s * k;
-        let (rect, _) = ui.allocate_exact_size(vec2(t.hero_logo_w, size.y), Sense::hover());
-        let r = Rect::from_min_size(pos2(rect.left(), rect.bottom() - size.y), size);
-        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        // FIX-2 #14: a dark logo gets a soft light glow behind it so it reads on the dark hero
-        if ui.data_mut(|d| d.get_temp::<Option<bool>>(Id::new(("at-logo-dark", tex)))).flatten() == Some(true) {
-            let glow = egui::epaint::Shadow {
-                offset: [0, 0],
-                blur: t.shadow_blur as u8,
-                spread: (t.gap / 2.0) as u8,
-                color: t.sheen.gamma_multiply(2.0),
-            };
-            ui.painter().add(glow.as_shape(r, r.height() / 2.0));
+        let boxsz = vec2(t.hero_logo_w, t.hero_logo_h);
+        let s = tex_size(ui, tex).unwrap_or(boxsz);
+        let info = ui.data_mut(|d| d.get_temp::<LogoInfo>(Id::new(("at-logo-info", tex)))).unwrap_or_default();
+        // the final box is reserved from the start, so the page below never moves when the crop arrives
+        let (rect, _) = ui.allocate_exact_size(boxsz, Sense::hover());
+        let hold: bool = ui.data_mut(|d| d.get_temp(Id::new(("at-logo-hold", tex)))).unwrap_or(false);
+        if !info.loaded || hold {
+            return;
         }
-        ui.painter().image(tex, r, uv, Color32::WHITE);
+        let l = logo_layout(s, &info, boxsz, ui.ctx().pixels_per_point());
+        let r = l.rect.translate(rect.left_top().to_vec2());
+        // FIX-2 #14 / FIX-3 L2: a dark logo gets a soft light halo shaped like its glyphs so it reads on the dark hero
+        if let Some(h) = l.halo {
+            let halo: Option<egui::TextureHandle> = ui.data_mut(|d| d.get_temp(Id::new(("at-logo-halo", tex))));
+            if let Some(halo) = halo {
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                ui.painter().image(halo.id(), h.translate(rect.left_top().to_vec2()), uv, Color32::WHITE);
+            }
+        }
+        ui.painter().image(tex, r, l.uv, Color32::WHITE);
         return;
     }
     let job = text_job(name, t.font_w(t.hero_title_size, Weight::Bold), t.text, t.hero_text_w, 2);
@@ -985,7 +1190,7 @@ pub fn action_row(ui: &mut Ui, t: &Theme, btns: &[ActionBtn], focus: Option<usiz
         for (i, b) in btns.iter().enumerate() {
             let f = focus == Some(i);
             let r = match b {
-                ActionBtn::Play(label) => widgets::play_pill(ui, t, label, f),
+                ActionBtn::Play(label) => widgets::play_pill_for(ui, t, label, f, !labels),
                 ActionBtn::Pill(label) => widgets::pill_button(ui, t, label, f, false),
                 ActionBtn::Menu(label) => menu_pill(ui, t, label, f),
                 ActionBtn::Round { icon, on, caption } => round_button(ui, t, *icon, *on, caption, f, labels),
@@ -1098,32 +1303,32 @@ pub fn row(
         let fade = Rect::from_min_max(pos2(bleed.right() - t.margin, bleed.top()), bleed.max);
         gradient(&p, fade, &fade_stops(t.bg, 0.0, 0.9), false);
     }
-    // the end arrows: there whenever the row can move that way, shown and clickable while the pointer is over the row
-    {
+    // FIX-3 #4: on the desktop both end arrows are there whenever the row overflows (the one at an end dimmed and
+    // inert), hover or not. The TV has no pointer to click them, so it keeps its look.
+    if max > 1.0 && ui.ctx().data(|d| d.get_temp::<bool>(Id::new("at-desktop"))).unwrap_or(false) {
         let page = (bleed.width() - 2.0 * t.margin) * 0.8;
-        for (right, show) in [(false, off > 1.0), (true, more_right)] {
-            if !show {
-                continue;
-            }
+        for (right, live) in [(false, off > 1.0), (true, more_right)] {
             let r = arrow_at(right);
-            // registered after the cards in the same layer, so it is the one under the pointer; drawn only while the
-            // pointer is over the row
-            let resp =
-                ui.interact(r, key.with(("arrow", right)), if hovered { Sense::click() } else { Sense::hover() });
-            if hovered {
-                let fill = if resp.hovered() { t.focus_fill } else { t.menu_fill };
-                let ink = if resp.hovered() { t.focus_ink } else { t.text };
-                p.circle_filled(r.center(), r.width() / 2.0, fill);
-                let h = t.round_button * 0.14;
-                let k = if right { 1.0 } else { -1.0 };
-                let pts = vec![
-                    pos2(r.center().x - k * h * 0.6, r.center().y - h),
-                    pos2(r.center().x + k * h * 0.6, r.center().y),
-                    pos2(r.center().x - k * h * 0.6, r.center().y + h),
-                ];
-                p.add(egui::Shape::line(pts, Stroke::new(t.icon_stroke, ink)));
-            }
-            if hovered && resp.clicked() {
+            // registered after the cards in the same layer, so it is the one under the pointer
+            let resp = ui.interact(
+                r,
+                key.with(("arrow", right)),
+                if hovered && live { Sense::click() } else { Sense::hover() },
+            );
+            let lit = live && resp.hovered();
+            let dim = |c: Color32| if live { c } else { c.gamma_multiply(0.35) };
+            let fill = if lit { t.focus_fill } else { t.menu_fill };
+            let ink = if lit { t.focus_ink } else { t.text };
+            p.circle_filled(r.center(), r.width() / 2.0, dim(fill));
+            let h = t.round_button * 0.14;
+            let k = if right { 1.0 } else { -1.0 };
+            let pts = vec![
+                pos2(r.center().x - k * h * 0.6, r.center().y - h),
+                pos2(r.center().x + k * h * 0.6, r.center().y),
+                pos2(r.center().x - k * h * 0.6, r.center().y + h),
+            ];
+            p.add(egui::Shape::line(pts, Stroke::new(t.icon_stroke, dim(ink))));
+            if hovered && live && resp.clicked() {
                 ui.data_mut(|d| d.insert_temp(key.with("page"), if right { page } else { -page }));
             }
         }
@@ -1133,6 +1338,11 @@ pub fn row(
         ui.scroll_to_rect(slot.with_min_y(slot.top() - t.row_gap), None);
     }
     out
+}
+
+/// FIX-3 #4: the app tells the rows once a frame whether this is the desktop (pointer, end arrows) or the TV.
+pub fn set_desktop(ctx: &egui::Context, desktop: bool) {
+    ctx.data_mut(|d| d.insert_temp(Id::new("at-desktop"), desktop));
 }
 
 /// FIX-2 #4: true when the pointer is over a row that could scroll sideways when last drawn — the page's own scroller
@@ -1279,6 +1489,13 @@ pub fn still_card(ui: &mut Ui, t: &Theme, tex: Option<TextureId>, label: &str, f
     resp
 }
 
+/// What a focused poster draws: the one card focus rule (C3), so on TV it matches `parts::card`. On desktop the
+/// details-page art keeps its old look (shadow + sheen, no glow).
+pub fn poster_focus_style(tv: bool, focused: bool) -> super::parts::CardFocusStyle {
+    let s = super::parts::card_focus_style(tv, focused, false);
+    super::parts::CardFocusStyle { glow: s.glow && tv, ..s }
+}
+
 /// A 2:3 poster (Related, a collection's films): lifts when focused; the title shows under it only while
 /// focused, or always when there is no art (Apple's posters carry their own title).
 pub fn poster_card(ui: &mut Ui, t: &Theme, tex: Option<TextureId>, title: &str, focused: bool) -> Response {
@@ -1382,6 +1599,10 @@ pub fn person_circle(
     }
     if a > 0.01 {
         p.circle_stroke(r.center(), r.width() / 2.0, Stroke::new(t.badge_stroke, t.sheen.gamma_multiply(a)));
+        if super::parts::is_tv(ui.ctx()) {
+            let ring = Stroke::new(t.focus_stroke, t.focus_color.gamma_multiply(a));
+            p.circle_stroke(r.center(), r.width() / 2.0 + t.focus_stroke / 2.0, ring);
+        }
     }
     let mut y = img.bottom() + t.card_title_gap + (t.focus_scale - 1.0) * t.person_size / 2.0 * a;
     let name_c = t.muted.lerp_to_gamma(t.text, 0.6 + 0.4 * a);

@@ -9,7 +9,7 @@ import osk  # noqa: E402
 
 def replay(keys, symbols=False):
     """A second, literal model of KeyboardState::press (row/col/x, nearest column) typing what the keys select."""
-    row, col, x, typed = 0, 0, 0.5, ""
+    row, col, x, typed = 0, 1, 2.0, ""
     for k in keys:
         rows = osk._rows(symbols)
         if k == "Left":

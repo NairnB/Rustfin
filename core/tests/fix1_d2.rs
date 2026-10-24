@@ -11,14 +11,12 @@ fn logo_is_asked_for_as_png() {
     assert!(u.contains("/Items/abc/Images/Logo") && u.contains("format=png") && u.contains("tag=tag1"), "{u}");
 }
 
-/// FIX-2 #2: the box's hint is a plain label; the film title is a separate "Use …" choice.
+/// FIX-2 #2: the box's hint is a plain label (FIX-3 A4: the "Use …" pill is gone).
 #[test]
-fn new_playlist_hint_is_a_label_and_the_title_is_a_choice() {
-    use jf_core::ui::playlists::{name_hint, use_label};
+fn new_playlist_hint_is_a_label() {
+    use jf_core::ui::playlists::name_hint;
     assert_eq!(name_hint(false), "Playlist name");
     assert_eq!(name_hint(true), "Collection name");
-    assert_eq!(use_label("Big Buck Bunny").as_deref(), Some("Use \u{201c}Big Buck Bunny\u{201d}"));
-    assert_eq!(use_label("  "), None);
 }
 
 /// FIX-2 #17: a file whose subtitle is flagged default shows that subtitle on the page (the player turns it on).

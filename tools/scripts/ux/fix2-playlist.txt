@@ -1,5 +1,5 @@
-# FIX-2 #2 #9 (D2): Add to → Add to playlist… with no playlists offers "No playlists yet" + "New playlist…" (only playlists you can change);
-# the name box hint is "Playlist name" with a "Use “title”" pill. Tester (owns no playlists; viewer's public one is not offered), Amber Tide. Creates nothing.
+# FIX-2 #2 #9 / FIX-3 A1 A4 (D2): Add to with no playlists lists only "New playlist…" (only playlists you can change count);
+# the name box hint is "Playlist name", no "Use “title”" pill. Tester (owns no playlists; viewer's public one is not offered), Amber Tide. Creates nothing.
 wait-screen connect
 wait 2500
 idle
@@ -30,15 +30,9 @@ key right 10
 key left 2
 key enter
 idle
-key down
-key enter
-idle
 wait 300
 shot fix2-playlist-none
-# (with playlists already there the shot shows them instead) back to the first menu → "New playlist…"
-key back
-idle
-key down
+# (FIX-3: with none, the menu is just "New playlist…", already lit) → the name form
 key enter
 wait-screen new-playlist
 idle

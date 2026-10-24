@@ -1,4 +1,4 @@
-# FIX-1 #14 (D2): ••• is a small menu (Mark watched, Favourites, Add to…, Media info, Copy link) next to the button;
+# FIX-1 #14 (D2): ••• is a small menu (Mark watched, Favourites, Add to…, Change poster…, Media info, Copy link) next to the button;
 # Media info jumps to Information. Viewer, Amber Tide.
 wait-screen connect
 wait 2500
@@ -32,7 +32,7 @@ key enter
 idle
 wait 300
 shot fix1-more-menu
-key down 4
+key down 5
 idle
 key enter
 idle

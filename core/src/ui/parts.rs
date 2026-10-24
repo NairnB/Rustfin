@@ -100,22 +100,73 @@ pub fn paint_image(ui: &Ui, tex: egui::TextureId, rect: Rect, radius: f32) {
     egui::Image::from_texture(egui::load::SizedTexture::new(tex, rect.size())).corner_radius(radius).paint_at(ui, rect);
 }
 
-/// The focus lift on a card's art: shadow under, art grown by `focus_scale`, sheen over the top. `a` = 0..1.
+/// What a card's focus draws (FIX-3 #3). Desktop: lift, glow and sheen for hover and keyboard focus alike.
+/// TV: lift, glow and a solid white ring for remote focus — no sheen, which greyed bright posters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardFocusStyle {
+    pub lift: bool,
+    pub glow: bool,
+    pub ring: bool,
+    pub sheen: bool,
+}
+
+/// The one rule for every card's focus look. `focused` = keyboard / remote focus, `hovered` = the pointer.
+pub fn card_focus_style(tv: bool, focused: bool, hovered: bool) -> CardFocusStyle {
+    let on = if tv { focused } else { focused || hovered };
+    CardFocusStyle { lift: on, glow: on, ring: on && tv, sheen: on && !tv }
+}
+
+/// Whether a card is lit (lifted) this frame: keyboard / remote focus, or on desktop the pointer too. On TV a
+/// pointer hovering never lights a card (no ring from the mouse). Every card painter asks this.
+pub fn card_lit(ctx: &egui::Context, focused: bool, hovered: bool) -> bool {
+    card_focus_style(is_tv(ctx), focused && super::shell::keyboard_focus(ctx), hovered).lift
+}
+
+/// Whether this build is the TV one (the app sets it each frame; the desktop shell is the other).
+pub fn is_tv(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::new("jf-tv"))).unwrap_or(false)
+}
+
+/// Called by the app each frame: `true` on the TV build.
+pub fn set_tv(ctx: &egui::Context, tv: bool) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("jf-tv"), tv));
+}
+
+/// The solid white focus ring just outside `r`, following the card's corner radius. `a` = 0..1.
+pub fn card_ring(ui: &Ui, t: &Theme, r: Rect, a: f32) {
+    if a > 0.01 {
+        let stroke = egui::Stroke::new(t.focus_stroke, t.focus_color.gamma_multiply(a));
+        ui.painter().rect_stroke(r, t.card_radius, stroke, egui::StrokeKind::Outside);
+    }
+}
+
+/// The focus lift on a card's art: shadow under, art grown by `focus_scale`, white glow (and on TV a white ring). `a` = 0..1.
+/// Draws the layers `card_focus_style` names; the sheen is the caller's, over the art.
 /// Returns the lifted rect (draw the art into it).
-fn card_lift(ui: &Ui, t: &Theme, img_rect: Rect, a: f32) -> Rect {
+pub fn card_lift(ui: &Ui, t: &Theme, img_rect: Rect, a: f32) -> Rect {
     let r = widgets::lift(img_rect, t.focus_scale, a);
     if a > 0.01 {
+        let st = card_focus_style(is_tv(ui.ctx()), true, false);
         ui.painter().add(t.shadow(a).as_shape(r, t.card_radius));
-        // FIX-1 #2: a soft white glow (not a ring) so focus reads on near-black pages from the sofa.
-        let glow = egui::epaint::Shadow {
-            offset: [0, 0],
-            blur: (t.focus_glow_blur * a) as u8,
-            spread: 0,
-            color: t.focus_glow.gamma_multiply(a),
-        };
-        ui.painter().add(glow.as_shape(r, t.card_radius));
+        if st.glow {
+            card_glow(ui, t, r, a);
+        }
+        if st.ring {
+            card_ring(ui, t, r, a);
+        }
     }
     r
+}
+
+/// FIX-1 #2: a soft white glow so focus reads on near-black pages from the sofa. `a` = 0..1.
+pub fn card_glow(ui: &Ui, t: &Theme, r: Rect, a: f32) {
+    let glow = egui::epaint::Shadow {
+        offset: [0, 0],
+        blur: (t.focus_glow_blur * a) as u8,
+        spread: 0,
+        color: t.focus_glow.gamma_multiply(a),
+    };
+    ui.painter().add(glow.as_shape(r, t.card_radius));
 }
 
 /// A light band fading down from the top of the lifted art (stepped, top corners rounded).
@@ -215,8 +266,9 @@ pub fn card(ui: &mut Ui, cx: &mut Cx, item: &Item, kind: CardKind, focused: bool
     if !ui.is_rect_visible(rect) {
         return resp;
     }
-    // Cards lift for keyboard focus and for mouse hover alike.
-    let lifted = (focused && super::shell::keyboard_focus(ui.ctx())) || resp.hovered();
+    // Cards lift for keyboard focus and for mouse hover alike; on TV only the remote's focus lights a card.
+    let tv = is_tv(ui.ctx());
+    let lifted = card_lit(ui.ctx(), focused, resp.hovered());
     let a = t.ease(ui.ctx().animate_bool_with_time(resp.id.with("focus"), lifted, t.focus_time));
     let img_rect = card_lift(ui, t, Rect::from_min_size(rect.min, size), a);
     let url = card_image_url(cx, item, kind, ui.ctx().pixels_per_point());
@@ -255,7 +307,9 @@ pub fn card(ui: &mut Ui, cx: &mut Cx, item: &Item, kind: CardKind, focused: bool
     if let Some(f) = resume_fraction(item) {
         progress_bar(ui, t, img_rect, f);
     }
-    sheen(ui, t, img_rect, a);
+    if card_focus_style(tv, a > 0.01, false).sheen {
+        sheen(ui, t, img_rect, a);
+    }
     let (title, sub) = card_labels_with(item, cx.settings.show_release_year, cx.settings.show_story_year);
     let tx = rect.left();
     let w = size.x;
@@ -958,7 +1012,7 @@ pub fn thumb_card(ui: &mut Ui, cx: &mut Cx, item: &Item, focused: bool) -> Respo
         return resp;
     }
     // FIX-2 #5: the same focus as poster cards — lift, shadow and the soft white glow (was a thin ring).
-    let lifted = (focused && super::shell::keyboard_focus(ui.ctx())) || resp.hovered();
+    let lifted = card_lit(ui.ctx(), focused, resp.hovered());
     let a = t.ease(ui.ctx().animate_bool_with_time(resp.id.with("focus"), lifted, t.focus_time));
     let img_rect = card_lift(ui, t, Rect::from_min_size(rect.min, size), a);
     let w = image_width_bucket(size.x, ui.ctx().pixels_per_point());
@@ -1225,7 +1279,7 @@ pub fn hero(ui: &mut Ui, cx: &mut Cx, item: &Item, focus: Option<usize>) -> RowO
         egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            let r = widgets::play_pill(ui, t, &label, focus == Some(0));
+            let r = widgets::play_pill_for(ui, t, &label, focus == Some(0), !cx.opts.desktop);
             let m = widgets::round_button(ui, t, Icon::More, focus == Some(1));
             for (i, r) in [r, m].iter().enumerate() {
                 out.xs.push(r.rect.center().x);

@@ -5,6 +5,7 @@ use crate::api::{ApiError, Item, ItemKind, Result};
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
+use crate::theme::Theme;
 
 const G_FIELD: usize = 0;
 const G_TOP: usize = 1;
@@ -21,6 +22,32 @@ const G_GENRES: usize = 9;
 
 /// How many cards the Top results row holds.
 const TOP_MAX: usize = 12;
+
+/// How the TV keyboard let go of the field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KbExit {
+    Up,
+    Down,
+    /// Back or "done".
+    Close,
+}
+
+/// FIX-3 Q1/Q2: where focus goes when the keyboard lets go. `lens` is each group's length (field first). It is
+/// index 0 of the first non-empty result group; with no results, it stays on the field. Only Down goes on to the
+/// genre buttons of an empty result (as it always did): they are not results.
+pub fn focus_after_keyboard(lens: &[usize], exit: KbExit) -> Focus {
+    let last = if exit == KbExit::Down { lens.len() } else { lens.len().min(G_GENRES) };
+    match lens[..last].iter().skip(1).position(|&n| n > 0) {
+        Some(gi) => Focus { group: gi + 1, index: 0 },
+        None => Focus { group: G_FIELD, index: 0 },
+    }
+}
+
+/// FIX-3 Q4: the y of the results area, under the field and the "Searching…" line. It does not depend on the
+/// keyboard (an overlay), so the first row stays put when the keyboard hides.
+pub fn results_top(t: &Theme, field_bottom: f32, _keyboard_open: bool, searching: bool) -> f32 {
+    field_bottom + if searching { t.gap / 2.0 + t.body_size } else { 0.0 }
+}
 
 /// D12: the best matches across films, shows, episodes, collections and people, by how well the name matches the
 /// query (whole name, then name start, then a word start, then anywhere). Ties keep film, show, person,
@@ -90,6 +117,8 @@ pub struct Search {
     seq: u64,
     focus: Focus,
     groups: Vec<Group>,
+    /// FIX-3: the TV keyboard was up at the last frame (it is drawn after the screen, so this lags by one frame).
+    kb_open: bool,
 }
 
 pub fn screen() -> Box<dyn Screen> {
@@ -114,6 +143,7 @@ pub fn screen() -> Box<dyn Screen> {
         seq: 0,
         focus: Focus { group: G_FIELD, index: 0 },
         groups: vec![],
+        kb_open: false,
     })
 }
 
@@ -139,6 +169,10 @@ impl Search {
         self.shows = rest(ItemKind::Series);
         self.episodes = rest(ItemKind::Episode);
         self.people = not_in(&shown, people);
+    }
+
+    fn group_lens(&self) -> Vec<usize> {
+        self.groups.iter().map(|g| g.len).collect()
     }
 
     fn result_at(&self, f: Focus) -> Option<Item> {
@@ -218,11 +252,11 @@ impl Screen for Search {
                 if self.focus.group == G_FIELD && matches!(key, Key::Left | Key::Right) {
                     return true;
                 }
-                if self.focus.group == G_FIELD && key == Key::Down {
-                    // Straight onto the first result, not the card nearest the field's middle.
-                    if let Some(gi) = self.groups.iter().skip(1).position(|g| g.len > 0) {
-                        self.focus = Focus { group: gi + 1, index: 0 };
-                    }
+                if self.focus.group == G_FIELD && (key == Key::Down || (key == Key::Up && self.kb_open)) {
+                    // Straight onto the first result, not the card nearest the field's middle. Up is the
+                    // keyboard letting go of the field (FIX-3 Q1); with nothing to land on, the field keeps focus.
+                    let exit = if key == Key::Down { KbExit::Down } else { KbExit::Up };
+                    self.focus = focus_after_keyboard(&self.group_lens(), exit);
                     return true;
                 }
                 self.focus = move_focus(&self.groups, self.focus, key);
@@ -292,6 +326,19 @@ impl Screen for Search {
             cx.spawn("suggested", move || client.suggestions(12));
         }
         self.maybe_search(cx);
+
+        // FIX-3 Q1: the keyboard closed (Back or "done") with focus on the field — land on the first result.
+        let kb_open = ui.ctx().memory(|m| {
+            m.areas().visible_last_frame(&egui::LayerId::new(egui::Order::Foreground, egui::Id::new("tv-keyboard")))
+        });
+        if self.kb_open && !kb_open && self.focus.group == G_FIELD {
+            self.focus = focus_after_keyboard(&self.group_lens(), KbExit::Close);
+        }
+        self.kb_open = kb_open;
+        if kb_open {
+            // The keyboard is painted after this screen; look again soon so its closing is noticed.
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
 
         // Apple TV look: the wide search field, centred at the top (the toolbar already says "Search").
         ui.add_space(t.gap);

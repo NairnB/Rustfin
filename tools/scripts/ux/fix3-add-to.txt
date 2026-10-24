@@ -1,0 +1,38 @@
+# args: --tv
+# FIX-3 A3 (TV): + opens "Add to…" with its first row lit (no extra Down needed); with no playlists that row is "New playlist…".
+# Tester (owns no playlists), Amber Tide. Creates nothing.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Amber Tide
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+key right 10
+key left 2
+key enter
+idle
+wait 300
+shot fix3-add-to-lit
+key back
+wait-screen movie
+quit

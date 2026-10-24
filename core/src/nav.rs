@@ -31,6 +31,15 @@ fn remember(groups: &[Group], f: Focus) {
     });
 }
 
+/// Forget where focus last was in `group` for this layout, so the next entry lands on its first item (a season switch).
+pub fn forget(groups: &[Group], group: usize) {
+    MEMORY.with(|m| {
+        if let Some(slot) = m.borrow_mut().get_mut(&layout(groups)).and_then(|s| s.get_mut(group)) {
+            *slot = None;
+        }
+    });
+}
+
 fn remembered(groups: &[Group], group: usize) -> Option<usize> {
     MEMORY.with(|m| {
         let i = m.borrow().get(&layout(groups))?.get(group).copied().flatten()?;

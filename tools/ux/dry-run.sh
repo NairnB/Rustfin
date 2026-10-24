@@ -13,6 +13,8 @@ RF_FLEET_HOME="$(mktemp -d "${RF_FLEET_HOME:-$HOME/rf-fleet}-dry.XXXXXX")"; expo
 export FLEET_OUT="$RF_FLEET_HOME/out"
 export RF_DRIVE="$HERE/tests/fake_rf_drive.py"
 export TESTER_CMD="$HERE/fake-tester.sh"
+# One forced start failure (2 fails = the first try and its retry): recorded as a rig error, then re-queued and run.
+export FAKE_START_FAIL="r0-mark-watched-desk-1:2" RF_START_RETRY_WAIT=1
 "$HERE/fleet-run" --round 0 --tasks play-sintel,mark-watched,resume-film --modes desk,tv --repeat-on-signal
 python3 -I - "$FLEET_OUT" "$HERE" <<'PY'
 import json, sys
@@ -20,14 +22,17 @@ out, here = sys.argv[1:3]
 sys.path.insert(0, here)
 import jfapi
 recs = [json.loads(l) for l in open(out + "/round-0/results.jsonl")]
+rig = [r for r in recs if r.get("rig_error")]
+assert len(rig) == 1 and rig[0]["check"]["reason"].startswith("rig: "), rig
+recs = [r for r in recs if not r.get("rig_error")]
+assert len([r for r in recs if r["run"] == 1]) == 6, f"expected 6 first runs (the rig-error one re-queued), got {len(recs)} runs"
 bad = [r for r in recs if not r["check"]["pass"] or r.get("error")]
 ok = json.load(open(out + "/routes-ok.json"))
-assert len(recs) == 6, f"expected 6 runs, got {len(recs)}"
 assert not bad, bad
 assert len(ok) == 6 and all(v["ok"] for v in ok.values()), ok
 assert all(r["steps"] > 0 and r["ratio"] for r in recs), recs
 left = [u["Name"] for u in jfapi.Api.admin().get("/Users") if u["Name"].startswith("fleet-")]
 assert not left, f"fleet users left behind: {left}"
-print("dry run OK:", len(recs), "runs, routes ok, no fleet users left")
+print("dry run OK:", len(recs), "runs, one rig error re-queued, routes ok, no fleet users left")
 PY
 cat "$FLEET_OUT/round-0/summary.md"

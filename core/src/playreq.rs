@@ -1,5 +1,7 @@
 //! Builds the player's request from PlaybackInfo + the item page's choices (R-PLAY-1, R-API-30). Pure. Body: packet P1.
-use crate::api::{ticks_to_secs, Client, Item, ItemKind, MediaSource, PlaybackInfo, PlaybackPlan, StreamKind};
+use crate::api::{
+    ticks_to_secs, with_stream_indexes, Client, Item, ItemKind, MediaSource, PlaybackInfo, PlaybackPlan, StreamKind,
+};
 use crate::platform::{ExternalSub, PlayRequest};
 use crate::settings::{SubMode, SubPrefs};
 use crate::ui::player::PlayOptions;
@@ -89,16 +91,36 @@ pub fn build_plan(
     opts: &PlayOptions,
     prefs: &SubPrefs,
 ) -> Option<PlayRequest> {
+    build_plan_burnt(client, item, plan, opts, prefs).map(|(req, _)| req)
+}
+
+/// C3-SUBS: `build_plan`, also giving the embedded subtitle the server burns into the transcode (R-SUBS-2 / 5 / 6) —
+/// the request's own `subtitle` is then None (mpv has nothing to load), so the player keeps the burnt index itself.
+pub fn build_plan_burnt(
+    client: &Client,
+    item: &Item,
+    plan: &PlaybackPlan,
+    opts: &PlayOptions,
+    prefs: &SubPrefs,
+) -> Option<(PlayRequest, Option<i32>)> {
     let mut req = build_with_prefs(client, item, &plan.info, opts, prefs)?;
+    let mut burnt = None;
     if let Some(url) = &plan.transcoding_url {
-        req.url = url.clone();
+        // R-SUBS-2: the server burns in the embedded subtitle the url names, -1 = none (an external one loads here).
+        // R-SUBS-6: only a subtitle stream the chosen source really has is burnt; any other choice is sent as none.
+        let source = pick_source(&plan.info, opts.media_source_id.as_deref());
+        burnt = req.subtitle.filter(|s| {
+            !req.external_subs.iter().any(|e| e.index == *s)
+                && source.is_some_and(|ms| {
+                    ms.media_streams.iter().any(|m| m.index == *s && m.kind == StreamKind::Subtitle && !m.is_external)
+                })
+        });
+        req.url = with_stream_indexes(url, req.audio, Some(burnt.unwrap_or(-1)), burnt.is_some());
         req.audio_indexes = req.audio.into_iter().collect();
-        if req.subtitle.is_some_and(|s| !req.external_subs.iter().any(|e| e.index == s)) {
-            req.subtitle = None;
-        }
+        req.subtitle = req.subtitle.filter(|s| req.external_subs.iter().any(|e| e.index == *s));
         req.subtitle_indexes.clear();
     }
-    Some(req)
+    Some((req, burnt))
 }
 
 /// G8 / P-ITEM-11: the media source with id `want`, else the first one.
@@ -127,4 +149,29 @@ pub fn apply_sub_prefs(prefs: &SubPrefs, ms: &MediaSource) -> Option<i32> {
         }
         SubMode::Default => ms.default_subtitle_stream_index,
     }
+}
+
+/// C3-SUBS / R-SUBS-1: the `(AudioStreamIndex, SubtitleStreamIndex)` a PlaybackInfo request names. Audio as chosen;
+/// subtitle: an embedded stream → its index, off or an external one (the client loads it) → -1, no choice → none.
+/// With no `info` yet (the first request) a chosen subtitle index is sent as given.
+pub fn request_indexes(
+    info: Option<&PlaybackInfo>,
+    source_id: Option<&str>,
+    audio: Option<i32>,
+    subtitle: Option<Option<i32>>,
+) -> (Option<i32>, Option<i32>) {
+    let sub = subtitle.map(|s| match s {
+        None => -1,
+        Some(i) => {
+            let external = info
+                .and_then(|inf| pick_source(inf, source_id))
+                .is_some_and(|ms| ms.media_streams.iter().any(|m| m.index == i && m.is_external));
+            if external {
+                -1
+            } else {
+                i
+            }
+        }
+    });
+    (audio, sub)
 }

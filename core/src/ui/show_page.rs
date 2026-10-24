@@ -45,6 +45,8 @@ pub struct ShowPage {
     confirm_series: bool,
     focus: Focus,
     groups: Vec<Group>,
+    // FIX-3 #4: a season switch: the next entry into the episode row lands on its first card
+    forget_row: bool,
     started: bool,
 }
 
@@ -64,6 +66,7 @@ pub fn screen(series: Item, season: Option<i32>) -> Box<dyn Screen> {
         confirm_series: false,
         focus: Focus { group: G_HERO, index: 0 },
         groups: vec![],
+        forget_row: false,
         started: false,
     })
 }
@@ -147,6 +150,22 @@ impl ShowPage {
             let sid = self.series.id.clone();
             let client = cx.api();
             cx.spawn("series-full", move || client.item(&sid));
+        }
+    }
+
+    /// A different season shows: the next entry into the episode row lands on its first card (FIX-3 #4, E3).
+    fn switch_season(&mut self, season: i32) {
+        if season != self.open_season {
+            self.open_season = season;
+            self.season_chosen = true;
+            self.forget_row = true;
+        }
+    }
+
+    /// Once the groups are rebuilt for the new season: drop the row's remembered card.
+    fn apply_forget_row(&mut self) {
+        if std::mem::take(&mut self.forget_row) {
+            crate::nav::forget(&self.groups, G_LIST);
         }
     }
 
@@ -656,10 +675,7 @@ impl Screen for ShowPage {
                 // FIX-2 #4: as on tvOS, the focused season tab is the season showing
                 if self.focus.group == G_SEASONS {
                     if let Some(&s) = self.plan().seasons.get(self.focus.index) {
-                        if s != self.open_season {
-                            self.open_season = s;
-                            self.season_chosen = true;
-                        }
+                        self.switch_season(s);
                     }
                 }
                 true
@@ -849,7 +865,7 @@ impl Screen for ShowPage {
                             self.focus = Focus { group: G_SEASONS, index: i };
                         }
                         if let Some(i) = out.clicked {
-                            self.open_season = plan.seasons[i];
+                            self.switch_season(plan.seasons[i]);
                             self.season_chosen = true;
                         }
                     }
@@ -959,6 +975,7 @@ impl Screen for ShowPage {
             groups[G_MORE] = Group { len: more_xs.len(), cols: 1, xs: more_xs };
         }
         self.groups = groups;
+        self.apply_forget_row();
         self.focus = move_focus(&self.groups, self.focus, Key::Enter);
 
         if let Some(h) = pressed {
@@ -982,5 +999,60 @@ impl Screen for ShowPage {
         if let Some(p) = person {
             cx.push(super::person::screen(p.id, p.name));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(n: usize) -> Group {
+        Group { len: n, cols: n, xs: (0..n).map(|i| i as f32 * 100.0).collect() }
+    }
+
+    fn page() -> ShowPage {
+        let mut groups = vec![Group::default(); N_GROUPS];
+        groups[G_SEASONS] = row(2);
+        groups[G_LIST] = row(8);
+        groups[G_CAST] = row(3);
+        ShowPage {
+            series: Item::default(),
+            requested_season: None,
+            season_chosen: false,
+            episodes: vec![],
+            unaired: vec![],
+            next_up: None,
+            loading: false,
+            error: None,
+            initialized: true,
+            open_season: 1,
+            more_open: false,
+            confirm_series: false,
+            focus: Focus { group: G_SEASONS, index: 0 },
+            groups,
+            forget_row: false,
+            started: true,
+        }
+    }
+
+    #[test]
+    fn a_season_switch_enters_the_row_at_its_first_card() {
+        let mut p = page();
+        // Season 1: down into the row, along to E6, back up to the tabs
+        p.focus = move_focus(&p.groups, p.focus, Key::Down);
+        for _ in 0..5 {
+            p.focus = move_focus(&p.groups, p.focus, Key::Right);
+        }
+        assert_eq!(p.focus, Focus { group: G_LIST, index: 5 });
+        p.focus = move_focus(&p.groups, p.focus, Key::Up);
+        // the same season again leaves the memory alone
+        p.switch_season(1);
+        p.apply_forget_row();
+        assert_eq!(move_focus(&p.groups, p.focus, Key::Down), Focus { group: G_LIST, index: 5 });
+        // Season 2 (same shape): the row starts over
+        p.switch_season(2);
+        assert!(p.season_chosen);
+        p.apply_forget_row();
+        assert_eq!(move_focus(&p.groups, p.focus, Key::Down), Focus { group: G_LIST, index: 0 });
     }
 }

@@ -1,5 +1,5 @@
-//! UXP5: the TV's on-screen keyboard — a tvOS-style grid (3 rows of keys, then space / delete / clear / shift /
-//! 123 / done). The model (`KeyboardState::press_at` → `Effect`) is pure and unit-tested; `draw` paints it.
+//! UXP5: the TV's on-screen keyboard — a tvOS-style grid (3 rows of keys, each with a side key — shift / 123 /
+//! clear — at its left, so shift and 123 are two presses from the first letter; then space / delete / done). The model (`KeyboardState::press_at` → `Effect`) is pure and unit-tested; `draw` paints it.
 //! Only the TV build opens it (see `App::tv_keys`); typed keys reach the focused field as egui text events, so a
 //! field needs no code of its own — it only has to call `register` (done once, in `parts::text_field`).
 use super::widgets;
@@ -44,38 +44,50 @@ pub enum Effect {
 const LETTERS: [&str; 3] = ["abcdefghij", "klmnopqrst", "uvwxyz.-_@"];
 const SYMBOLS: [&str; 3] = ["1234567890", ":/.-_@?&=+", "!#$%^*()~,"];
 
+/// Width of the side-key column, in cells (the grid is `SIDE + 10` wide).
+const SIDE: f32 = 1.5;
+const SIDE_KEYS: [Cap; 3] = [Cap::Shift, Cap::Layer, Cap::Clear];
+
 pub fn layout(symbols: bool, shift: bool) -> Vec<Vec<Cell>> {
     let src = if symbols { &SYMBOLS } else { &LETTERS };
     let mut rows: Vec<Vec<Cell>> = src
         .iter()
-        .map(|r| {
-            r.chars()
-                .map(|c| Cell { cap: Cap::Char(if shift && !symbols { c.to_ascii_uppercase() } else { c }), w: 1.0 })
+        .zip(SIDE_KEYS)
+        .map(|(r, side)| {
+            std::iter::once(Cell { cap: side, w: SIDE })
+                .chain(r.chars().map(|c| Cell {
+                    cap: Cap::Char(if shift && !symbols { c.to_ascii_uppercase() } else { c }),
+                    w: 1.0,
+                }))
                 .collect()
         })
         .collect();
-    let bottom = [
-        (Cap::Space, 2.5),
-        (Cap::Delete, 1.5),
-        (Cap::Clear, 1.5),
-        (Cap::Shift, 1.5),
-        (Cap::Layer, 1.5),
-        (Cap::Done, 1.5),
-    ];
+    let bottom = [(Cap::Space, 4.5), (Cap::Delete, 3.5), (Cap::Done, 3.5)];
     rows.push(bottom.iter().map(|&(cap, w)| Cell { cap, w }).collect());
     rows
 }
 
-pub fn label(cap: Cap, symbols: bool) -> String {
+pub fn label(cap: Cap, symbols: bool, shift: bool) -> String {
     match cap {
         Cap::Char(c) => c.to_string(),
         Cap::Space => "space".into(),
         Cap::Delete => "delete".into(),
         Cap::Clear => "clear".into(),
-        Cap::Shift => "shift".into(),
+        Cap::Shift => if shift { "SHIFT ON" } else { "shift" }.into(),
         Cap::Layer => if symbols { "abc" } else { "123" }.into(),
         Cap::Done => "done".into(),
     }
+}
+
+/// K3: the key is drawn filled (not just glass) — Shift while it is on.
+pub fn key_filled(st: &KeyboardState, cap: Cap) -> bool {
+    cap == Cap::Shift && st.shift
+}
+
+/// K3: how Shift-on is drawn: a tinted glass plate with an outline — never the white plate of the focused key
+/// (only the focused thing is lit). Returns (fill, outline width).
+pub fn on_look(t: &Theme) -> (egui::Color32, f32) {
+    (t.glass_hi, 2.0)
 }
 
 /// Centre of column `col` of `row`, in cells.
@@ -94,6 +106,8 @@ pub struct KeyboardState {
     pub col: usize,
     pub shift: bool,
     pub symbols: bool,
+    /// K1: a name field — Shift comes on again for the first letter and after each space.
+    title_case: bool,
     /// Where (in cells) the focus was last moved sideways: Up/Down keep to it across rows of different shapes.
     x: f32,
 }
@@ -106,7 +120,17 @@ impl Default for KeyboardState {
 
 impl KeyboardState {
     pub fn new() -> Self {
-        KeyboardState { row: 0, col: 0, shift: false, symbols: false, x: 0.5 }
+        // Opens on the first letter, "a" (the side key is column 0).
+        KeyboardState { row: 0, col: 1, shift: false, symbols: false, title_case: false, x: SIDE + 0.5 }
+    }
+
+    /// A keyboard for `f`: a name field with nothing typed (or ending in a space) starts on capitals (K1); user
+    /// name, password, address and search never do (K2).
+    pub fn for_field(f: &TvField) -> Self {
+        let mut k = Self::new();
+        k.title_case = f.name;
+        k.shift = f.name && f.text.chars().last().is_none_or(char::is_whitespace);
+        k
     }
 
     pub fn layout(&self) -> Vec<Vec<Cell>> {
@@ -115,6 +139,13 @@ impl KeyboardState {
 
     pub fn focused_cap(&self) -> Cap {
         self.layout()[self.row][self.col].cap
+    }
+
+    /// K1: after the field's text changed by a delete, Shift follows the text: on for the first letter and after a space.
+    pub fn retitle(&mut self, text: &str) {
+        if self.title_case {
+            self.shift = text.chars().last().is_none_or(char::is_whitespace);
+        }
     }
 
     /// `press_at` without a clock.
@@ -169,9 +200,15 @@ impl KeyboardState {
                 self.shift = false; // shift is for one letter
                 Effect::Type(c)
             }
-            Cap::Space => Effect::Type(' '),
+            Cap::Space => {
+                self.shift = self.title_case;
+                Effect::Type(' ')
+            }
             Cap::Delete => Effect::Delete,
-            Cap::Clear => Effect::Clear,
+            Cap::Clear => {
+                self.shift = self.title_case;
+                Effect::Clear
+            }
             Cap::Shift => {
                 self.shift = !self.shift;
                 Effect::None
@@ -191,6 +228,8 @@ pub struct TvField {
     pub text: String,
     pub password: bool,
     pub hint: String,
+    /// A name being typed (a playlist): the keyboard capitalises each word.
+    pub name: bool,
 }
 
 fn field_id() -> Id {
@@ -218,8 +257,18 @@ pub fn take_request(ctx: &Context) -> bool {
 
 /// Hook for `parts::text_field`: this field has focus (call only when it does).
 pub fn register(ctx: &Context, text: &str, password: bool, hint: &str) {
-    let f = TvField { text: text.to_string(), password, hint: hint.to_string() };
+    let f = TvField { text: text.to_string(), password, hint: hint.to_string(), name: false };
     ctx.data_mut(|d| d.insert_temp(field_id(), f));
+}
+
+/// Mark the field registered this frame as a name field (K1). Call right after the field's `text_field`.
+pub fn mark_name(ctx: &Context) {
+    ctx.data_mut(|d| {
+        if let Some(mut f) = d.get_temp::<TvField>(field_id()) {
+            f.name = true;
+            d.insert_temp(field_id(), f);
+        }
+    });
 }
 
 /// The field registered during this frame, if any (clears it: no field drawn next frame → none).
@@ -241,7 +290,7 @@ pub fn draw(ctx: &Context, t: &Theme, st: &KeyboardState, f: &TvField) -> Option
     let rows = st.layout();
     let h = 2.0 * pad + text_h + rows.len() as f32 * (key_h + key_gap);
     let rect = Rect::from_min_size(pos2(screen.center().x - w / 2.0, screen.bottom() - h), vec2(w, h));
-    let cell = (w - 2.0 * pad) / 10.0;
+    let cell = (w - 2.0 * pad) / (SIDE + 10.0);
     let mut clicked = None;
     egui::Area::new(Id::new("tv-keyboard")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
         ui.allocate_exact_size(rect.size(), Sense::hover());
@@ -272,11 +321,26 @@ pub fn draw(ctx: &Context, t: &Theme, st: &KeyboardState, f: &TvField) -> Option
                 let id = Id::new(("tv-kb-key", ri, ci));
                 let resp = ui.interact(kr, id, Sense::click());
                 let a = widgets::focus_amount(ui, t, id, st.row == ri && st.col == ci);
-                let on = c.cap == Cap::Shift && st.shift;
-                let rest = if on || resp.hovered() { t.glass_hi } else { t.glass };
+                let on = key_filled(st, c.cap);
+                // K3: Shift on is a tinted plate with an outline, never the white plate of the focused key.
+                let rest = if on {
+                    on_look(t).0
+                } else if resp.hovered() {
+                    t.glass_hi
+                } else {
+                    t.glass
+                };
                 let ink = widgets::plate(ui, t, kr, key_h / 2.0, rest, a, t.pill_focus_scale);
+                if on && a <= 0.5 {
+                    ui.painter().rect_stroke(
+                        kr,
+                        key_h / 2.0,
+                        egui::Stroke::new(on_look(t).1, t.text),
+                        egui::StrokeKind::Inside,
+                    );
+                }
                 let lg = ui.fonts(|fo| {
-                    fo.layout_no_wrap(label(c.cap, st.symbols), t.font_w(t.body_size, Weight::SemiBold), ink)
+                    fo.layout_no_wrap(label(c.cap, st.symbols, st.shift), t.font_w(t.body_size, Weight::SemiBold), ink)
                 });
                 ui.painter().galley(kr.center() - lg.size() / 2.0, lg, ink);
                 if resp.clicked() {
@@ -312,12 +376,13 @@ mod tests {
     fn arrows_move_and_stop_at_the_edges() {
         let mut k = KeyboardState::new();
         k.press(Key::Left);
+        k.press(Key::Left);
         k.press(Key::Up);
-        assert_eq!((k.row, k.col), (0, 0));
+        assert_eq!((k.row, k.col), (0, 0)); // the side key (shift) is the left edge
         for _ in 0..20 {
             k.press(Key::Right);
         }
-        assert_eq!(k.col, 9);
+        assert_eq!(k.col, 10);
         k.press(Key::Down);
         assert_eq!(k.row, 1);
         assert_eq!(k.press(Key::Enter), Effect::Type('t'));
@@ -326,12 +391,12 @@ mod tests {
     #[test]
     fn down_keeps_to_the_same_screen_position_on_the_bottom_row() {
         // 'e' (col 4, centre 4.5) lands on 'delete'/'clear' side of the bottom row, never off the end.
-        let mut k = at(2, 9);
+        let mut k = at(2, 10);
         k.press(Key::Down);
         assert_eq!(k.row, 3);
         assert_eq!(k.focused_cap(), Cap::Done);
         k.press(Key::Up);
-        assert_eq!((k.row, k.col), (2, 9)); // the way back lands on the same letter
+        assert_eq!((k.row, k.col), (2, 10)); // the way back lands on the same letter
         let mut k = at(2, 0);
         k.press(Key::Down);
         assert_eq!(k.focused_cap(), Cap::Space);
@@ -369,23 +434,20 @@ mod tests {
         k.press(Key::Right);
         assert_eq!(k.press(Key::Enter), Effect::Delete);
         k.press(Key::Right);
-        assert_eq!(k.press(Key::Enter), Effect::Clear);
-        k.press(Key::Right);
-        k.press(Key::Right);
-        k.press(Key::Right);
         assert_eq!(k.press(Key::Enter), Effect::Close);
+        assert_eq!(at(2, 0).press(Key::Enter), Effect::Clear);
     }
 
     #[test]
     fn shift_is_for_one_letter() {
-        let mut k = at(3, 3);
+        let mut k = at(0, 0);
         assert_eq!(k.focused_cap(), Cap::Shift);
         k.press(Key::Enter);
         assert!(k.shift);
-        assert!(matches!(k.layout()[0][0].cap, Cap::Char('A')));
+        assert!(matches!(k.layout()[0][1].cap, Cap::Char('A')));
         let mut k2 = k.clone();
         k2.row = 0;
-        k2.col = 0;
+        k2.col = 1;
         assert_eq!(k2.press(Key::Enter), Effect::Type('A'));
         assert!(!k2.shift);
         assert_eq!(k2.press(Key::Enter), Effect::Type('a'));
@@ -393,7 +455,7 @@ mod tests {
 
     #[test]
     fn the_123_layer_has_digits_and_address_symbols() {
-        let mut k = at(3, 4);
+        let mut k = at(1, 0);
         assert_eq!(k.focused_cap(), Cap::Layer);
         k.press(Key::Enter);
         assert!(k.symbols);
@@ -403,7 +465,7 @@ mod tests {
             assert!(chars.contains(&c), "missing {c}");
         }
         k.row = 0;
-        k.col = 0;
+        k.col = 1;
         assert_eq!(k.press(Key::Enter), Effect::Type('1'));
     }
 
@@ -429,7 +491,7 @@ mod tests {
             k.press_at(Key::Right, Some(t));
             t += 0.03;
         }
-        assert_eq!(k.col, 8);
+        assert_eq!(k.col, 9);
     }
 
     #[test]
@@ -438,7 +500,7 @@ mod tests {
         for _ in 0..8 {
             k.press(Key::Right);
         }
-        assert_eq!(k.col, 8);
+        assert_eq!(k.col, 9);
     }
 
     #[test]

@@ -32,7 +32,6 @@ key left
 key enter
 idle
 key down
-key down 2
 key enter
 wait 600
 idle
@@ -43,8 +42,7 @@ key right 10
 key left
 key enter
 idle
-key down
-key down 4
+key down 3
 idle
 shot p-coll-3-menu
 key enter

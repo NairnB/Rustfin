@@ -3,7 +3,7 @@
 #   rf-drive start --mode desk|tv --session NAME [--user U --pass P] [--server URL]
 #   rf-drive NAME <command…>      one step; prints "step N: ok|error … — screenshot: PATH"
 #   rf-drive stop NAME
-# Commands (desk; x y are pixels in the 1280-wide screenshot you were shown): click x y · move x y · scroll dx dy · drag x1 y1 x2 y2 ms · key <name> [n] · type <text> · wait <ms>
+# Commands (desk; x y are pixels in the 1280-wide screenshot you were shown): click x y · move x y · scroll dx dy (dy<0 = down, dx<0 = a row goes right) · drag x1 y1 x2 y2 ms · key <name> [n] · type <text> · wait <ms>
 # TV: key Up/Down/Left/Right/Enter/Back/Info/PlayPause and wait only (the app enforces it).
 # Session folder $RF_FLEET_HOME/NAME: in (FIFO) · out (one line per step) · cmds (the command of each step) · shots/NNN.jpg · data/ · run.sh · launch.log
 # At most 8 sessions at once: each holds $RF_LOCKS/drive1..8 for as long as its container lives.

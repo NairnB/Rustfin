@@ -12,13 +12,81 @@ use egui::{pos2, vec2, Align2, Rect, Sense};
 
 /// P-COLL-4: the signed-in user's playlists.
 pub fn list() -> Box<dyn Screen> {
-    collection::grid_screen(
+    collection::grid_screen_art(
         "playlists",
         "Playlists",
         "No playlists yet. Open a film, choose Add to… and then New playlist….",
         |c| c.playlists(),
         screen,
+        Some(|c, p| c.playlist_posters(&p.id, MOSAIC_READ).map(|v| mosaic_pick(&v)).unwrap_or_default()),
     )
+}
+
+/// FIX-3 #9: how many entries are read to find four distinct posters.
+const MOSAIC_READ: usize = 24;
+
+/// FIX-3 #9 / M1: the posters a playlist tile is drawn from — the first four distinct items that have one,
+/// de-duplicated by item id, and by series for episodes (an episode shows its series' poster). Each result is an
+/// `Item` whose id and `Primary` tag name the image.
+pub fn mosaic_pick(entries: &[Item]) -> Vec<Item> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for e in entries {
+        let (id, tag) = match (&e.series_id, &e.series_primary_image_tag) {
+            (Some(s), Some(t)) if e.kind == ItemKind::Episode => (s.clone(), t.clone()),
+            _ => match e.image_tags.get("Primary") {
+                Some(t) => (e.id.clone(), t.clone()),
+                None => continue,
+            },
+        };
+        let key =
+            if e.kind == ItemKind::Episode { e.series_id.clone().unwrap_or_else(|| id.clone()) } else { id.clone() };
+        if !seen.insert(key) {
+            continue;
+        }
+        let mut poster = Item { id, name: e.name.clone(), kind: e.kind.clone(), ..Default::default() };
+        poster.image_tags.insert("Primary".into(), tag);
+        out.push(poster);
+        if out.len() == 4 {
+            break;
+        }
+    }
+    out
+}
+
+/// FIX-3 #9 / M2: where each poster goes in a tile `r`: 1 full; 2 side by side; 3 one tall half and two quarters;
+/// 4 or more a 2×2 of the first four.
+pub fn mosaic_rects(n: usize, r: Rect) -> Vec<Rect> {
+    let (c, w, h) = (r.center(), r.width() / 2.0, r.height() / 2.0);
+    let half_l = Rect::from_min_max(r.min, pos2(c.x, r.max.y));
+    let q = |col: f32, row: f32| Rect::from_min_size(pos2(r.min.x + col * w, r.min.y + row * h), vec2(w, h));
+    match n {
+        0 => vec![],
+        1 => vec![r],
+        2 => vec![half_l, Rect::from_min_max(pos2(c.x, r.min.y), r.max)],
+        3 => vec![half_l, q(1.0, 0.0), q(1.0, 1.0)],
+        _ => vec![q(0.0, 0.0), q(1.0, 0.0), q(0.0, 1.0), q(1.0, 1.0)],
+    }
+}
+
+/// FIX-3 #9 / M3: what a playlist tile shows.
+pub enum TileArt {
+    /// the playlist's own distinct posters
+    Posters(Vec<Item>),
+    /// no items: the server's image
+    Server,
+    /// no items and no server image: the card's placeholder
+    Placeholder,
+}
+
+pub fn tile_art(posters: &[Item], playlist: &Item) -> TileArt {
+    if !posters.is_empty() {
+        TileArt::Posters(posters.to_vec())
+    } else if playlist.image_tags.contains_key("Primary") {
+        TileArt::Server
+    } else {
+        TileArt::Placeholder
+    }
 }
 
 // ---------- the playlist page ----------
@@ -483,9 +551,7 @@ impl Screen for Playlist {
 // ---------- New playlist ----------
 
 const N_NAME: usize = 0;
-// FIX-2 #2: the "Use “film title”" pill under the field
-const N_USE: usize = 1;
-const N_BUTTONS: usize = 2;
+const N_BUTTONS: usize = 1;
 
 pub struct NewPlaylist {
     collection: bool,
@@ -495,9 +561,6 @@ pub struct NewPlaylist {
     error: Option<String>,
     focus: Focus,
     groups: Vec<Group>,
-    // FIX-2 #2: the suggested name (the film's) is offered as a separate "Use …" pill; the field's hint is always
-    // "Playlist name", so nothing grey looks like typed text.
-    suggest: String,
 }
 
 /// P-COLL-5: ask for a name, create the playlist holding `ids`, then open it.
@@ -519,18 +582,11 @@ pub fn name_hint(collection: bool) -> &'static str {
     }
 }
 
-/// FIX-2 #2: the pill under the field that takes the suggestion ("Use “Big Buck Bunny”"), if there is one.
-pub fn use_label(suggest: &str) -> Option<String> {
-    let s = suggest.trim();
-    (!s.is_empty()).then(|| format!("Use \u{201c}{s}\u{201d}"))
-}
-
-fn new_named(collection: bool, ids: Vec<String>, name: String) -> Box<dyn Screen> {
+fn new_named(collection: bool, ids: Vec<String>, _default_name: String) -> Box<dyn Screen> {
     Box::new(NewPlaylist {
         collection,
         ids,
         name: String::new(),
-        suggest: name,
         busy: false,
         error: None,
         focus: Focus { group: N_NAME, index: 0 },
@@ -575,10 +631,6 @@ impl Screen for NewPlaylist {
             Key::Enter => {
                 match (self.focus.group, self.focus.index) {
                     (N_NAME, _) => self.create(cx),
-                    (N_USE, _) => {
-                        self.name = self.suggest.trim().to_string();
-                        self.focus = Focus { group: N_BUTTONS, index: 0 };
-                    }
                     (_, 0) => self.create(cx),
                     _ => cx.pop(),
                 }
@@ -625,6 +677,9 @@ impl Screen for NewPlaylist {
         parts::title(ui, t, if self.collection { "New collection" } else { "New playlist" });
         ui.add_space(t.gap / 2.0);
         let r = parts::text_field(ui, t, &mut self.name, name_hint(self.collection), self.focus.group == N_NAME, false);
+        if self.focus.group == N_NAME {
+            super::keyboard::mark_name(ui.ctx());
+        }
         let name_x = r.rect.center().x;
         if r.clicked() {
             self.focus = Focus { group: N_NAME, index: 0 };
@@ -632,19 +687,6 @@ impl Screen for NewPlaylist {
         if let Some(e) = &self.error {
             ui.add_space(t.gap / 3.0);
             parts::error_line(ui, t, e);
-        }
-        let mut use_xs = vec![];
-        if let Some(label) = use_label(&self.suggest) {
-            ui.add_space(t.gap / 2.0);
-            let r = widgets::pill_button(ui, t, &label, self.focus.group == N_USE, false);
-            use_xs.push(r.rect.center().x);
-            if r.hovered() && pointer_moved {
-                self.focus = Focus { group: N_USE, index: 0 };
-            }
-            if r.clicked() {
-                self.name = self.suggest.trim().to_string();
-                self.focus = Focus { group: N_BUTTONS, index: 0 };
-            }
         }
         ui.add_space(t.gap / 2.0);
         let mut xs = vec![];
@@ -669,11 +711,7 @@ impl Screen for NewPlaylist {
                 act = Some(false);
             }
         });
-        self.groups = vec![
-            Group { len: 1, cols: 1, xs: vec![name_x] },
-            Group { len: use_xs.len(), cols: 1, xs: use_xs },
-            Group { len: 2, cols: 2, xs },
-        ];
+        self.groups = vec![Group { len: 1, cols: 1, xs: vec![name_x] }, Group { len: 2, cols: 2, xs }];
         match act {
             Some(true) => self.create(cx),
             Some(false) => cx.pop(),

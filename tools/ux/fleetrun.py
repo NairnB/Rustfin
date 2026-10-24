@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """fleet-run — the Haiku first-time-user fleet (BRIEF-haiku-fleet §2). Stdlib only.
 
-  fleet-run --round N [--tasks id,id] [--modes desk,tv] [--repeat-on-signal] [--skip-validate] [--force-invalid]
+  fleet-run --round N [--tasks id,id] [--modes desk,tv] [--repeat-on-signal] [--resume] [--skip-validate] [--force-invalid]
 
 1. validate: every selected route (route_desk / route_tv) is replayed through rf-drive with a fresh fleet user and the
    server check must pass -> <out>/routes-ok.json. Tasks whose route fails are not given to testers (--force-invalid).
 2. test: per task x mode: fleet user -> rf-drive start -> seed -> tester (claude -p --model haiku) -> server check ->
    rf-drive stop -> delete the user. At most 8 sessions at once. --repeat-on-signal re-runs failures / slow / low-score
-   tasks with 2 more fresh testers.
-3. <out>/round-N/results.jsonl + summary.md.
+   tasks with 2 more fresh testers. --resume keeps <round>/results.jsonl and runs only what is not in it.
+   A busy host cannot fail a task: no tester starts while the 1-minute load is above 14, a failed `rf-drive start` is
+   retried once, and a run whose app never started is a `rig_error` (left out of the success %, re-queued once).
+3. <out>/round-N/results.jsonl + summary.md (rewritten after every pass).
 Env: RF_DRIVE (driver), RF_FLEET_HOME (sessions dir), TESTER_CMD (fake tester: <cmd> <drive> <session> <routefile>),
 RF_PLAN_CMD (optional plan gate), RF_CLAUDE_CONFIG (optional, for testers), FLEET_OUT; also read from the file
 ${RF_ENV:-~/.config/rf-fleet.env}.
@@ -20,6 +22,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import statistics
 import subprocess
@@ -44,12 +47,16 @@ PLAN_STOP = 97
 TESTER_TIMEOUT = 1800
 SLOW = 1.5
 LOW_SCORE = 2
+LOAD_MAX = float(os.environ.get("RF_LOAD_MAX", 14))  # no new tester while the 1-minute load average is above this (the build slots use the same limit)
+LOAD_POLL = 15
+CLEAR_RECHECK_WAIT = 3  # seconds before clear_session looks again for a launcher/container that was mid-start
+RF_START_RETRY_WAIT = float(os.environ.get("RF_START_RETRY_WAIT", 30))
 TV_KEYS = {"Up", "Down", "Left", "Right", "Enter", "Back", "Info", "PlayPause"}
 MODES = ("desk", "tv")
 DESK_HELP = """\
 - click X Y        click at pixel X,Y of the screenshot (same coordinates as in the picture you see)
 - move X Y         move the mouse pointer without clicking
-- scroll DX DY     scroll the page under the pointer (DY negative = scroll down, e.g. scroll 0 -400; move the pointer over the part to scroll first)
+- scroll DX DY     scroll the page under the pointer (DY negative = scroll down, e.g. scroll 0 -400; DX negative = scroll a sideways row to the right, e.g. scroll -400 0; move the pointer over the part to scroll first)
 - key NAME [N]     press a key: Up Down Left Right Enter Back Esc (N = repeat count)
 - type TEXT        type text into the field that is selected
 - wait MS          wait for that many milliseconds (at most 10000, i.e. 10 seconds, per command)"""
@@ -199,7 +206,33 @@ def plan_full():
     return False
 
 
+# ---------------------------------------------------------------- load guard
+def _load1():
+    return os.getloadavg()[0]
+
+
+def _sleep(s):
+    time.sleep(s)
+
+
+def wait_for_load():
+    n = 0
+    while (load := _load1()) > LOAD_MAX:
+        if n % 20 == 0:
+            print(f"waiting: load {load:.1f} > {LOAD_MAX}", flush=True)
+        n += 1
+        _sleep(LOAD_POLL)
+
+
 # ---------------------------------------------------------------- rf-drive / accounts
+class RigError(RuntimeError):
+    """The harness could not get the app up (a busy host): not a failure of the task."""
+
+
+class AppStartError(RuntimeError):
+    """The app came up but never reached its first screen: that is an app fault, scored as a failed task."""
+
+
 def sh(args, **kw):
     return subprocess.run(args, capture_output=True, text=True, **kw)
 
@@ -344,19 +377,104 @@ def session_name(rnd, task_id, mode, k):
     return f"r{rnd}-{task_id}-{mode}-{k}"[:48]
 
 
+def start_once(cmd):
+    """One `rf-drive start`; None if it timed out (the driver waits for a free slot, so that is a busy host)."""
+    try:
+        return sh(cmd, timeout=600)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+APP_FAULT = ("sign-in stuck before", "no answer within")  # rf-drive's own words when the app is up but off course
+NO_APP = "app did not take the command"  # rf-drive: nothing reads the app's pipe, so the app never started (a rig fault, even with "sign-in prelude failed" after it)
+
+
+def app_fault(r):
+    out = (r.stderr or "") + (r.stdout or "")
+    return NO_APP not in out and any(m in out for m in APP_FAULT)
+
+
+def start_detail(session, r):
+    """The driver's message plus the tail of the app's log: an app fault must stay visible, not pass as rig noise."""
+    tail = ""
+    try:
+        with open(os.path.join(FLEET_HOME, session, "app.log")) as f:
+            tail = " | app.log: " + " / ".join(f.read().strip().splitlines()[-5:])
+    except OSError:
+        pass
+    return (r.stderr or r.stdout).strip()[:300] + tail[:600]
+
+
+def clear_session(session):
+    """Stop a dead session and move its folder aside (kept for diagnosis) so rf-drive accepts the name again."""
+    d = os.path.join(FLEET_HOME, session)
+    if os.path.exists(d):
+        try:
+            sh([RF_DRIVE, "stop", session], timeout=60)
+        except subprocess.TimeoutExpired:
+            pass
+        try:  # a timed-out start leaves its launch.sh waiting for a slot: it must not start an orphan container later
+            for again in (False, True):  # twice: a launcher that had just exec'd its runner has no container to remove yet
+                if again:
+                    _sleep(CLEAR_RECHECK_WAIT)
+                subprocess.run(["pkill", "-f", os.path.join(d, "launch.sh")], capture_output=True, timeout=30)
+                subprocess.run(["docker", "rm", "-f", f"rfd-{session}"], capture_output=True, timeout=60)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        n = 1
+        while os.path.exists(f"{d}.failed{n}"):
+            n += 1
+        try:
+            os.rename(d, f"{d}.failed{n}")
+        except OSError:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def failed_dir(session):
+    """The newest renamed folder of a dead attempt (clear_session keeps it), or None."""
+    d = os.path.join(FLEET_HOME, session)
+    n = 0
+    while os.path.exists(f"{d}.failed{n + 1}"):
+        n += 1
+    return f"{d}.failed{n}" if n else None
+
+
 def start_session(api, task, mode, session):
-    """Account + app + seed. Returns (account, device_id, baseline out lines). Caller stops + deletes in finally."""
+    """Account + app + seed. Returns (account, device_id, baseline out lines). Caller stops + deletes in finally, but if
+    anything fails in here the caller has no account yet, so the user made here is deleted before the error goes on."""
     acc = Account(session, task["needs_admin"])
     with ACTIVE_LOCK:
         ACTIVE[session] = acc
-    if task.get("seed"):  # before the app starts: its Home is loaded once, so history made afterwards would not show
-        seed(api, acc, task["seed"])
-    r = sh([RF_DRIVE, "start", "--mode", mode, "--session", session, "--user", acc.name, "--pass", acc.pw], timeout=600)
-    if r.returncode:
-        raise RuntimeError("rf-drive start failed: " + (r.stderr or r.stdout).strip()[:300])
-    base = out_lines(session)
-    uid = jfapi.find_user(api, acc.name)["Id"]
-    return acc, device_id_of(api, uid), base
+    try:
+        if task.get("seed"):  # before the app starts: its Home is loaded once, so history made afterwards would not show
+            seed(api, acc, task["seed"])
+        cmd = [RF_DRIVE, "start", "--mode", mode, "--session", session, "--user", acc.name, "--pass", acc.pw]
+        clear_session(session)  # rf-drive refuses a session whose folder exists (a resumed, re-queued or retried run)
+        r = start_once(cmd)
+        if r is None or r.returncode:  # a busy host: once more after a pause before calling it a rig error
+            if r is not None and app_fault(r):
+                raise AppStartError("the app did not reach its first screen: " + start_detail(session, r))
+            _sleep(RF_START_RETRY_WAIT)
+            clear_session(session)
+            r = start_once(cmd)
+        if r is None:
+            raise RigError("rf-drive start timed out")
+        if r.returncode:
+            if app_fault(r):
+                raise AppStartError("the app did not reach its first screen: " + start_detail(session, r))
+            raise RigError("rf-drive start failed: " + (r.stderr or r.stdout).strip()[:300])
+        base = out_lines(session)
+        uid = jfapi.find_user(api, acc.name)["Id"]
+        return acc, device_id_of(api, uid), base
+    except BaseException as e:
+        try:
+            if isinstance(e, RigError):
+                clear_session(session)  # the last start may have timed out: kill its launcher so no container appears later
+            acc.delete()
+        finally:
+            with ACTIVE_LOCK:
+                ACTIVE.pop(session, None)
+        raise
 
 
 def end_session(session, acc):
@@ -486,6 +604,7 @@ def test_one(api, task0, mode, rnd, k, stop_event):
         return dict(rec, skipped="plan at or above %d%%: no new testers" % PLAN_STOP)
     acc = None
     try:
+        wait_for_load()
         t0 = time.time()
         acc, dev, base = start_session(api, task, mode, session)
         tpath, tj, last, err = run_tester(task, mode, session)
@@ -501,6 +620,9 @@ def test_one(api, task0, mode, rnd, k, stop_event):
                    scores=[{"screen": a, "score": b, "why": c} for a, b, c in sc], transcript=tpath)
         if err:
             rec["error"] = err
+    except RigError as e:
+        fd = failed_dir(session)
+        rec.update(rig_error=True, **({"shots": os.path.join(fd, "shots")} if fd else {}), check={"pass": False, "reason": f"rig: {e}"}, error=f"{type(e).__name__}: {e}")
     except Exception as e:
         rec.update(check={"pass": False, "reason": "harness error"}, error=f"{type(e).__name__}: {e}")
     finally:
@@ -510,7 +632,7 @@ def test_one(api, task0, mode, rnd, k, stop_event):
 
 def has_signal(r):
     """Re-run triggers: failed the check, took > 1.5x the ideal steps, or any screen scored <= 2."""
-    if r.get("skipped"):
+    if r.get("skipped") or r.get("rig_error"):
         return False
     return (not r.get("check", {}).get("pass")) or (r.get("ratio") or 0) > SLOW or any(s["score"] <= LOW_SCORE for s in r.get("scores", []))
 
@@ -518,13 +640,17 @@ def has_signal(r):
 # ---------------------------------------------------------------- summary
 def summarize(records, rnd, notes=()):
     L = [f"# Fleet round {rnd} summary", ""]
-    ran = [r for r in records if not r.get("skipped")]
+    rig = [r for r in records if r.get("rig_error")]
+    ran = [r for r in records if not r.get("skipped") and not r.get("rig_error")]
     for n in notes:
         L.append(f"**{n}**")
         L.append("")
     skipped = [r for r in records if r.get("skipped")]
     if skipped:
         L += [f"**{len(skipped)} runs not started: {skipped[0]['skipped']}**", ""]
+    if rig:
+        L += [f"**{len(rig)} runs hit a rig error (the driver or the app never came up, e.g. a busy host or an app crash before its command pipe opened; retried and re-queued): left out of the numbers below. Look at: "
+              + ", ".join(f"{r['task']}/{r['mode']} (session {r['session']})" for r in rig) + "**", ""]
     L += ["## Success", "", "Steps are presses on both sides (`key X n` = n). The last column is the rounds 1-2 measure: tester commands / ideal presses.", "",
           "| mode | runs | passed | success % | everyday success % | median steps/ideal (passed runs) | median commands/ideal (rounds 1-2 way) |",
           "|---|---|---|---|---|---|---|"]
@@ -580,12 +706,75 @@ def jobs_from(tasks, modes):
     return [(t, m) for t in tasks for m in modes]
 
 
+def load_results(path):
+    """results.jsonl as {(task, mode, run): record}; a later line for the same run (a re-queue) replaces the earlier one."""
+    out = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        r = json.loads(line)
+                    except ValueError:  # a line cut short when the process died
+                        continue
+                    out[(r["task"], r["mode"], r["run"])] = r
+    return out
+
+
+def execute_round(api, todo, rnd, rdir, repeat, stop_event, resume, notes):
+    """First pass, then (if asked) the repeat pass for every run-1 with a signal. Each pass re-queues its rig errors once and
+    rewrites summary.md, so a crash keeps the summary of every finished pass. With resume, runs already in results.jsonl
+    (bar rig errors and not-started ones) are kept and skipped."""
+    res_path = os.path.join(rdir, "results.jsonl")
+    done = {}
+    if resume:
+        done = {key: r for key, r in load_results(res_path).items() if not r.get("rig_error") and not r.get("skipped")}
+    with open(res_path, "w") as f:
+        for r in done.values():
+            f.write(json.dumps(r) + "\n")
+    final = dict(done)  # (task, mode, run) -> record
+    lock = threading.Lock()
+
+    def run(t, m, k):
+        r = test_one(api, t, m, rnd, k, stop_event)
+        with lock:
+            final[(t["id"], m, k)] = r
+            with open(res_path, "a") as f:
+                f.write(json.dumps(r) + "\n")
+        return r
+
+    def write_summary():
+        n = list(notes)
+        if stop_event.is_set():
+            n.append(f"Plan reached {PLAN_STOP} %: stopped launching testers; finished the ones running.")
+        with open(os.path.join(rdir, "summary.md"), "w") as f:
+            f.write(summarize(list(final.values()), rnd, n))
+
+    def do_pass(jobs):
+        if jobs:
+            with cf.ThreadPoolExecutor(MAX_SESSIONS) as ex:
+                list(ex.map(lambda j: run(*j), jobs))
+            again = [j for j in jobs if final[(j[0]["id"], j[1], j[2])].get("rig_error")]
+            if again and not stop_event.is_set():
+                with cf.ThreadPoolExecutor(MAX_SESSIONS) as ex:
+                    list(ex.map(lambda j: run(*j), again))
+        write_summary()
+
+    do_pass([(t, m, 1) for t, m in todo if (t["id"], m, 1) not in done])
+    if repeat and not stop_event.is_set():
+        again = [(t, m, k) for t, m in todo if has_signal(final.get((t["id"], m, 1), {"skipped": True})) for k in (2, 3)
+                 if (t["id"], m, k) not in done]
+        do_pass(again)
+    return list(final.values())
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="fleet-run")
     ap.add_argument("--round", type=int, required=True)
     ap.add_argument("--tasks", help="comma-separated task ids (default all)")
     ap.add_argument("--modes", default="desk,tv")
     ap.add_argument("--repeat-on-signal", action="store_true")
+    ap.add_argument("--resume", action="store_true", help="keep this round's results.jsonl and run only what is not in it")
     ap.add_argument("--skip-validate", action="store_true", help="reuse routes-ok.json instead of replaying the routes")
     ap.add_argument("--force-invalid", action="store_true", help="give testers tasks whose route did not validate")
     ap.add_argument("--tasks-file", default=os.path.join(HERE, "tasks.yaml"))
@@ -617,7 +806,7 @@ def main(argv=None):
 
     ok_path = os.path.join(a.out, "routes-ok.json")
     known = {}
-    if a.skip_validate and os.path.exists(ok_path):
+    if (a.skip_validate or a.resume) and os.path.exists(ok_path):  # a resumed round keeps its routes (validation sessions still exist)
         known = _jload(ok_path)
     else:
         known = _jload(ok_path) if os.path.exists(ok_path) else {}
@@ -634,32 +823,7 @@ def main(argv=None):
         print("routes not ok:", ", ".join(bad_routes), file=sys.stderr)
 
     todo = [(t, m) for t, m in jobs_from(tasks, modes) if a.force_invalid or f"{t['id']}:{m}" not in bad_routes]
-    records = []
-    res_path = os.path.join(rdir, "results.jsonl")
-    lock = threading.Lock()
-    open(res_path, "w").close()
-
-    def run(t, m, k):
-        r = test_one(api, t, m, a.round, k, stop_event)
-        with lock:
-            records.append(r)
-            with open(res_path, "a") as f:
-                f.write(json.dumps(r) + "\n")
-        return r
-
-    first = {}
-    with cf.ThreadPoolExecutor(MAX_SESSIONS) as ex:
-        futs = {ex.submit(run, t, m, 1): (t, m) for t, m in todo}
-        for f in cf.as_completed(futs):
-            first[(futs[f][0]["id"], futs[f][1])] = f.result()
-    if a.repeat_on_signal and not stop_event.is_set():
-        again = [(t, m) for t, m in todo if has_signal(first[(t["id"], m)])]
-        with cf.ThreadPoolExecutor(MAX_SESSIONS) as ex:
-            list(ex.map(lambda x: run(x[0][0], x[0][1], x[1]), [((t, m), k) for t, m in again for k in (2, 3)]))
-    if stop_event.is_set():
-        notes.append(f"Plan reached {PLAN_STOP} %: stopped launching testers; finished the ones running.")
-    with open(os.path.join(rdir, "summary.md"), "w") as f:
-        f.write(summarize(records, a.round, notes))
+    records = execute_round(api, todo, a.round, rdir, a.repeat_on_signal, stop_event, a.resume, notes)
     print(f"round {a.round}: {len(records)} runs -> {rdir}")
     return 0
 

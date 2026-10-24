@@ -131,12 +131,37 @@ pub fn pill_button_width(ui: &mut Ui, t: &Theme, label: &str, focused: bool, pri
     pill_impl(ui, t, label, focused, primary, Some(vec2(width, t.button_h)), None)
 }
 
+/// How the hero Play pill is drawn (FIX-3 H1/H4): `white` = the plate is white in this state; `rest_white` =
+/// it rests white even unfocused (desktop's primary pill); `scale` = the lift the plate reaches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PillStyle {
+    pub white: bool,
+    pub rest_white: bool,
+    pub scale: f32,
+}
+
+/// On TV only the focused Play is white (unfocused: translucent plate like the round buttons); desktop keeps
+/// the white primary pill.
+pub fn play_pill_style(t: &Theme, tv: bool, focused: bool) -> PillStyle {
+    if tv {
+        PillStyle { white: focused, rest_white: false, scale: if focused { t.pill_focus_scale } else { 1.0 } }
+    } else {
+        PillStyle { white: true, rest_white: true, scale: t.pill_focus_scale }
+    }
+}
+
 /// The big hero pill: white, a play triangle and the label ("Play", "Resume").
 pub fn play_pill(ui: &mut Ui, t: &Theme, label: &str, focused: bool) -> Response {
+    play_pill_for(ui, t, label, focused, false)
+}
+
+/// `play_pill` for a target: on `tv` it is a glass plate that turns white only when focused.
+pub fn play_pill_for(ui: &mut Ui, t: &Theme, label: &str, focused: bool, tv: bool) -> Response {
     let font = t.font_w(t.body_size, Weight::SemiBold);
     let w = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font, t.text)).size().x;
     let size = vec2(w + t.body_size + t.gap / 4.0 + 2.0 * t.pill_pad, t.pill_h);
-    pill_impl(ui, t, label, focused, true, Some(size), Some(Icon::Play))
+    let style = play_pill_style(t, tv, focused);
+    pill_impl(ui, t, label, focused, style.rest_white, Some(size), Some(Icon::Play))
 }
 
 /// A round glass icon button (+ add, tick watched, more); focused = white plate, lifted.

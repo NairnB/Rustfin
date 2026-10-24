@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
-# fleet-run --round N [--tasks ids] [--modes desk,tv] [--repeat-on-signal] — see fleetrun.py
+# fleet-run --round N [--tasks ids] [--modes desk,tv] [--repeat-on-signal] [--resume] — see fleetrun.py
 # Optional private settings are read by fleetrun.py (see jfapi.load_env).
 exec python3 -I "$(dirname "$(readlink -f "$0")")/fleetrun.py" "$@"

@@ -1280,6 +1280,15 @@ impl Client {
         Ok(out)
     }
 
+    /// FIX-3 #9: the first `limit` items of a playlist, in order, with their image tags — what a playlist tile's
+    /// mosaic is drawn from.
+    pub fn playlist_posters(&self, playlist_id: &str, limit: usize) -> Result<Vec<Item>> {
+        let uid = self.user_id()?;
+        let path = format!("/Playlists/{playlist_id}/Items?userId={uid}&Limit={limit}&Fields={CARD_FIELDS}");
+        let page: Page = self.get_json(&path)?;
+        Ok(page.items)
+    }
+
     /// G7 / P-COLL-5: add items to the end of a playlist.
     pub fn add_to_playlist(&self, playlist_id: &str, ids: &[String]) -> Result<()> {
         let uid = self.user_id()?;
@@ -1488,8 +1497,22 @@ impl Client {
         force_transcode: bool,
         fmp4: bool,
     ) -> Result<PlaybackPlan> {
+        self.playback_plan_for(id, max_kbps, force_transcode, fmp4, None, None)
+    }
+
+    /// C3-SUBS / R-SUBS-1: `playback_plan_with` naming the chosen audio and subtitle stream (`subtitle` -1 = none),
+    /// so a transcode burns in the chosen subtitle and not the source's default.
+    pub fn playback_plan_for(
+        &self,
+        id: &str,
+        max_kbps: u32,
+        force_transcode: bool,
+        fmp4: bool,
+        audio: Option<i32>,
+        subtitle: Option<i32>,
+    ) -> Result<PlaybackPlan> {
         let uid = self.user_id()?;
-        let path = format!("/Items/{id}/PlaybackInfo?userId={uid}");
+        let path = playback_info_path(uid, id, audio, subtitle);
         let raw: serde_json::Value = self.post_json(&path, &transcode_body_with(max_kbps, force_transcode, fmp4))?;
         plan_from_json(&raw, &self.base, self.session.as_ref().map(|s| s.token.as_str()).unwrap_or(""))
     }
@@ -1863,6 +1886,55 @@ impl Client {
     /// RR4 / P-PLAY-21: URL of tile sheet `sheet` at `width` px per thumbnail (fetched by the image loader).
     pub fn trickplay_sheet_url(&self, item_id: &str, width: u32, sheet: u32) -> String {
         format!("{}/Videos/{item_id}/Trickplay/{width}/{sheet}.jpg?MediaSourceId={item_id}", self.base)
+    }
+}
+
+/// C3-SUBS / R-SUBS-1: the `POST /Items/{id}/PlaybackInfo` path, with the chosen audio / subtitle stream indexes.
+pub fn playback_info_path(uid: &str, id: &str, audio: Option<i32>, subtitle: Option<i32>) -> String {
+    let mut path = format!("/Items/{id}/PlaybackInfo?userId={uid}");
+    if let Some(a) = audio {
+        path.push_str(&format!("&AudioStreamIndex={a}"));
+    }
+    if let Some(s) = subtitle {
+        path.push_str(&format!("&SubtitleStreamIndex={s}"));
+    }
+    path
+}
+
+/// C3-SUBS / R-SUBS-2: `url` with `AudioStreamIndex` / `SubtitleStreamIndex` set to the given values (each replaced
+/// when the server's url already carries it, so never twice); `None` leaves that parameter as it is. `encode` also
+/// sets `SubtitleMethod=Encode` (R-SUBS-5: burn the chosen embedded subtitle in).
+pub fn with_stream_indexes(url: &str, audio: Option<i32>, subtitle: Option<i32>, encode: bool) -> String {
+    let (head, query) = url.split_once('?').unwrap_or((url, ""));
+    let mut parts: Vec<String> = query.split('&').filter(|p| !p.is_empty()).map(String::from).collect();
+    let method = encode.then_some("Encode");
+    for (key, val) in [("AudioStreamIndex", audio), ("SubtitleStreamIndex", subtitle)]
+        .map(|(k, v)| (k, v.map(|v| v.to_string())))
+        .into_iter()
+        .chain([("SubtitleMethod", method.map(String::from))])
+    {
+        let Some(v) = val else { continue };
+        let pre = format!("{key}=");
+        let mut seen = false;
+        parts.retain_mut(|p| {
+            if !p.starts_with(&pre) {
+                return true;
+            }
+            if seen {
+                return false;
+            }
+            seen = true;
+            *p = format!("{pre}{v}");
+            true
+        });
+        if !seen {
+            parts.push(format!("{pre}{v}"));
+        }
+    }
+    if parts.is_empty() {
+        head.to_string()
+    } else {
+        format!("{head}?{}", parts.join("&"))
     }
 }
 

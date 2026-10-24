@@ -45,10 +45,34 @@ def effect(session, user, pw):
             me.post(f"/UserPlayedItems/{it['Id']}?userId={me.user_id}")
 
 
+def forced_start_failure(session):
+    """FAKE_START_FAIL=<session substring>:<n> makes the first n `start`s of a matching session fail (a busy host)."""
+    spec = os.environ.get("FAKE_START_FAIL")
+    if not spec:
+        return False
+    sub, _, n = spec.rpartition(":")
+    if sub not in session:
+        return False
+    mark = os.path.join(HOME, f".fail-{session}")
+    done = int(open(mark).read()) if os.path.exists(mark) else 0
+    if done >= int(n):
+        return False
+    open(mark, "w").write(str(done + 1))
+    return True
+
+
 def main(argv):
     if argv[0] == "start":
         s = arg(argv, "--session")
         d = os.path.join(HOME, s)
+        if os.path.exists(d):  # like the real driver: a used session name is refused
+            print(f"session {s} exists (stop it and pick a new name)", file=sys.stderr)
+            return 1
+        if forced_start_failure(s):  # the real driver leaves the folder behind when its prelude fails
+            os.makedirs(os.path.join(d, "shots"), exist_ok=True)
+            # the real driver's wording when the app never started (send's die, then pre's)
+            print("rf-drive: app did not take the command (is the session running?)\nrf-drive: sign-in prelude failed (see app.log)", file=sys.stderr)
+            return 1
         os.makedirs(os.path.join(d, "shots"), exist_ok=True)
         os.makedirs(os.path.join(d, "data"), exist_ok=True)
         open(os.path.join(d, "out"), "a").close()

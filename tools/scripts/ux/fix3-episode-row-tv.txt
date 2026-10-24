@@ -1,0 +1,44 @@
+# args: --tv
+# FIX-3 #4 (E3, E4): show page, TV — a later Season 1 card, Season 2 from the tabs, then Down lands on the first episode card.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Drift Rebels
+wait 600
+idle
+key down
+key enter
+wait-screen show
+wait 1000
+idle
+key down
+idle
+key down
+idle
+key right
+idle
+key up
+idle
+key right
+idle
+wait 300
+key down
+idle
+wait 400
+shot fix3-row-season2-first
+quit

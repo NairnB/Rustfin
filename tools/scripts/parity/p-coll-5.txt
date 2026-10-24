@@ -26,19 +26,18 @@ key down
 key enter
 wait-screen movie
 idle
-# Add to… → New playlist… → Create (name pre-filled with the film name)
+# Add to… (focus starts on the first row) → New playlist… → type a name → Create
 key right 10
 key left 2
 key enter
 idle
-key down
-key down
+# let the playlist list load; the viewer has no playlists, so the only row is "New playlist…" (first row, already lit)
+wait 800
+idle
 key enter
 wait-screen new-playlist
 idle
-# FIX-2 #2: the film title is the "Use …" pill under the empty box; take it, then Create
-key down
-key enter
+type AAA tour list
 idle
 key enter
 wait-screen playlist
@@ -66,7 +65,6 @@ key right 10
 key left 2
 key enter
 idle
-key down
 key enter
 idle
 shot p-coll-5-picker

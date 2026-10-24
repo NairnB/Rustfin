@@ -1,0 +1,57 @@
+# args: --tv
+# FIX-3 #6 (K1/K3): New playlist with the remote keyboard — opens on capitals (Shift on, drawn as an outlined tint, not the
+# white focus plate), "S" typed then lower case, then Shift toggled on by hand. Creates nothing.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Amber Tide
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+wait 1000
+idle
+key right 10
+key left 2
+key enter
+idle
+wait 300
+# FIX-3 A3: Add to… opens lit on its first row; tester owns no playlists, so that row is "New playlist…"
+key enter
+wait-screen new-playlist
+idle
+wait 31000
+key enter
+idle
+wait 400
+shot fix3-osk-name-open
+key enter
+idle
+wait 400
+shot fix3-osk-name-lower
+key left
+key enter
+idle
+wait 400
+shot fix3-osk-shift-toggled
+key back
+wait 300
+key back
+wait-screen movie
+quit
