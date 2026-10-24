@@ -4,6 +4,7 @@ pub mod admin;
 pub mod gen_admin;
 pub mod item_edit;
 pub mod models;
+pub mod poster;
 pub mod trickplay;
 
 pub use models::*;
@@ -31,6 +32,8 @@ pub enum ApiError {
     BadAddress(String),
     /// R-TAG-6: the server refused a change (HTTP 403): only admins may edit.
     Forbidden,
+    /// A local (disk) failure, e.g. saving a poster backup before an apply.
+    Io(String),
 }
 
 impl std::fmt::Display for ApiError {
@@ -44,6 +47,7 @@ impl std::fmt::Display for ApiError {
             ApiError::TooOld(v) => write!(f, "Server version {v} is too old (needs 10.8 or newer)"),
             ApiError::BadAddress(a) => write!(f, "\"{a}\" is not a server address"),
             ApiError::Forbidden => f.write_str("Only a server admin can change this"),
+            ApiError::Io(e) => f.write_str(e),
         }
     }
 }
@@ -933,17 +937,14 @@ impl Client {
         };
         Some(format!("{}/Items/{id}/Images/{name}?maxWidth={width_px}&quality=90&tag={tag}", self.base))
     }
-    /// GET raw bytes (images), IMAGE_TIMEOUT, 20 MB cap.
+    /// GET raw bytes (images), IMAGE_TIMEOUT, 20 MB cap. The `Authorization` header is only sent when the URL
+    /// is on this server's origin (scheme + host + port): remote candidate thumbs and saved poster picks live on
+    /// tmdb / fanart, and the Jellyfin token must never reach a third party.
     pub fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
-        let mut resp = self
-            .agent
-            .get(url)
-            .header("Authorization", &self.auth_header())
-            .config()
-            .timeout_global(Some(IMAGE_TIMEOUT))
-            .build()
-            .call()
-            .map_err(net)?;
+        let builder = self.agent.get(url).config().timeout_global(Some(IMAGE_TIMEOUT)).build();
+        let builder =
+            if is_server_url(&self.base, url) { builder.header("Authorization", &self.auth_header()) } else { builder };
+        let mut resp = builder.call().map_err(net)?;
         check_status(&mut resp)?;
         resp.body_mut().with_config().limit(20 << 20).read_to_vec().map_err(net)
     }
@@ -1645,6 +1646,46 @@ pub fn image_content_type(b: &[u8]) -> Option<&'static str> {
         Some("image/webp")
     } else {
         None
+    }
+}
+
+/// The origin (`scheme://host:port`) of an absolute http(s) URL, lower-cased with the default port made
+/// explicit (http → 80, https → 443). `None` for anything that is not an absolute http(s) URL (a `file://`
+/// path, a relative path, …). Used to keep the Jellyfin token on the server's own origin only.
+pub fn origin(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    let scheme = if lower.starts_with("http://") {
+        "http"
+    } else if lower.starts_with("https://") {
+        "https"
+    } else {
+        return None;
+    };
+    let hostport = &lower[scheme.len() + 3..];
+    let hostport = hostport.split(['/', '?', '#']).next()?;
+    let (host, port) = match hostport.rsplit_once(':') {
+        // `host:port`; an IPv6 literal (`[::1]:8096`) has no bare `:` after the first split and stays whole.
+        Some((h, p)) if !h.contains(':') => (h, p),
+        _ => (hostport, ""),
+    };
+    let port = if port.is_empty() {
+        if scheme == "http" {
+            "80"
+        } else {
+            "443"
+        }
+    } else {
+        port
+    };
+    Some(format!("{scheme}://{host}:{port}"))
+}
+
+/// True when `url` shares `base`'s origin (scheme + host + port) — the only URLs the client may send the
+/// Jellyfin token to.
+pub fn is_server_url(base: &str, url: &str) -> bool {
+    match (origin(base), origin(url)) {
+        (Some(b), Some(u)) => b == u,
+        _ => false,
     }
 }
 

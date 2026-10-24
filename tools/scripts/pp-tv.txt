@@ -1,0 +1,33 @@
+# args: --tv --poster-candidates @tools/scripts/fixture/posters.json
+# PP TV tour: hold OK on a library poster (key-down logic) → the poster picker showing the fixture candidate
+# grid. `record` fast-forwards the app clock so `hold enter 800` (≥ the 600 ms hold) commits deterministically.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up
+key right 3
+key enter
+wait-screen library
+idle
+wait 300
+record pp-hold 10
+hold enter 800
+record-stop
+wait-screen poster-picker
+idle
+wait 2500
+idle
+shot pp-tv-picker
+quit

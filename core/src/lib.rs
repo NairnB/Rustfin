@@ -4,6 +4,7 @@ pub mod api;
 pub mod app;
 pub mod discovery;
 pub mod images;
+pub mod keyhold;
 pub mod nav;
 pub mod order;
 pub mod platform;

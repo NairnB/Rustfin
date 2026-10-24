@@ -135,6 +135,8 @@ pub struct Item {
     pub parent_index_number: Option<i32>,
     pub child_count: Option<i32>,
     pub primary_image_aspect_ratio: Option<f64>,
+    /// PP-4: the id to read/write this item's DisplayPreferences under.
+    pub display_preferences_id: Option<String>,
     pub image_tags: HashMap<String, String>,
     pub backdrop_image_tags: Vec<String>,
     pub series_primary_image_tag: Option<String>,

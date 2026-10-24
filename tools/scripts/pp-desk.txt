@@ -1,0 +1,44 @@
+# args: --poster-candidates @tools/scripts/fixture/posters.json
+# PP desktop tour: right-click a library poster → the poster picker showing the fixture candidate grid (chips +
+# ratings), the in-place preview on a candidate, and the Undo toast after Apply. Runs as the non-admin viewer so
+# Apply is a personal pick (never writes the shared image on jf-test).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+click 130 341
+wait-screen library
+idle
+wait 300
+right-click 484 520
+wait-screen poster-picker
+idle
+wait 2500
+idle
+shot pp-desk-picker
+key down
+key right
+wait 300
+idle
+shot pp-desk-preview
+key enter
+idle
+wait 400
+shot pp-desk-applied
+# Undo: clears the viewer's pick on jf-test again (the tours must leave the server as they found it).
+click 1788 1004
+wait 2500
+idle
+shot pp-desk-undone
+quit

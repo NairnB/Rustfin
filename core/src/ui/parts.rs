@@ -64,6 +64,17 @@ pub fn progress_bar(ui: &Ui, t: &Theme, r: Rect, frac: f32) {
 /// The image URL a card shows (and the one to prefetch).
 pub fn card_image_url(cx: &Cx, item: &Item, kind: CardKind, scale: f32) -> Option<String> {
     let w = image_width_bucket(kind.size(cx.theme).x, scale);
+    // PP-4: a personal poster pick overrides the item's Primary everywhere a poster is drawn. PP review #2:
+    // request it at the card width (TheMovieDb's sized variant where it has one; else the loader downscales
+    // the full image once and caches it) instead of the full original.
+    if kind == CardKind::Poster {
+        if let Some(url) = cx.poster_url(item) {
+            let sized = crate::api::poster::sized_poster_url(&url, w);
+            if cx.images.usable(&sized) {
+                return Some(sized);
+            }
+        }
+    }
     if kind == CardKind::Banner {
         return cx.client.as_ref()?.banner_image_url(item, w);
     }

@@ -34,6 +34,8 @@ enum RowState {
 }
 
 pub struct Home {
+    /// PP review: the `cx.poster_gen` Home last loaded at.
+    poster_seen: Option<u64>,
     started: bool,
     verify: bool,
     resume: Option<Result<Vec<Item>>>,
@@ -79,6 +81,7 @@ enum BarItem {
 
 pub fn screen(verify_session: bool) -> Box<dyn Screen> {
     Box::new(Home {
+        poster_seen: None,
         started: false,
         verify: verify_session,
         resume: None,
@@ -554,7 +557,22 @@ impl Screen for Home {
         }
     }
 
+    fn poster_tags(&self) -> Vec<(String, Option<String>)> {
+        let mut lists: Vec<&Vec<Item>> = vec![];
+        for r in [&self.resume, &self.next_up, &self.favourites] {
+            lists.extend(r.as_ref().and_then(|r| r.as_ref().ok()));
+        }
+        lists.extend(self.latest.values().filter_map(|r| r.as_ref().ok()));
+        lists.into_iter().flatten().map(|i| (i.id.clone(), i.image_tags.get("Primary").cloned())).collect()
+    }
+
     fn on_resume(&mut self, cx: &mut Cx) {
+        // PP review #4: a shared poster changed while Home was underneath: re-read every row (new ImageTags).
+        if self.poster_seen.is_some_and(|g| g != cx.poster_gen) {
+            self.poster_seen = Some(cx.poster_gen);
+            self.reload(cx);
+            return;
+        }
         self.resume = None;
         self.next_up = None;
         self.favourites = None;
@@ -570,6 +588,7 @@ impl Screen for Home {
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
         if !self.started {
             self.started = true;
+            self.poster_seen = Some(cx.poster_gen);
             self.start(cx);
         }
         let t = cx.theme;

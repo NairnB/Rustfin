@@ -175,6 +175,9 @@ pub struct Settings {
     pub subtitles: SubPrefs,
     /// Per-library sort + filters (P-LIB-2..9), remembered across sessions. Keyed by library id.
     pub library_view: HashMap<String, LibraryView>,
+    /// PP-4: personal poster picks per user id (item id → poster URL), so they show at once after a restart; the
+    /// server's DisplayPreferences are the source of truth and replace them at sign-in.
+    pub poster_picks: HashMap<String, HashMap<String, String>>,
     // ---- G12 user settings (P-USER-* / P-HOME-5) ----
     /// F3's switch: show the release year on cards and item pages.
     pub show_release_year: bool,
@@ -293,6 +296,7 @@ impl Default for Settings {
             tmdb_key: String::new(),
             subtitles: SubPrefs::default(),
             library_view: HashMap::new(),
+            poster_picks: HashMap::new(),
             show_release_year: true,
             show_story_year: true,
             date_format: DateFormat::Iso,

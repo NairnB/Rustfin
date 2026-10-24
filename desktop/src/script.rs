@@ -4,6 +4,8 @@
 //!   key <up|down|left|right|enter|back|esc|space|backspace|info|forward|search> [n]
 //!                          (esc = Back, like the real Esc key; n > 1 = the key held down: a held Left never
 //!                          leaves the screen for the sidebar)
+//!   hold <key> <ms>         hold a key down for <ms> of app time (a remote's press-and-hold, e.g. OK to pick
+//!                          a poster); the key stays "down" so the app's key-down state sees it throughout
 //!   type <text>            text into the focused field
 //!   wait <ms>
 //!   fast-forward <secs>    move the app clock forward (idle timers: the screensaver)
@@ -35,6 +37,8 @@ pub enum Cmd {
     WaitScreen(String),
     Idle,
     Key(Key, usize),
+    /// Hold a key down for `ms` milliseconds of app time (the TV remote's OK: press-and-hold).
+    Hold(Key, u64),
     Type(String),
     Wait(u64),
     FastForward(f64),
@@ -64,6 +68,9 @@ pub enum Mouse {
     Move(f32, f32),
     Press,
     Release,
+    /// Right mouse button (PP-1: the poster picker's context menu).
+    RightPress,
+    RightRelease,
     Scroll(f32, f32),
     Back,
     Forward,
@@ -89,6 +96,11 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             }
             "type" => Cmd::Type(rest.into()),
             "wait" => Cmd::Wait(rest.parse().map_err(|_| bad())?),
+            "hold" => {
+                let mut p = rest.split_whitespace();
+                let k = key(p.next().unwrap_or("")).ok_or_else(bad)?;
+                Cmd::Hold(k, p.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?)
+            }
             "fast-forward" => Cmd::FastForward(rest.parse().map_err(|_| bad())?),
             "shot" => Cmd::Shot(rest.into()),
             "mark" => Cmd::Mark(rest.into()),
@@ -99,12 +111,17 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             }
             "mem" => Cmd::Mem,
             "quit" => Cmd::Quit,
-            "move" | "click" | "scroll" => {
+            "move" | "click" | "scroll" | "right-click" => {
                 let n: Vec<f32> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
                 let [x, y] = n[..] else { return Err(bad()) };
                 match cmd {
                     "move" => Cmd::Mouse(Mouse::Move(x, y)),
                     "scroll" => Cmd::Mouse(Mouse::Scroll(x, y)),
+                    "right-click" => {
+                        v.push(Cmd::Mouse(Mouse::Move(x, y)));
+                        v.push(Cmd::Mouse(Mouse::RightPress));
+                        Cmd::Mouse(Mouse::RightRelease)
+                    }
                     _ => {
                         v.push(Cmd::Mouse(Mouse::Move(x, y)));
                         v.push(Cmd::Mouse(Mouse::Press));
@@ -161,14 +178,19 @@ pub fn parse_drive(line: &str, tv_only: bool) -> Result<Vec<Cmd>, String> {
             let n = rest.split_whitespace().nth(1).unwrap_or("");
             parse(&format!("key {name} {n}")).map_err(|_| format!("unknown key: {rest}"))
         }
-        _ if tv_only && matches!(lc.as_str(), "click" | "move" | "scroll" | "drag" | "mouse" | "type" | "shot") => {
+        _ if tv_only
+            && matches!(
+                lc.as_str(),
+                "click" | "right-click" | "move" | "scroll" | "drag" | "mouse" | "type" | "shot"
+            ) =>
+        {
             Err("not available on a TV remote".into())
         }
         // Typed text is taken as-is (the tour parser would cut it at a `#`).
         "type" => Ok(vec![Cmd::Type(rest.into())]),
         // Every step ends with a shot anyway.
         "shot" => Ok(vec![]),
-        "click" | "move" | "scroll" | "drag" | "mouse" => {
+        "click" | "move" | "scroll" | "drag" | "mouse" | "right-click" => {
             parse(&format!("{lc} {rest}")).map_err(|_| format!("bad arguments: {line}"))
         }
         _ if tv_only => Err("not available on a TV remote".into()),
@@ -213,6 +235,8 @@ pub struct Step {
     pub mouse: Option<Mouse>,
     /// The keys are a held key's repeats (`key <k> <n>` with n > 1).
     pub held: bool,
+    /// Keys held *down* this frame (a scripted `hold`), for the core's key-down state.
+    pub down: Vec<Key>,
     /// Start (`Some(Some((name, fps)))`) or stop (`Some(None)`) recording.
     pub record: Option<Option<(String, u32)>>,
     pub quit: bool,
@@ -367,6 +391,15 @@ impl Runner {
                     next = false;
                 }
             }
+            Cmd::Hold(k, ms) => {
+                s.keys = vec![k];
+                s.held = true;
+                let done = (clock - self.since_clock) * 1000.0 >= ms as f64;
+                if !done {
+                    s.down = vec![k];
+                }
+                next = done;
+            }
             Cmd::Type(t) => s.text = Some(t),
             Cmd::Wait(ms) => next = (clock - self.since_clock) * 1000.0 >= ms as f64,
             Cmd::FastForward(secs) => s.fast_forward = Some(secs),
@@ -471,6 +504,21 @@ mod tests {
         assert_eq!(m[4], "Record(\"clip\", 30)");
         assert_eq!(m[5], "RecordStop");
         assert!(parse("drag 1 2 3").is_err());
+    }
+
+    #[test]
+    fn hold_keeps_the_key_down_for_the_whole_duration() {
+        let mut r = Runner::new(parse("hold enter 200").unwrap(), Instant::now());
+        // First frame: the key arrives and is held down.
+        let s = r.step("x", true, 16.0, 0.0);
+        assert_eq!(s.keys, vec![Key::Enter]);
+        assert_eq!(s.down, vec![Key::Enter]);
+        // Still down mid-way.
+        let s = r.step("x", true, 16.0, 0.15);
+        assert_eq!(s.down, vec![Key::Enter]);
+        // After 200 ms it releases (no key down) and the runner moves on.
+        let s = r.step("x", true, 16.0, 0.2);
+        assert!(s.down.is_empty());
     }
 
     #[test]

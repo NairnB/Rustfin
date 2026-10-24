@@ -78,6 +78,8 @@ enum Action {
     ShowInfo,
     CopyLink,
     AddPick(AddAct),
+    // PP-1: open the poster picker.
+    ChangePoster,
 }
 
 /// FIX-2 #17: the subtitle the page shows before the viewer picks one — the source's default index, else a track
@@ -443,6 +445,14 @@ impl ItemScreen {
             ((if played { "Mark as unwatched" } else { "Mark as watched" }).to_string(), Action::ToggleWatched),
             ((if fav { "Remove from Favourites" } else { "Add to Favourites" }).to_string(), Action::ToggleFavorite),
             ("Add to…".to_string(), Action::OpenAddTo),
+            (
+                if self.is_admin {
+                    "Change poster…".to_string()
+                } else {
+                    "Change poster (just for you)…".to_string()
+                },
+                Action::ChangePoster,
+            ),
             ("Media info".to_string(), Action::ShowInfo),
             ("Copy link".to_string(), Action::CopyLink),
         ];
@@ -953,6 +963,11 @@ impl ItemScreen {
             }
             Action::OpenAddTo => self.open_add_menu(cx),
             Action::AddPick(a) => self.pick_add(cx, a),
+            // PP-1: the poster picker (personal for non-admins, the shared image for admins).
+            Action::ChangePoster => {
+                self.close_pickers();
+                cx.push(super::poster_picker::screen(self.current().clone(), self.is_admin));
+            }
         }
     }
 
@@ -1824,6 +1839,10 @@ impl ItemScreen {
             };
             let art = HeroArt { backdrop, logo: at::logo(cx, ui, &item) };
             let rect = at::hero(ui, t, art, at::hero_fit_h(ui, t, "item-hero"));
+            // PP-1: right-click the hero (the item's poster area) to change the poster.
+            if ui.input(|i| i.pointer.secondary_clicked() && i.pointer.hover_pos().is_some_and(|p| rect.contains(p))) {
+                hero_act = Some(Action::ChangePoster);
+            }
             let hero_focus = matches!(self.focus.group, G_BTN | G_MORE).then_some(0);
             if at::focus_moved(ui, egui::Id::new("item-hero"), hero_focus) {
                 ui.scroll_to_rect(rect.with_max_y(rect.top() + t.gap), None);

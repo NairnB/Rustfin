@@ -1,4 +1,5 @@
 //! The app: a stack of screens driven one frame at a time by the shell (R-PLAT-4, R-STATE-*).
+use crate::api::poster::all_poster_prefs;
 use crate::api::{ApiError, Client, DeviceInfo};
 use crate::images::DiskCache;
 use crate::platform::{Key, Player, Storage};
@@ -7,6 +8,7 @@ use crate::tasks::Pool;
 use crate::theme::Theme;
 use crate::ui::{self, imageload::Images};
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// One screen. Screens own their data and focus; they talk to the rest of the app through `Cx`.
@@ -32,6 +34,10 @@ pub trait Screen {
     /// Called when the screen comes back to the top (e.g. refresh resume state after playback).
     fn on_resume(&mut self, cx: &mut Cx) {
         let _ = cx;
+    }
+    /// PP: `(item id, Primary ImageTag)` of every poster this screen shows (tests: did a refresh pick up a new tag?).
+    fn poster_tags(&self) -> Vec<(String, Option<String>)> {
+        vec![]
     }
     /// Called when popped or the app quits (player: report stopped).
     fn on_leave(&mut self, cx: &mut Cx) {
@@ -69,6 +75,17 @@ pub struct Cx<'a> {
     pub opts: &'a AppOptions,
     /// R-TAG-6: true once the signed-in user is known to be a server admin (false until known).
     pub admin: bool,
+    /// PP-4: the signed-in user's personal poster picks (item id → poster URL), applied this session.
+    pub poster_overrides: &'a mut std::collections::HashMap<String, String>,
+    /// PP-4: item ids whose shared poster changed this session; library grids re-read them on resume.
+    pub poster_changed: &'a mut Vec<String>,
+    /// PP review: counts shared-poster changes (admin apply/undo); a screen that remembers the value it last
+    /// loaded at re-reads its items on resume when this moved on.
+    pub poster_gen: u64,
+    /// PP-5: the pending poster Undo (app-level, so it survives leaving the picker).
+    pub undo: &'a mut Option<PosterUndo>,
+    /// R-PLAT-3: keys physically held down this frame (the TV hold-OK uses Enter's key-down state).
+    pub keys_down: &'a std::collections::HashSet<Key>,
     /// Requests to the window (fullscreen…), read by the shell after the frame.
     pub shell: &'a mut crate::platform::ShellRequests,
     /// Seconds since the app started (for timers: debounce, OSD hide, countdowns).
@@ -105,6 +122,26 @@ impl Cx<'_> {
     pub fn api(&self) -> Client {
         self.client.clone().expect("signed in")
     }
+    /// PP-4: the signed-in user's personal poster override for `item`, if they picked one this session.
+    pub fn poster_url(&self, item: &crate::api::Item) -> Option<String> {
+        self.poster_overrides.get(&item.id).filter(|u| self.images.usable(u)).cloned()
+    }
+    /// PP-4: set (`Some`) or clear (`None`) a personal poster override, and persist it so the pick survives a
+    /// restart (loaded at sign-in).
+    pub fn set_poster_override(&mut self, item_id: &str, url: Option<String>) {
+        match url {
+            Some(u) => {
+                self.poster_overrides.insert(item_id.to_string(), u);
+            }
+            None => {
+                self.poster_overrides.remove(item_id);
+            }
+        }
+        if let Some(uid) = self.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_id.clone()) {
+            self.settings.poster_picks.insert(uid, self.poster_overrides.clone());
+        }
+        self.save_settings();
+    }
     pub fn device(&self) -> DeviceInfo {
         device_info(self.settings, self.opts)
     }
@@ -139,6 +176,11 @@ pub struct AppOptions {
     pub start_screen: Option<String>,
     /// NAV: desktop shell — sidebar + Back/Forward toolbar around viewer screens (the TV build leaves it off).
     pub desktop: bool,
+    /// PP (test-only): `--poster-candidates <json>` replaces the RemoteImages reply with this fixture so the
+    /// picker can be shown and shot without internet (image URLs are `file://` PNGs).
+    pub poster_candidates: Option<String>,
+    /// PP (test-only): the folder of the `--poster-candidates` fixture file; its `file://` images may be loaded.
+    pub poster_fixture_dir: Option<std::path::PathBuf>,
 }
 
 fn device_info(s: &Settings, o: &AppOptions) -> DeviceInfo {
@@ -157,6 +199,21 @@ const VIEWS_TAG: &str = "views";
 /// Screen id reserved for the screensaver's backdrop list.
 const SAVER_SCREEN: u64 = u64::MAX;
 const SAVER_TAG: &str = "saver";
+/// Screen id reserved for the poster-undo result (PP-5).
+const UNDO_SCREEN: u64 = u64::MAX - 1;
+/// Screen id reserved for the user's personal poster picks read from the server.
+const PICKS_SCREEN: u64 = u64::MAX - 2;
+const PICKS_TAG: &str = "poster-picks";
+const UNDO_TAG: &str = "poster-undo";
+
+/// PP-5: what an Undo needs, held at the app level so the toast survives leaving the picker.
+pub struct PosterUndo {
+    pub item_id: String,
+    pub admin: bool,
+    pub previous: Option<Vec<u8>>,
+    pub display_id: Option<String>,
+    pub at: f64,
+}
 
 pub struct App {
     pub theme: Theme,
@@ -193,6 +250,17 @@ pub struct App {
     saver: Option<ui::screensaver::Overlay>,
     /// RR8 / P-USER-1: files the shell's picker returned, handed to the top screen next frame.
     picked: Vec<String>,
+    /// PP-4: the signed-in user's personal poster picks (item id → poster URL), applied this session.
+    poster_overrides: std::collections::HashMap<String, String>,
+    /// PP-4: item ids whose shared poster changed; library grids re-read them on resume.
+    poster_changed: Vec<String>,
+    poster_gen: u64,
+    /// An admin Undo finished: re-read the visible screen as soon as this frame's results are in.
+    refresh_top: bool,
+    /// PP-5: the pending poster Undo (app-level toast).
+    undo: Option<PosterUndo>,
+    /// R-PLAT-3: keys physically held down this frame (set by the shell).
+    pub keys_down: std::collections::HashSet<Key>,
     /// Added to the clock (render scripts fast-forward the idle time with it).
     skew: f64,
     /// UXP5 (TV build): the on-screen keyboard while it is open, the text field it types into (as drawn last
@@ -239,12 +307,21 @@ impl App {
             last_input: 0.0,
             saver: None,
             picked: vec![],
+            poster_overrides: std::collections::HashMap::new(),
+            poster_changed: vec![],
+            poster_gen: 0,
+            refresh_top: false,
+            undo: None,
+            keys_down: std::collections::HashSet::new(),
             skew: 0.0,
             tv_kb: None,
             tv_field: None,
             tv_kb_auto: 0,
             tv_text_at: None,
         };
+        let mut roots = vec![crate::api::poster::poster_store_dir(&app.store.cache_dir())];
+        roots.extend(app.opts.poster_fixture_dir.clone());
+        app.images.set_file_roots(roots);
         let first: Box<dyn Screen> = match app.settings.last().cloned() {
             Some(e) if e.session.is_some() => {
                 let c = Client::with_session(&e.address, app.device(), e.session.unwrap());
@@ -275,6 +352,27 @@ impl App {
         self.next_id += 1;
     }
 
+    /// Tests: put a screen on top (as a click would).
+    pub fn open_screen(&mut self, s: Box<dyn Screen>) {
+        self.push(s);
+    }
+    /// Tests: the shared poster of `item_id` changed (what the picker reports after an admin apply).
+    pub fn mark_poster_changed(&mut self, item_id: &str) {
+        self.poster_changed.push(item_id.to_string());
+    }
+    /// Tests: arm and press the toast's Undo for `item_id` (what a click on "Undo" does).
+    pub fn press_poster_undo(&mut self, item_id: &str, admin: bool, previous: Option<Vec<u8>>) {
+        self.undo = Some(PosterUndo { item_id: item_id.to_string(), admin, previous, display_id: None, at: 0.0 });
+        self.undo_poster();
+    }
+    /// Tests: `(item id, Primary ImageTag)` of the posters the top screen shows.
+    pub fn top_poster_tags(&self) -> Vec<(String, Option<String>)> {
+        self.stack.last().map(|(_, s)| s.poster_tags()).unwrap_or_default()
+    }
+    /// PP-4: the signed-in user's personal poster for `item_id` (tests).
+    pub fn poster_override(&self, item_id: &str) -> Option<String> {
+        self.poster_overrides.get(item_id).cloned()
+    }
     /// NAV: names of the screens on the stack, bottom first (tests, scripts).
     pub fn history(&self) -> Vec<&'static str> {
         self.stack.iter().map(|(_, s)| s.name()).collect()
@@ -403,11 +501,48 @@ impl App {
                         self.views = *v;
                     }
                     None
+                } else if d.screen == PICKS_SCREEN && d.tag == PICKS_TAG {
+                    // PP-4: the server's copy of this user's picks; only applied if that user is still signed in.
+                    if let Ok(r) = d.payload.downcast::<Option<(Option<String>, HashMap<String, String>)>>() {
+                        let cur = self.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_id.clone());
+                        if let Some((Some(uid), picks)) = *r {
+                            if Some(&uid) == cur.as_ref() {
+                                self.poster_overrides = picks.clone();
+                                self.settings.poster_picks.insert(uid, picks);
+                                let _ = self.settings.save(self.store.as_ref());
+                            }
+                        }
+                    }
+                    None
+                } else if d.screen == UNDO_SCREEN && d.tag == UNDO_TAG {
+                    // PP-5: the undo finished. An admin undo changed the shared image (refresh grids); a
+                    // viewer undo just clears the local override.
+                    if let Ok(Ok((item_id, admin))) =
+                        d.payload.downcast::<Result<(String, bool), ApiError>>().map(|b| *b)
+                    {
+                        if admin {
+                            self.poster_changed.push(item_id);
+                            self.refresh_top = true;
+                        } else {
+                            self.poster_overrides.remove(&item_id);
+                            if let Some(uid) =
+                                self.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_id.clone())
+                            {
+                                self.settings.poster_picks.insert(uid, self.poster_overrides.clone());
+                            }
+                            let _ = self.settings.save(self.store.as_ref());
+                        }
+                    }
+                    None
                 } else {
                     Some(d)
                 }
             })
             .collect();
+        if std::mem::take(&mut self.refresh_top) {
+            // An admin Undo finished: the visible screen re-reads now, not on its next resume.
+            self.resume_top(player);
+        }
         let Some((top_id, _)) = self.stack.last() else { return };
         let top_id = *top_id;
         let tv_keys;
@@ -447,6 +582,11 @@ impl App {
                 player,
                 opts: &self.opts,
                 admin: self.admin,
+                poster_overrides: &mut self.poster_overrides,
+                poster_changed: &mut self.poster_changed,
+                poster_gen: self.poster_gen,
+                undo: &mut self.undo,
+                keys_down: &self.keys_down,
                 shell: &mut self.shell,
                 now,
                 sidebar,
@@ -501,6 +641,7 @@ impl App {
             };
             egui::CentralPanel::default().frame(frame).show(ctx, |ui| screen.ui(ui, &mut cx));
         }
+        self.draw_poster_toast(ctx);
         if enter_side {
             // Land on the section that is open now (Home when nothing above it matches).
             let places = ui::shell::entries(&self.views, self.admin);
@@ -724,14 +865,93 @@ impl App {
             self.images.set_client(self.client.clone());
             self.admin = false;
             self.views.clear();
+            // PP-4: personal poster picks belong to the user (settings keep one map per user id). At sign-in the
+            // local copy shows at once, then the server's DisplayPreferences (the truth, shared by all this
+            // user's devices) replace it.
+            let uid = self.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_id.clone());
+            self.poster_overrides = uid.and_then(|u| self.settings.poster_picks.get(&u).cloned()).unwrap_or_default();
             if let Some(c) = self.client.clone() {
                 if c.session.is_some() {
                     let v = c.clone();
                     self.tasks.spawn(ADMIN_SCREEN, VIEWS_TAG, move || v.views().unwrap_or_default());
                 }
+                if c.session.is_some() {
+                    let p = c.clone();
+                    self.tasks.spawn(PICKS_SCREEN, PICKS_TAG, move || {
+                        p.display_preferences(crate::api::poster::POSTER_PREFS_ID)
+                            .map(|d| (p.session.as_ref().map(|s| s.user_id.clone()), all_poster_prefs(&d.custom_prefs)))
+                            .ok()
+                    });
+                }
                 self.tasks.spawn(ADMIN_SCREEN, ADMIN_TAG, move || c.is_admin().unwrap_or(false));
             }
         }
+    }
+
+    /// PP-5: run the pending poster Undo on the worker pool; the result is drained in `frame`.
+    fn undo_poster(&mut self) {
+        let Some(u) = self.undo.take() else { return };
+        let client = self.client.clone().expect("signed in");
+        let item_id = u.item_id.clone();
+        let admin = u.admin;
+        let previous = u.previous;
+        let display_id = u.display_id;
+        self.tasks.spawn(UNDO_SCREEN, UNDO_TAG, move || -> Result<(String, bool), ApiError> {
+            if admin {
+                match previous {
+                    Some(bytes) => client.set_item_image(&item_id, &bytes)?,
+                    None => client.delete_item_image(&item_id)?,
+                }
+            } else {
+                let dpid = display_id
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| crate::api::poster::POSTER_PREFS_ID.to_string());
+                client.set_poster_pref(&dpid, &item_id, None)?;
+            }
+            Ok((item_id, admin))
+        });
+    }
+
+    /// PP-5: the app-level "Poster changed · Undo" toast, drawn after the screen so it survives leaving the picker.
+    fn draw_poster_toast(&mut self, ctx: &egui::Context) {
+        const TOAST_SECS: f64 = 8.0;
+        if self.undo.is_none() {
+            return;
+        }
+        let now = self.now();
+        if now - self.undo.as_ref().map(|u| u.at).unwrap_or(now) >= TOAST_SECS {
+            self.undo = None;
+            return;
+        }
+        let t = &self.theme;
+        let mut clicked = false;
+        egui::Area::new(egui::Id::new("poster-undo-toast"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-t.row_gap, -t.row_gap))
+            .show(ctx, |ui| {
+                let font = t.font_w(t.body_size, crate::theme::Weight::SemiBold);
+                let g = ui.fonts(|f| {
+                    f.layout_no_wrap("Poster changed".to_string(), font.clone(), egui::Color32::PLACEHOLDER)
+                });
+                let ug = ui.fonts(|f| f.layout_no_wrap("Undo".to_string(), font, egui::Color32::PLACEHOLDER));
+                let w = g.size().x + 2.0 * t.pill_pad + t.pill_pad + ug.size().x + t.chip_pad * 2.0 + t.pill_pad;
+                let h = t.pill_h;
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+                ui.painter().rect_filled(rect, h / 2.0, t.menu_fill);
+                ui.painter().galley(rect.left_center() + egui::vec2(t.pill_pad, -g.size().y / 2.0), g, t.text);
+                let undo_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.right() - t.pill_pad - ug.size().x - t.chip_pad * 2.0, rect.top()),
+                    egui::vec2(ug.size().x + t.chip_pad * 2.0, h),
+                );
+                let resp = ui.interact(undo_rect, ui.id().with("pp-undo"), egui::Sense::click());
+                ui.painter().rect_filled(undo_rect, h / 2.0, t.focus_fill);
+                ui.painter().galley(undo_rect.center() - ug.size() / 2.0, ug, t.focus_ink);
+                clicked = resp.clicked();
+            });
+        if clicked {
+            self.undo_poster();
+        }
+        ctx.request_repaint();
     }
 
     fn apply_nav(&mut self, nav: Vec<Nav>, player: &mut dyn Player) {
@@ -802,6 +1022,11 @@ impl App {
                 player,
                 opts: &self.opts,
                 admin: self.admin,
+                poster_overrides: &mut self.poster_overrides,
+                poster_changed: &mut self.poster_changed,
+                poster_gen: self.poster_gen,
+                undo: &mut self.undo,
+                keys_down: &self.keys_down,
                 shell: &mut self.shell,
                 now,
                 sidebar: false,
@@ -825,6 +1050,10 @@ impl App {
         self.with_top(player, |s, cx| s.on_leave(cx));
     }
     fn resume_top(&mut self, player: &mut dyn Player) {
+        if !self.poster_changed.is_empty() {
+            self.poster_gen += 1;
+            self.poster_changed.clear();
+        }
         self.with_top(player, |s, cx| s.on_resume(cx));
     }
 

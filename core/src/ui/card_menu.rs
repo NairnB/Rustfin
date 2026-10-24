@@ -17,11 +17,14 @@ pub enum MenuAct {
     ToggleWatched,
     ToggleFavourite,
     PosterFlow,
+    /// PP-1: open the poster picker for this item.
+    ChangePoster,
 }
 
 /// The menu's rows for `item`, in order. Play only for things that play on their own (films, episodes, videos);
-/// the watched / favourite labels say what pressing them will do.
-pub fn entries(item: &Item) -> Vec<(MenuAct, String)> {
+/// the watched / favourite labels say what pressing them will do. The poster picker is always offered (a
+/// personal pick needs no rights); its label says so for non-admins (PP-1).
+pub fn entries(item: &Item, admin: bool) -> Vec<(MenuAct, String)> {
     let ud = item.user_data.clone().unwrap_or_default();
     let mut v = vec![];
     if matches!(item.kind, ItemKind::Movie | ItemKind::Episode | ItemKind::Other) {
@@ -33,6 +36,11 @@ pub fn entries(item: &Item) -> Vec<(MenuAct, String)> {
         MenuAct::ToggleFavourite,
         if ud.is_favorite { "Remove from Favourites" } else { "Add to Favourites" }.to_string(),
     ));
+    v.push((
+        MenuAct::ChangePoster,
+        if admin { "Change poster…".to_string() } else { "Change poster (just for you)…".to_string() },
+    ));
+    // Poster Flow stays the last row (tours and fleet routes reach it with Down to the end).
     v.push((MenuAct::PosterFlow, "Poster Flow".to_string()));
     v
 }
@@ -49,21 +57,24 @@ pub enum MenuKey {
 pub struct CardMenu {
     pub item: Item,
     pub focus: usize,
+    pub admin: bool,
 }
 
 impl CardMenu {
-    pub fn new(item: Item) -> CardMenu {
-        CardMenu { item, focus: 0 }
+    pub fn new(item: Item, admin: bool) -> CardMenu {
+        CardMenu { item, focus: 0, admin }
     }
 
     /// Up/Down move (no wrap), Enter picks, Back / Info close. Every key is the menu's while it is open.
     pub fn key(&mut self, key: Key) -> MenuKey {
-        let n = entries(&self.item).len();
+        let n = entries(&self.item, self.admin).len();
         match key {
             Key::Up => self.focus = self.focus.saturating_sub(1),
             Key::Down => self.focus = (self.focus + 1).min(n.saturating_sub(1)),
             Key::Enter => {
-                return entries(&self.item).get(self.focus).map_or(MenuKey::Close, |(a, _)| MenuKey::Pick(*a))
+                return entries(&self.item, self.admin)
+                    .get(self.focus)
+                    .map_or(MenuKey::Close, |(a, _)| MenuKey::Pick(*a))
             }
             Key::Back | Key::Info => return MenuKey::Close,
             _ => {}
@@ -77,7 +88,7 @@ impl CardMenu {
         let t = cx.theme;
         let screen = ui.ctx().screen_rect();
         ui.painter().rect_filled(screen, 0.0, t.dim_scrim);
-        let rows = entries(&self.item);
+        let rows = entries(&self.item, self.admin);
         let mut picked = None;
         let mut hovered = None;
         let w = t.dropdown_w + 2.0 * t.menu_pad;
@@ -149,6 +160,8 @@ pub fn run(cx: &mut Cx, item: &Item, act: MenuAct, place: Option<String>) -> Opt
             Some(next)
         }
         MenuAct::PosterFlow => None,
+        // PP-1: the caller opens the picker (it knows the admin flag and the place).
+        MenuAct::ChangePoster => None,
     }
 }
 
@@ -181,23 +194,24 @@ mod tests {
 
     #[test]
     fn film_menu_plays_and_says_what_the_toggles_do() {
-        let e = entries(&film(false, false));
+        let e = entries(&film(false, false), true);
         let labels: Vec<&str> = e.iter().map(|(_, l)| l.as_str()).collect();
-        assert_eq!(labels, ["Play", "Details", "Mark watched", "Add to Favourites", "Poster Flow"]);
-        let e = entries(&film(true, true));
+        assert_eq!(labels, ["Play", "Details", "Mark watched", "Add to Favourites", "Change poster…", "Poster Flow"]);
+        let e = entries(&film(true, true), false);
         assert_eq!(e[2].1, "Mark unwatched");
         assert_eq!(e[3].1, "Remove from Favourites");
+        assert_eq!(e[4].1, "Change poster (just for you)…");
     }
 
     #[test]
     fn a_show_has_no_play_row() {
         let show = Item { kind: ItemKind::Series, ..Default::default() };
-        assert_eq!(entries(&show)[0].0, MenuAct::Details);
+        assert_eq!(entries(&show, false)[0].0, MenuAct::Details);
     }
 
     #[test]
     fn keys_move_pick_and_close() {
-        let mut m = CardMenu::new(film(false, false));
+        let mut m = CardMenu::new(film(false, false), false);
         assert_eq!(m.key(Key::Up), MenuKey::Stay);
         assert_eq!(m.focus, 0);
         m.key(Key::Down);
@@ -206,7 +220,7 @@ mod tests {
         for _ in 0..10 {
             m.key(Key::Down);
         }
-        assert_eq!(m.focus, 4, "no wrap past the last row");
+        assert_eq!(m.focus, 5, "no wrap past the last row");
         assert_eq!(m.key(Key::Back), MenuKey::Close);
         assert_eq!(m.key(Key::Info), MenuKey::Close);
     }

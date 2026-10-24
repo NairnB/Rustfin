@@ -19,6 +19,7 @@ pub mod parts;
 pub mod person;
 pub mod player;
 pub mod playlists;
+pub mod poster_picker;
 pub mod posterflow;
 pub mod posterflow_gl;
 pub mod quickconnect;

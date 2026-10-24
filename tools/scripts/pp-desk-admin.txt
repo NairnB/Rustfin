@@ -1,0 +1,34 @@
+# args: --poster-candidates @tools/scripts/fixture/posters.json
+# PP desktop tour, admin path (tester): the picker with the "Change poster" label and the Server admin sidebar entry.
+# Stops before Apply: jf-test has no internet, so a remote download would only fail and an apply would write the shared image.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+click 130 341
+wait-screen library
+idle
+wait 300
+right-click 484 520
+wait-screen poster-picker
+idle
+wait 2500
+idle
+shot pp-desk-admin-picker
+key down
+key right
+wait 300
+idle
+shot pp-desk-admin-preview
+quit

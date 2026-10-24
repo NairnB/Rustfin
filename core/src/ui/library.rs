@@ -28,6 +28,9 @@ const G_SECTIONS: usize = 6;
 /// P-LIB-23: how many items Play all / Shuffle queue.
 const PLAY_LIMIT: usize = 300;
 
+/// PP-1 (TV): seconds OK must be held on a poster before the picker opens.
+const HOLD_OK_SECS: f64 = 0.6;
+
 /// FIX-1 #7: the quick filters. All / Unwatched / Watched are one choice (exactly one is on); In progress and
 /// Favourites are independent chips. In progress is left out on TV-show libraries (the server applies it to the
 /// series, not their episodes, so it always came back empty).
@@ -282,8 +285,17 @@ pub struct Library {
     /// FIX-1 #7: the empty filtered page's "Clear filters" button is the G_SECTIONS group this frame.
     empty_clear: bool,
     items: Vec<Option<Item>>,
+    /// PP review: the `cx.poster_gen` this grid last loaded at (set on the first frame).
+    poster_seen: Option<u64>,
     /// FIX-2 #8: the Info menu of a poster (Play, Details, Mark watched, Favourite, Poster Flow).
     card_menu: Option<super::card_menu::CardMenu>,
+    /// PP-1: right-click / hold-OK chose a poster to open the picker for (handled after this frame's draw).
+    poster_for: Option<Item>,
+    /// PP-1 (TV): OK held on a poster — press time and the item, until it commits (hold) or releases (open item).
+    ok_press: Option<f64>,
+    ok_item: Option<Item>,
+    /// PP-1: a hold just fired; ignore the rest of the held burst (trailing Enter frames).
+    held_fired: bool,
     total: usize,
     next_start: usize,
     in_flight: bool,
@@ -327,7 +339,12 @@ pub fn screen(view: Item) -> Box<dyn Screen> {
     Box::new(Library {
         view,
         items: vec![],
+        poster_seen: None,
         card_menu: None,
+        poster_for: None,
+        ok_press: None,
+        ok_item: None,
+        held_fired: false,
         total: 0,
         next_start: 0,
         in_flight: false,
@@ -641,6 +658,11 @@ impl Library {
         let Some(m) = self.card_menu.take() else { return };
         if act == super::card_menu::MenuAct::PosterFlow {
             self.open_flow(cx);
+            return;
+        }
+        // PP-1: the poster picker (personal for non-admins, the shared image for admins).
+        if act == super::card_menu::MenuAct::ChangePoster {
+            cx.push(super::poster_picker::screen(m.item, cx.admin));
             return;
         }
         if let Some(next) = super::card_menu::run(cx, &m.item, act, Some(tags::place_id(&self.view.id))) {
@@ -1424,6 +1446,14 @@ impl Library {
                 }
             }
         }
+        // PP-1: a right-click on a poster opens the picker for that item.
+        if ui.input(|i| i.pointer.secondary_clicked()) {
+            if let Some(h) = flat_hovered {
+                if let Some(item) = self.flat_item(h) {
+                    self.poster_for = Some(item);
+                }
+            }
+        }
         clicked
     }
 }
@@ -1436,6 +1466,19 @@ impl Screen for Library {
     /// NAV: this screen's part of the toolbar breadcrumb.
     fn crumbs(&self) -> Vec<String> {
         vec![self.view.name.clone()]
+    }
+
+    /// PP review #4: an admin applied a poster in the picker; when the grid comes back, re-read the items so the
+    /// new ImageTag is shown (the picker only refreshed itself).
+    fn on_resume(&mut self, cx: &mut Cx) {
+        if self.poster_seen.is_some_and(|g| g != cx.poster_gen) {
+            self.poster_seen = Some(cx.poster_gen);
+            self.reload(cx);
+        }
+    }
+
+    fn poster_tags(&self) -> Vec<(String, Option<String>)> {
+        self.items.iter().flatten().map(|i| (i.id.clone(), i.image_tags.get("Primary").cloned())).collect()
     }
 
     fn on_key(&mut self, cx: &mut Cx, key: Key) -> bool {
@@ -1516,7 +1559,7 @@ impl Screen for Library {
         // FIX-2 #8: Info on a poster opens its menu (Poster Flow is one of its rows, and the control-row pill).
         if key == Key::Info && self.tab.is_items() {
             match self.item_at(self.focus) {
-                Some(item) => self.card_menu = Some(super::card_menu::CardMenu::new(item)),
+                Some(item) => self.card_menu = Some(super::card_menu::CardMenu::new(item, cx.admin)),
                 None => self.open_flow(cx),
             }
             return true;
@@ -1603,8 +1646,22 @@ impl Screen for Library {
                     true
                 }
                 _ => {
-                    self.activate(cx, self.focus);
-                    true
+                    // PP-1 (TV): OK held on a poster (≥ HOLD_OK_SECS) changes the poster; a short press opens
+                    // the item. The press time is recorded here; `ui` commits on the key-down state + elapsed
+                    // time, so a real remote's pause before its first repeat never reads as a release.
+                    if self.tab.is_items() && self.focus.group >= G_SECTIONS {
+                        if self.held_fired {
+                            return true;
+                        }
+                        if self.ok_press.is_none() {
+                            self.ok_press = Some(cx.now);
+                            self.ok_item = self.item_at(self.focus);
+                        }
+                        true
+                    } else {
+                        self.activate(cx, self.focus);
+                        true
+                    }
                 }
             },
             Key::Back => {
@@ -1779,6 +1836,7 @@ impl Screen for Library {
                     self.reload(cx);
                 }
                 self.groups = groups;
+                self.ok_press = None;
                 return;
             }
         }
@@ -1808,6 +1866,10 @@ impl Screen for Library {
                 self.activate(cx, f);
             }
         }
+        // PP-1: a right-click on a poster opened the picker.
+        if let Some(item) = self.poster_for.take() {
+            cx.push(super::poster_picker::screen(item, cx.admin));
+        }
 
         if self.moving.is_some() {
             ui.add_space(t.gap / 2.0);
@@ -1832,6 +1894,35 @@ impl Screen for Library {
         self.dialog_ui(ui, cx, pointer_moved);
         if let Some(act) = self.card_menu.as_mut().and_then(|m| m.draw(ui, cx)) {
             self.card_menu_act(cx, act);
+        }
+        self.poster_seen.get_or_insert(cx.poster_gen);
+        // PP-1 (TV): commit the hold on key-down state — Enter held ≥ HOLD_OK_SECS opens the picker; released
+        // earlier opens the item (the hold itself pushed the picker).
+        let enter_down = cx.keys_down.contains(&Key::Enter);
+        if self.ok_press.is_some() {
+            // time-based release on shells without key-up events: keep frames coming
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            let elapsed = cx.now - self.ok_press.unwrap_or(cx.now);
+            // A tiny epsilon: `record` mode advances the clock in 0.1 s steps, so the exact 0.6 s threshold can
+            // land a hair below it in floating point.
+            if enter_down && elapsed + 1e-6 >= HOLD_OK_SECS && !self.held_fired {
+                self.held_fired = true;
+                self.ok_press = None;
+                if let Some(item) = self.ok_item.take() {
+                    cx.push(super::poster_picker::screen(item, cx.admin));
+                }
+            } else if !enter_down {
+                let fired = self.held_fired;
+                self.ok_press = None;
+                self.held_fired = false;
+                if !fired {
+                    if let Some(item) = self.ok_item.take() {
+                        cx.push(super::item::screen_in(item, Some(tags::place_id(&self.view.id))));
+                    }
+                }
+            }
+        } else if self.held_fired && !enter_down {
+            self.held_fired = false;
         }
     }
 }

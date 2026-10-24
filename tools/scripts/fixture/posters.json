@@ -1,0 +1,94 @@
+{
+  "Images": [
+    {
+      "ProviderName": "TheMovieDb",
+      "Url": "file://posters/01-tmdb-en.png",
+      "ThumbnailUrl": "file://posters/01-tmdb-en.png",
+      "Height": 3000,
+      "Width": 2000,
+      "CommunityRating": 8.5,
+      "VoteCount": 1400,
+      "Language": "en",
+      "Type": "Primary"
+    },
+    {
+      "ProviderName": "Fanart",
+      "Url": "file://posters/06-fanart-en.png",
+      "ThumbnailUrl": "file://posters/06-fanart-en.png",
+      "Height": 2000,
+      "Width": 1333,
+      "CommunityRating": 9.0,
+      "VoteCount": 300,
+      "Language": "en",
+      "Type": "Primary"
+    },
+    {
+      "ProviderName": "TheMovieDb",
+      "Url": "file://posters/02-tmdb-en.png",
+      "ThumbnailUrl": "file://posters/02-tmdb-en.png",
+      "Height": 1500,
+      "Width": 1000,
+      "CommunityRating": 8.2,
+      "VoteCount": 900,
+      "Language": "en",
+      "Type": "Primary"
+    },
+    {
+      "ProviderName": "TheMovieDb",
+      "Url": "file://posters/03-tmdb-fr.png",
+      "ThumbnailUrl": "file://posters/03-tmdb-fr.png",
+      "Height": 1200,
+      "Width": 800,
+      "CommunityRating": 7.8,
+      "VoteCount": 400,
+      "Language": "fr",
+      "Type": "Primary"
+    },
+    {
+      "ProviderName": "TheMovieDb",
+      "Url": "file://posters/04-tmdb-de.png",
+      "ThumbnailUrl": "file://posters/04-tmdb-de.png",
+      "Height": 1600,
+      "Width": 1067,
+      "CommunityRating": 7.0,
+      "VoteCount": 150,
+      "Language": "de",
+      "Type": "Primary"
+    },
+    {
+      "ProviderName": "TheMovieDb",
+      "Url": "file://posters/05-tmdb-none.png",
+      "ThumbnailUrl": "file://posters/05-tmdb-none.png",
+      "Height": 900,
+      "Width": 600,
+      "CommunityRating": 6.5,
+      "VoteCount": 80,
+      "Language": null,
+      "Type": "Primary"
+    },
+    {
+      "ProviderName": "Fanart",
+      "Url": "file://posters/07-fanart-none.png",
+      "ThumbnailUrl": "file://posters/07-fanart-none.png",
+      "Height": 800,
+      "Width": 533,
+      "CommunityRating": 5.0,
+      "VoteCount": 20,
+      "Language": null,
+      "Type": "Primary"
+    },
+    {
+      "ProviderName": "TheMovieDb",
+      "Url": "file://posters/08-tmdb-es.png",
+      "ThumbnailUrl": "file://posters/08-tmdb-es.png",
+      "Height": 700,
+      "Width": 467,
+      "CommunityRating": 4.5,
+      "VoteCount": 10,
+      "Language": "es",
+      "Type": "Primary"
+    }
+  ],
+  "TotalRecordCount": 8,
+  "Providers": ["TheMovieDb", "Fanart"]
+}

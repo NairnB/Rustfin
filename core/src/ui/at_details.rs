@@ -255,6 +255,12 @@ pub fn info_columns(item: &Item, src: Option<&SourceInfo>, admin: bool) -> Vec<I
 
 /// The loaded texture of `item`'s `kind` image at width `w` (None while loading or when it has none).
 pub fn tex(cx: &mut Cx, ui: &Ui, item: &Item, kind: ImageKind, w: f32) -> Option<TextureId> {
+    // PP-4: a personal poster pick overrides the item's Primary.
+    if kind == ImageKind::Primary {
+        if let Some(url) = cx.poster_url(item) {
+            return cx.images.get(&url);
+        }
+    }
     let url = cx.client.as_ref()?.image_url(item, kind, image_width_bucket(w, ui.ctx().pixels_per_point()))?;
     cx.images.get(&url)
 }

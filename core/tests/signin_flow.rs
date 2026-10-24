@@ -32,7 +32,14 @@ fn sign_in_flow_remembers_session() {
     let mut player = NullPlayer::default();
     let mut app = App::new(
         store.clone(),
-        AppOptions { default_server: None, device_name: "flow-test".into(), start_screen: None, desktop: false },
+        AppOptions {
+            default_server: None,
+            device_name: "flow-test".into(),
+            start_screen: None,
+            desktop: false,
+            poster_candidates: None,
+            poster_fixture_dir: None,
+        },
     );
 
     // Render the connect screen and let the address field take focus (before discovery finishes).

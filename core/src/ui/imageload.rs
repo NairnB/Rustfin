@@ -11,6 +11,9 @@ use std::sync::Arc;
 
 const MAX_INFLIGHT: usize = 6;
 const MAX_TEXTURES: usize = 1500;
+/// PP review #2: a remote poster fetched at full original size is downscaled once to this width and the smaller
+/// image cached, so a 3000 px TheMovieDb/Fanart original isn't decoded for every card.
+const MAX_TEX_W: u32 = 1280;
 
 type Decoded = (String, Option<egui::ColorImage>);
 
@@ -18,6 +21,8 @@ pub struct Images {
     pool: Pool,
     disk: Option<Arc<DiskCache>>,
     client: Option<Client>,
+    /// `file://` images are read only from under these folders (the poster store, a tour's fixture dir).
+    file_roots: Arc<Vec<std::path::PathBuf>>,
     textures: Lru<String, egui::TextureHandle>,
     queue: VecDeque<String>,
     inflight: HashSet<String>,
@@ -36,6 +41,7 @@ impl Images {
             pool: Pool::new(4),
             disk: disk.map(Arc::new),
             client: None,
+            file_roots: Arc::new(vec![]),
             textures: Lru::new(MAX_TEXTURES),
             queue: VecDeque::new(),
             inflight: HashSet::new(),
@@ -46,6 +52,19 @@ impl Images {
             loaded_total: 0,
             first_loaded_at: None,
         }
+    }
+
+    pub fn set_file_roots(&mut self, roots: Vec<std::path::PathBuf>) {
+        self.file_roots = Arc::new(roots);
+    }
+
+    /// False for an image that cannot be shown: one that failed to load, or a `file://` outside the allowed
+    /// folders / gone from this device. Callers fall back to the server's own image (never a blank card).
+    pub fn usable(&self, url: &str) -> bool {
+        if self.failed.contains(url) {
+            return false;
+        }
+        !url.starts_with("file://") || crate::api::poster::file_url_allowed(url, &self.file_roots)
     }
 
     pub fn set_client(&mut self, c: Option<Client>) {
@@ -108,18 +127,44 @@ impl Images {
     fn start(&mut self, url: String, ctx: egui::Context) {
         let Some(client) = self.client.clone() else { return };
         let disk = self.disk.clone();
+        let roots = self.file_roots.clone();
         let tx = self.tx.clone();
         self.inflight.insert(url.clone());
         self.pool.run(move || {
             let key = cache_key(&url);
-            let bytes = disk.as_ref().and_then(|d| d.get(&key)).or_else(|| {
-                let b = client.get_bytes(&url).ok()?;
-                if let Some(d) = &disk {
-                    let _ = d.put(&key, &b);
+            // PP-6: a `file://` poster (a personal own image) is read straight from disk, not the network.
+            let bytes = if url.starts_with("file://") {
+                // PP review: only under the poster store / the fixture dir.
+                if crate::api::poster::file_url_allowed(&url, &roots) {
+                    std::fs::read(url.trim_start_matches("file://")).ok()
+                } else {
+                    None
                 }
-                Some(b)
-            });
+            } else {
+                disk.as_ref().and_then(|d| d.get(&key)).or_else(|| {
+                    let b = client.get_bytes(&url).ok()?;
+                    if let Some(d) = &disk {
+                        let _ = d.put(&key, &b);
+                    }
+                    Some(b)
+                })
+            };
             let img = bytes.and_then(|b| image::load_from_memory(&b).ok()).map(|img| {
+                // PP review #2: downscale an oversized image once and cache the smaller copy.
+                let (img, resized) = if img.width() > MAX_TEX_W {
+                    let h = ((img.height() as u64 * MAX_TEX_W as u64) / img.width() as u64).max(1) as u32;
+                    (img.resize_exact(MAX_TEX_W, h, image::imageops::FilterType::Lanczos3), true)
+                } else {
+                    (img, false)
+                };
+                if resized {
+                    if let Some(d) = &disk {
+                        let mut buf = std::io::Cursor::new(vec![]);
+                        if img.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
+                            let _ = d.put(&key, buf.get_ref());
+                        }
+                    }
+                }
                 let rgba = img.to_rgba8();
                 egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], &rgba)
             });

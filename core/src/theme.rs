@@ -229,6 +229,12 @@ pub struct Theme {
     pub osk_key_h: f32,
     pub osk_gap: f32,
     pub osk_text_h: f32,
+    // ---- Poster picker (PP) ----
+    /// Candidate thumbnail size (≥ 220 px wide at 1080p).
+    pub pp_thumb_w: f32,
+    pub pp_thumb_h: f32,
+    /// The in-place preview panel width.
+    pub pp_preview_w: f32,
     // ---- Poster Flow (BRIEF-coverflow; measured in docs/coverflow-reference.md) ----
     /// Pure black stage under the covers and their reflections.
     pub flow_bg: Color32,
@@ -402,6 +408,9 @@ impl Theme {
             osk_key_h: 40.0,
             osk_gap: 6.0,
             osk_text_h: 44.0,
+            pp_thumb_w: 220.0,
+            pp_thumb_h: 330.0,
+            pp_preview_w: 360.0,
             flow_bg: Color32::BLACK,
             flow_sub: Color32::from_rgb(0x9a, 0x9a, 0x9e),
             flow_label_frac: 0.042,

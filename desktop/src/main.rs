@@ -49,6 +49,8 @@ struct Args {
     screen: Option<String>,
     /// `--tv`: run with the TV's remote-first navigation (no sidebar/toolbar shell; the top pill bar on Home).
     tv: bool,
+    /// `--poster-candidates <json>`: test-only — replace the poster picker's RemoteImages reply with this fixture.
+    poster_candidates: Option<String>,
 }
 
 fn args() -> Args {
@@ -68,6 +70,7 @@ fn args() -> Args {
         sub: None,
         screen: None,
         tv: false,
+        poster_candidates: None,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -123,6 +126,10 @@ fn args() -> Args {
             }
             "--screen" => {
                 a.screen = Some(next);
+                i += 1
+            }
+            "--poster-candidates" => {
+                a.poster_candidates = Some(next);
                 i += 1
             }
             _ => {}
@@ -185,6 +192,8 @@ struct Shell {
     mods: winit::keyboard::ModifiersState,
     /// A key repeat (key held down) arrived since the last frame.
     held: bool,
+    /// Remote keys physically held down now (pressed but not yet released), for the core's key-down state.
+    held_keys: std::collections::HashSet<Key>,
     /// Tour mode: when the next frame is due (None = at once).
     wake: Option<Instant>,
 }
@@ -341,6 +350,14 @@ impl Shell {
                     pressed: m == script::Mouse::Press,
                     modifiers: Default::default(),
                 }),
+                script::Mouse::RightPress | script::Mouse::RightRelease => {
+                    input.events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed: m == script::Mouse::RightPress,
+                        modifiers: Default::default(),
+                    })
+                }
                 script::Mouse::Scroll(dx, dy) => input.events.push(egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(dx / ppp, dy / ppp),
@@ -352,6 +369,10 @@ impl Shell {
         }
         let mut keys = std::mem::take(&mut self.keys);
         self.app.keys_held = std::mem::take(&mut self.held) || step.held;
+        // R-PLAT-3 key-down state: physical keys still held (winit) plus a scripted `hold` command's key.
+        let mut down = self.held_keys.clone();
+        down.extend(step.down.iter().copied());
+        self.app.keys_down = down;
         // Scripted Backspace while typing edits the text field instead of going Back.
         for &k in &step.keys {
             if k == Key::Backspace {
@@ -704,14 +725,27 @@ impl ApplicationHandler for Shell {
                     NonZeroU32::new(s.height.max(1)).unwrap(),
                 );
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                self.held |= event.repeat;
-                if let Some(k) = nav_shortcut(&event.logical_key, self.mods) {
-                    self.keys.push(k);
-                } else if self.mods.super_key() || self.mods.control_key() || self.mods.alt_key() {
-                    // Other shortcuts (Cmd+Q, Ctrl+C …) are not remote keys.
-                } else if let Some(k) = map_key(&event.logical_key, typing) {
-                    self.keys.push(k);
+            WindowEvent::KeyboardInput { event, .. } => {
+                let remote = if event.state == ElementState::Pressed {
+                    self.held |= event.repeat;
+                    let k = nav_shortcut(&event.logical_key, self.mods).or_else(|| {
+                        if self.mods.super_key() || self.mods.control_key() || self.mods.alt_key() {
+                            None
+                        } else {
+                            map_key(&event.logical_key, typing)
+                        }
+                    });
+                    if let Some(k) = k {
+                        self.held_keys.insert(k);
+                        self.keys.push(k);
+                    }
+                    return;
+                } else {
+                    // Released: forget the key so the app's key-down state (TV hold-OK) goes false.
+                    map_key(&event.logical_key, typing).or_else(|| nav_shortcut(&event.logical_key, self.mods))
+                };
+                if let Some(k) = remote {
+                    self.held_keys.remove(&k);
                 }
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
@@ -742,6 +776,22 @@ fn main() {
     let store = Arc::new(FileStorage::new(dir).expect("data dir"));
     let host =
         std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "Desktop".into());
+    // `--poster-candidates @path` reads the fixture from a file (the tours); otherwise the value is the JSON itself.
+    // Relative `file://` image URLs in a fixture file resolve against that file's folder, so the tour works from any cwd.
+    let mut poster_fixture_dir = None;
+    let poster_candidates = a.poster_candidates.clone().map(|v| match v.strip_prefix('@') {
+        Some(path) => {
+            let json = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("--poster-candidates {path}: {e}"));
+            let dir = std::fs::canonicalize(path)
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let out = jf_core::api::poster::absolutize_fixture(&json, &dir);
+            poster_fixture_dir = Some(dir);
+            out
+        }
+        None => v,
+    });
     let app = App::new(
         store,
         AppOptions {
@@ -749,6 +799,8 @@ fn main() {
             device_name: host,
             start_screen: a.screen.clone(),
             desktop: !a.tv,
+            poster_candidates,
+            poster_fixture_dir,
         },
     );
     let runner = match (&a.drive, &a.script) {
@@ -784,6 +836,7 @@ fn main() {
         pointer: egui::Pos2::ZERO,
         mods: Default::default(),
         held: false,
+        held_keys: std::collections::HashSet::new(),
         wake: None,
     };
     el.run_app(&mut shell).expect("run");
