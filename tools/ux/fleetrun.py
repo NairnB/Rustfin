@@ -364,7 +364,11 @@ def end_session(session, acc):
         sh([RF_DRIVE, "stop", session], timeout=60)
     except subprocess.TimeoutExpired:
         # A stuck stop must not kill the whole round (it did in round 1): remove the session's container.
-        subprocess.run(["docker", "rm", "-f", f"rfd-{session}"], capture_output=True, timeout=60)
+        try:
+            subprocess.run(["docker", "rm", "-f", f"rfd-{session}"], capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            # A busy host can stall docker too (round 3): leave the container for the sweep, keep the round going.
+            print(f"warning: rfd-{session} not removed (docker timed out); sweep it after the round", flush=True)
     finally:
         if acc:
             acc.delete()

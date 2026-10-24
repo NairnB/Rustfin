@@ -18,6 +18,8 @@ HOMEPATH='/h[o]me/n[a]irn|/U[s]ers/n[a]irn'   # the build machine's home (third-
 # a Rust hash-map crate, a TV-remote key name in winit, an OpenGL function, a macOS AppKit selector,
 # a glyph name in the Inter font (core/assets/fonts).
 THIRD_PARTY='hashb[r]own|ColorF5B[r]own|ByR[e]gion|initByR[e]ferencingFile|kg[r]eenlandic'
+# the remote's colour keys (Key::G…, its script name and the TV key name) are not the surname
+THIRD_PARTY="$THIRD_PARTY|Key::G[r]een|Key\\(G[r]een|\"g[r]een\" =>|key g[r]een|red.g[r]een.yellow|ColorF1G[r]een|^ +G[r]een,$"
 case "$MODE" in
   plain) ALLOW='^$' ;;
   preset)
@@ -30,9 +32,31 @@ case "$MODE" in
     WORDS="$WORDS|-----B[E]GIN|g[h]p_|s[k]-[A-Za-z0-9]{8}|A[K]IA[A-Z0-9]{8}|T[U]NNEL_TOKEN"
     # jf-real's public-domain titles: the films are free but their TMDB posters/backdrops may not be, so public
     # files may show only the Blender open movies (CC BY) or jf-test titles (pit crew, 11 Oct 2026).
-    WORDS="$WORDS|b[o]nanza|h[i]s girl friday|living d[e]ad|the g[e]neral \\(?1926" ;;
+    WORDS="$WORDS|b[o]nanza|h[i]s girl friday|living d[e]ad|the g[e]neral \\(?1926"
+    # Private words (a look and names that must never go public) live outside the repo so this file names none of
+    # them. Line 1: extra word regex; line 2 (optional): exact third-party strings to strip first; line 3 (optional):
+    # one sample word the list must catch. Fails closed.
+    PRIV=${RF_PRIVATE_WORDS:-$HOME/.config/rf-private-words}
+    if [ ! -s "$PRIV" ]; then echo "leak gate (public): private word list missing ($PRIV)" >&2; exit 1; fi
+    W1=$(sed -n 1p "$PRIV" | tr -d '\r' | sed 's/^\xEF\xBB\xBF//'); P2=$(sed -n 2p "$PRIV" | tr -d '\r')
+    C3=$(sed -n 3p "$PRIV" | tr -d '\r')   # line 3 (optional): one sample private word, no spaces, that must be caught (canary)
+    [ -n "$W1" ] || { echo "leak gate (public): private word list line 1 empty" >&2; exit 1; }
+    WORDS="$WORDS|$W1"
+    # line 2 is literal strings split on '|': escape them so a stray '.', '/' or '*' can never strip real text
+    if [ -n "$P2" ]; then
+      THIRD_PARTY="$THIRD_PARTY|$(printf '%s' "$P2" | sed -E 's/[][\\.*^$+?(){}\/]/\\&/g')"
+    fi ;;
   *) echo "mode must be plain, preset or public" >&2; exit 2 ;;
 esac
+# A broken pattern or a missing tool must fail the gate, never pass it silently.
+command -v strings >/dev/null || { echo "leak gate: 'strings' missing (binutils) — cannot check binary files" >&2; exit 1; }
+rc=0; printf 'x\n' | grep -aiE "($WORDS|$TAILNET)" >/dev/null || rc=$?
+[ $rc -le 1 ] || { echo "leak gate: word pattern does not compile" >&2; exit 1; }
+# Canary: a pattern that compiles but closes a group early (a stray ')') can switch other checks off.
+for c in 1''00.64.0.1 /h''ome/ ${C3:-}; do
+  printf '%s\n' "$c" | grep -qaiE "($WORDS|$TAILNET)" || { echo "leak gate: canary '$c' not caught — pattern broken" >&2; exit 1; }
+done
+printf 'x\n' | sed -E "s/$THIRD_PARTY//g" >/dev/null || { echo "leak gate: strip pattern does not compile" >&2; exit 1; }
 hits=0
 check() { # <label> ; text on stdin ; returns 1 on a hit
   local found
@@ -47,10 +71,10 @@ while IFS= read -r -d '' f; do
     *libmpv*.dll|*.dylib)
       if strings -n 6 "$f" | grep -aqE "$HOMEPATH"; then echo "LEAK in $rel: build-machine home path"; hits=1; fi ;;
     *.exe|*/MacOS/*|rustfin|jellyfin-desktop)
-      check "$rel" < <(strings -n 6 "$f") || hits=1 ;;
+      check "$rel" < <(strings -n 6 "$f"; strings -n 6 -e l "$f") || hits=1 ;;
     *)
       if file -b --mime-type "$f" | grep -qE '^text/|xml|json|empty'; then check "$rel" < "$f" || hits=1
-      else check "$rel" < <(strings -n 6 "$f") || hits=1; fi ;;
+      else check "$rel" < <(strings -n 6 "$f"; strings -n 6 -e l "$f") || hits=1; fi ;;   # + UTF-16LE text
   esac
   check "file name $rel" < <(printf '%s\n' "$rel") || hits=1
 done < <(find "$DIR" -type f -print0)

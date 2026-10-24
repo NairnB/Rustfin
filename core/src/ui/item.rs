@@ -1391,15 +1391,16 @@ impl ItemScreen {
         let focus = (self.focus.group == group).then_some(self.focus.index);
         let pointer_moved = ui.input(|i| i.pointer.is_moving());
         at::section_title(ui, t, heading);
-        let h = if wide { at::wide_card_h(t, 1) } else { t.poster_h + t.card_title_gap + t.body_size * 1.3 };
+        let h = card_row_h(t, wide);
         let rs = at::row(ui, t, &format!("item-row-{group}"), items.len(), h, focus, |ui, i| {
             let it = &items[i];
             if wide {
                 let tx = at::tex(cx, ui, it, ImageKind::Primary, t.wide_w);
                 at::wide_card(ui, t, tx, "", &[&it.name], parts::resume_fraction(it), focus == Some(i))
             } else {
-                let tx = at::tex(cx, ui, it, ImageKind::Primary, t.poster_w);
-                at::poster_card(ui, t, tx, &it.name, focus == Some(i))
+                // title + year always under the poster, as before the row moved (at::poster_card shows the title on
+                // focus only)
+                parts::card(ui, cx, it, CardKind::Poster, focus == Some(i))
             }
         });
         let mut clicked = None;
@@ -2448,6 +2449,15 @@ mod tests {
     }
 }
 
+/// The film page's card row height: a 16:9 card with one caption line, or a poster with its title + year block.
+fn card_row_h(t: &crate::theme::Theme, wide: bool) -> f32 {
+    if wide {
+        at::wide_card_h(t, 1)
+    } else {
+        CardKind::Poster.size(t).y + t.card_label_h
+    }
+}
+
 /// FIX-2 #6: subtitle tracks in picker order — the preferred language (3-letter code) first, then A–Z by label.
 fn order_tracks(mut rows: Vec<(i32, String, Option<String>)>, preferred: &str) -> Vec<(i32, String)> {
     let pref =
@@ -2458,7 +2468,13 @@ fn order_tracks(mut rows: Vec<(i32, String, Option<String>)>, preferred: &str) -
 
 #[cfg(test)]
 mod fix2_tests {
-    use super::order_tracks;
+    use super::{card_row_h, order_tracks};
+
+    #[test]
+    fn film_page_poster_row_leaves_room_for_title_and_year() {
+        let t = crate::theme::Theme::placeholder();
+        assert!(card_row_h(&t, false) >= t.poster_h + t.card_label_h);
+    }
 
     #[test]
     fn subtitles_list_the_preferred_language_then_a_to_z() {

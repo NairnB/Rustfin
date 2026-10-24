@@ -4,7 +4,7 @@
 # Nothing is exported unless it is on the allow-list below. Exit 1 if the gate finds anything.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-OUT=$1 REF=${2:-HEAD}
+OUT=${1%/} REF=${2:-HEAD}
 ALLOW=(core desktop tools/bench tools/package tools/scripts tools/testserver tools/ux tools/render-shots.sh tools/public-export.sh
        tv/README.md Cargo.toml Cargo.lock rustfmt.toml .gitignore LICENSE README.md BUILDING.md AGENTS.md docs-public)
 mkdir -p "$OUT"
@@ -17,7 +17,11 @@ done
 git archive --format=tar "$REF" -- "${present[@]}" | tar -x -C "$OUT"
 # Private test infrastructure inside allowed folders: jf-real names public-domain titles whose TMDB art may not be free.
 DENY=(tools/testserver/real tools/scripts/real tools/ux/tasks.yaml)   # tasks.yaml names jf-real's public-domain titles
+# The private "retro" look: its code, tests and tours stay out (the core builds without it: feature off).
+DENY+=(core/src/retro)
 for p in "${DENY[@]}"; do rm -rf "${OUT:?}/${p:?}"; done
+find "$OUT" -depth -iname '*retro*' -exec rm -rf {} +   # by name, anywhere (also drops e.g. "Retrograde.md": rename such files)
+if [ -n "$(find "$OUT" \( -iname '*retro*' -o -type l \) -print -quit)" ]; then echo "export: retro path or symlink left" >&2; exit 1; fi
 echo "exported $(find "$OUT" -type f | wc -l) files from $(git rev-parse --short "$REF")"
 "$ROOT/tools/package/leak-gate.sh" "$OUT" public
 ( cd "$OUT" && find . -type f | sort | sed 's#^\./##' | awk -F/ '{d=$0; sub(/\/[^/]*$/,"",d); if (NF==1) d="."; c[d]++} END {for (k in c) printf "%4d  %s/\n", c[k], k}' | sort -k2 )
