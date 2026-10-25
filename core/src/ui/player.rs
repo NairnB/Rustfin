@@ -12,10 +12,10 @@ use crate::platform::{
     sub_colour_index, Aspect, Key, PlayRequest, PlayerState, PlayerStats, SubFont, SubShadow, SubSize, SubStyle,
     SubWeight, SUB_COLOURS,
 };
-use crate::playreq::{build_plan_burnt, request_indexes};
+use crate::playreq::{build_plan_burnt_on, must_transcode, request_indexes_on};
 use crate::queue::Queue;
 use crate::repeat::{end_action, EndAction, Repeat};
-use crate::settings::SubPrefs;
+use crate::settings::Settings;
 use crate::theme::{Theme, Weight};
 use std::any::Any;
 
@@ -28,6 +28,11 @@ pub struct PlayOptions {
     pub subtitle: Option<Option<i32>>,
     /// G8 / P-ITEM-11: the version (media source id) chosen on the item page; `None` = the first source.
     pub media_source_id: Option<String>,
+    /// FIX-4: the viewer chose `subtitle` themselves, so an audio change must not re-apply the default one.
+    pub subtitle_picked: bool,
+    /// FIX-4: the viewer's remembered subtitle for this item, used when `subtitle` is None; the player fills it in
+    /// from the settings (`Cx::remembered_subtitle`).
+    pub remembered_subtitle: Option<crate::settings::SubPick>,
 }
 
 /// C3-SUBS / R-SUBS-3: while transcoding the audio track and any burnt-in subtitle are part of the stream, so a
@@ -40,6 +45,22 @@ pub fn track_change_replans(transcoding: bool) -> bool {
 /// index each request names): switching between Off and an external subtitle leaves the HLS stream as it is.
 pub fn subtitle_change_replans(transcoding: bool, before: Option<i32>, after: Option<i32>) -> bool {
     transcoding && before != after
+}
+
+/// FIX-3 T3: as `subtitle_change_replans` for a backend that may not draw subtitles itself (`renders_subtitles`):
+/// there a chosen subtitle needs a burnt-in stream, so a change re-plans whether the stream transcodes or not,
+/// whenever the subtitle the request names changes.
+pub fn subtitle_change_replans_on(
+    renders_subtitles: bool,
+    transcoding: bool,
+    before: Option<i32>,
+    after: Option<i32>,
+) -> bool {
+    if renders_subtitles {
+        subtitle_change_replans(transcoding, before, after)
+    } else {
+        before != after
+    }
 }
 
 /// The `force` a track-change re-plan asks the server with: a stream that only transcodes because direct play
@@ -389,6 +410,42 @@ pub fn lifted_sub_position(position: f32, osd_up: bool) -> f32 {
     }
 }
 
+/// FIX-4: a click or Enter on entry `i` of subtitle-panel group `group` that is one of the Subtitle style rows
+/// (position, size, font, weight, shadow, text and background colour) changes `style` and returns true. Anything
+/// else (offset, second subtitles, tracks) leaves it alone and returns false.
+fn pick_sub_style(style: &mut SubStyle, group: usize, i: usize) -> bool {
+    let delta = if i == 0 { -1.0 } else { 1.0 };
+    match group {
+        G_SUB_SIZE => {
+            style.size = match i {
+                0 => SubSize::Small,
+                1 => SubSize::Medium,
+                2 => SubSize::Large,
+                _ => SubSize::ExtraLarge,
+            }
+        }
+        G_SUB_POS => style.position = (style.position + 5.0 * delta).clamp(0.0, 150.0),
+        G_SUB_FONT => style.font = SubFont::ALL[i.min(SubFont::ALL.len() - 1)],
+        G_SUB_WEIGHT => style.weight = SubWeight::ALL[i.min(SubWeight::ALL.len() - 1)],
+        G_SUB_SHADOW => style.shadow = SubShadow::ALL[i.min(SubShadow::ALL.len() - 1)],
+        G_SUB_TEXT => style.text_colour = SUB_COLOURS[i.min(SUB_COLOURS.len() - 1)].1.to_string(),
+        G_SUB_BACK => {
+            style.back_colour = i.checked_sub(1).map(|c| SUB_COLOURS[c.min(SUB_COLOURS.len() - 1)].1.to_string())
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// FIX-4: `pick_sub_style`, and a style row that changed is also the saved default for every later playback.
+fn save_sub_pick(settings: &mut Settings, style: &mut SubStyle, group: usize, i: usize) -> bool {
+    let changed = pick_sub_style(style, group, i);
+    if changed {
+        settings.subtitles.style = style.clone();
+    }
+    changed
+}
+
 /// UXP2 (D14): English name of an ISO 639 language code (2- or 3-letter), `None` when unknown.
 fn language_name(code: &str) -> Option<&'static str> {
     Some(match code.to_lowercase().as_str() {
@@ -546,6 +603,8 @@ pub struct PlayerScreen {
     osd_last_input: f64,
     audio: Option<i32>,
     subtitle: Option<Option<i32>>,
+    /// FIX-4: the viewer chose the subtitle (on the page or here); an audio change leaves it alone.
+    sub_picked: bool,
     /// The Audio & Subtitles panel (UXP2: audio and subtitle lists in one panel).
     subtitle_open: bool,
     /// UXP2: the "…" More panel.
@@ -570,6 +629,8 @@ pub struct PlayerScreen {
     transcoding: bool,
     fell_back: bool,
     reload_pos: f64,
+    /// FIX-3 T1: the item + options of a start whose plan came back direct but needs a burnt-in subtitle.
+    sub_retry: Option<(Item, PlayOptions)>,
     source_bitrate: Option<i64>,
     // next episode
     next: Option<Item>,
@@ -648,6 +709,7 @@ pub fn screen_queue_at(items: Vec<Item>, start: usize, opts: PlayOptions) -> Box
 
 fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
     PlayerScreen {
+        sub_picked: opts.subtitle_picked,
         item,
         opts,
         source_id: None,
@@ -679,6 +741,7 @@ fn new_player(item: Item, opts: PlayOptions) -> PlayerScreen {
         transcoding: false,
         fell_back: false,
         reload_pos: 0.0,
+        sub_retry: None,
         source_bitrate: None,
         next: None,
         next_known: false,
@@ -892,8 +955,10 @@ impl PlayerScreen {
     fn begin(&mut self, cx: &mut Cx) {
         self.loading = true;
         let id = self.item.id.clone();
-        let (audio, sub) = request_indexes(None, None, self.opts.audio, self.opts.subtitle);
-        self.fetch_plan(cx, "info", id, false, audio, sub);
+        let renders = cx.player.renders_subtitles();
+        let (audio, sub) = request_indexes_on(renders, None, None, self.opts.audio, self.opts.subtitle);
+        let force = must_transcode(renders, self.opts.subtitle.flatten());
+        self.fetch_plan(cx, "info", id, force, audio, sub);
     }
 
     /// G6: PlaybackInfo for `id` under the current quality choice (or the Settings cap); `force` = transcode.
@@ -919,7 +984,11 @@ impl PlayerScreen {
         self.reload_pos = cx.player.position();
         self.loading = true;
         let id = self.item.id.clone();
-        let (audio, sub) = request_indexes(self.info.as_ref(), self.source_id.as_deref(), self.audio, self.subtitle);
+        let renders = cx.player.renders_subtitles();
+        let (audio, sub) =
+            request_indexes_on(renders, self.info.as_ref(), self.source_id.as_deref(), self.audio, self.subtitle);
+        // FIX-3 T1: a backend that cannot draw the chosen subtitle needs the transcode that burns it in.
+        let force = force || must_transcode(renders, self.subtitle.flatten());
         self.fetch_plan(cx, "reload", id, force, audio, sub);
     }
 
@@ -936,8 +1005,13 @@ impl PlayerScreen {
             audio: self.audio,
             subtitle: self.subtitle,
             media_source_id: self.source_id.clone(),
+            subtitle_picked: self.sub_picked,
+            remembered_subtitle: cx.remembered_subtitle(&self.item),
         };
-        let Some((mut req, burnt)) = build_plan_burnt(&client, &self.item, &plan, &opts, &SubPrefs::default()) else {
+        let renders = cx.player.renders_subtitles();
+        let Some((mut req, burnt)) =
+            build_plan_burnt_on(renders, &client, &self.item, &plan, &opts, &cx.settings.subtitles)
+        else {
             self.loading = false;
             self.build_error = Some("No playable source on the server".to_string());
             return;
@@ -1003,12 +1077,39 @@ impl PlayerScreen {
     }
 
     fn start_playback(&mut self, cx: &mut Cx, item: Item, plan: PlaybackPlan, opts: PlayOptions) {
+        let opts = PlayOptions { remembered_subtitle: cx.remembered_subtitle(&item), ..opts };
+        self.start_playback_inner(cx, item, plan, opts, false);
+    }
+
+    /// `retried`: this plan is already the forced answer to a `sub_retry`, so it is played as it is.
+    fn start_playback_inner(&mut self, cx: &mut Cx, item: Item, plan: PlaybackPlan, opts: PlayOptions, retried: bool) {
         let client = cx.api();
-        let req = build_plan_burnt(&client, &item, &plan, &opts, &SubPrefs::default());
+        let renders = cx.player.renders_subtitles();
+        let req = build_plan_burnt_on(renders, &client, &item, &plan, &opts, &cx.settings.subtitles);
+        if let (false, false, Some((r, _))) = (retried, plan.transcoding_url.is_some(), &req) {
+            // FIX-3 T1: the subtitle chosen by the user's preferences came after the request; a backend that cannot
+            // draw it asks again for the transcode that burns it in.
+            if must_transcode(renders, r.subtitle) {
+                let (audio, sub) = request_indexes_on(
+                    renders,
+                    Some(&plan.info),
+                    opts.media_source_id.as_deref(),
+                    r.audio,
+                    Some(r.subtitle),
+                );
+                let retry_opts = PlayOptions { audio: r.audio, subtitle: Some(r.subtitle), ..opts };
+                let id = item.id.clone();
+                self.sub_retry = Some((item, retry_opts));
+                self.loading = true;
+                self.fetch_plan(cx, "subretry", id, true, audio, sub);
+                return;
+            }
+        }
         let info = plan.info;
         match req {
             Some((req, burnt)) => {
                 self.source_id = opts.media_source_id.clone();
+                self.sub_picked = opts.subtitle_picked;
                 self.loading = false;
                 self.build_error = None;
                 self.player_error = None;
@@ -1407,19 +1508,46 @@ impl PlayerScreen {
         (self.volume * 100.0).round() as i32
     }
 
+    /// FIX-4 R5: a new audio track re-applies the default subtitle unless the viewer picked one.
     fn pick_audio(&mut self, cx: &mut Cx, index: i32) {
         self.audio = Some(index);
-        if track_change_replans(self.transcoding) {
+        let remembered = cx.remembered_subtitle(&self.item);
+        let sub = self.source().and_then(|ms| {
+            crate::playreq::subtitle_after_audio_pick(
+                &cx.settings.subtitles,
+                ms,
+                index,
+                remembered.as_ref(),
+                self.sub_picked,
+                self.subtitle,
+            )
+        });
+        let sub = sub.filter(|v| Some(*v) != self.subtitle);
+        let sub_replans = sub.is_some_and(|v| self.change_subtitle(cx, v));
+        if sub_replans || track_change_replans(self.transcoding) {
             return self.reload(cx, track_change_force(self.transcoding, self.fell_back));
         }
         cx.player.set_audio(Some(index));
+        if let Some(v) = sub {
+            cx.player.set_subtitle(v);
+        }
         self.report_now(cx);
     }
 
-    fn pick_subtitle(&mut self, cx: &mut Cx, val: Option<i32>) {
-        let sub_of = |s: &Self, v| request_indexes(s.info.as_ref(), s.source_id.as_deref(), None, v).1;
-        let replan = subtitle_change_replans(self.transcoding, sub_of(self, self.subtitle), sub_of(self, Some(val)));
+    /// Records the subtitle `val` as the current one; true when the stream has to be re-planned for it.
+    fn change_subtitle(&mut self, cx: &mut Cx, val: Option<i32>) -> bool {
+        let renders = cx.player.renders_subtitles();
+        let sub_of = |s: &Self, v| request_indexes_on(renders, s.info.as_ref(), s.source_id.as_deref(), None, v).1;
+        let replan =
+            subtitle_change_replans_on(renders, self.transcoding, sub_of(self, self.subtitle), sub_of(self, Some(val)));
         self.subtitle = Some(val);
+        replan
+    }
+
+    fn pick_subtitle(&mut self, cx: &mut Cx, val: Option<i32>) {
+        self.sub_picked = true;
+        cx.remember_subtitle(&self.item, self.source(), val);
+        let replan = self.change_subtitle(cx, val);
         if replan {
             return self.reload(cx, track_change_force(self.transcoding, self.fell_back));
         }
@@ -1430,11 +1558,6 @@ impl PlayerScreen {
     fn adj_sub_delay(&mut self, cx: &mut Cx, delta: f64) {
         self.sub_delay = (self.sub_delay + delta).clamp(-30.0, 30.0);
         cx.player.set_sub_delay(self.sub_delay);
-    }
-
-    fn adj_sub_pos(&mut self, cx: &mut Cx, delta: f32) {
-        self.sub_style.position = (self.sub_style.position + delta).clamp(0.0, 150.0);
-        self.apply_sub_style(cx);
     }
 
     /// UXP2: send the subtitle style to the player, lifted above the OSD while it is up (and the panel is not).
@@ -1452,7 +1575,6 @@ impl PlayerScreen {
 
     /// Enter or a click on entry `i` of subtitle-panel group `group`.
     fn sub_choice(&mut self, cx: &mut Cx, group: usize, i: usize) {
-        let delta = if i == 0 { -1.0 } else { 1.0 };
         match group {
             G_AUDIO => {
                 if let Some(idx) = self.audio_entries().get(i).map(|(_, x)| *x) {
@@ -1484,27 +1606,17 @@ impl PlayerScreen {
                 return;
             }
             G_SUB_OFFSET => {
-                self.adj_sub_delay(cx, 0.1 * delta as f64);
+                self.adj_sub_delay(cx, if i == 0 { -0.1 } else { 0.1 });
                 return;
             }
-            G_SUB_SIZE => {
-                self.sub_style.size = match i {
-                    0 => SubSize::Small,
-                    1 => SubSize::Medium,
-                    2 => SubSize::Large,
-                    _ => SubSize::ExtraLarge,
+            // The TV's server burn-in never sees the style, so its rows are not shown there and do nothing.
+            _ if !cx.player.renders_subtitles() => return,
+            _ => {
+                if !save_sub_pick(cx.settings, &mut self.sub_style, group, i) {
+                    return;
                 }
+                cx.save_settings();
             }
-            G_SUB_POS => self.adj_sub_pos(cx, 5.0 * delta),
-            G_SUB_FONT => self.sub_style.font = SubFont::ALL[i.min(SubFont::ALL.len() - 1)],
-            G_SUB_WEIGHT => self.sub_style.weight = SubWeight::ALL[i.min(SubWeight::ALL.len() - 1)],
-            G_SUB_SHADOW => self.sub_style.shadow = SubShadow::ALL[i.min(SubShadow::ALL.len() - 1)],
-            G_SUB_TEXT => self.sub_style.text_colour = SUB_COLOURS[i.min(SUB_COLOURS.len() - 1)].1.to_string(),
-            G_SUB_BACK => {
-                self.sub_style.back_colour =
-                    i.checked_sub(1).map(|c| SUB_COLOURS[c.min(SUB_COLOURS.len() - 1)].1.to_string())
-            }
-            _ => return,
         }
         self.apply_sub_style(cx);
     }
@@ -2220,6 +2332,7 @@ impl PlayerScreen {
             SubSize::Large => 2,
             SubSize::ExtraLarge => 3,
         };
+        let style_ok = cx.player.renders_subtitles();
         let focus = self.focus;
         let off_label = format!("{:.1} s", self.sub_delay);
         let pos_label = format!("{:.0}", self.sub_style.position);
@@ -2322,7 +2435,10 @@ impl PlayerScreen {
                                     for (group, label, value) in [
                                         (G_SUB_OFFSET, "Offset", off_label.clone()),
                                         (G_SUB_POS, "Position", pos_label.clone()),
-                                    ] {
+                                    ]
+                                    .into_iter()
+                                    .filter(|(g, ..)| style_ok || *g != G_SUB_POS)
+                                    {
                                         let mut xs = vec![];
                                         let mut hover = None;
                                         let mut click = None;
@@ -2366,6 +2482,13 @@ impl PlayerScreen {
                                         found.push((group, xs, hover, click));
                                     }
                                     section(ui, t, "Subtitle style");
+                                    if !style_ok {
+                                        ui.label(
+                                            egui::RichText::new("Subtitle size isn't available on this TV")
+                                                .font(t.font(t.body_size))
+                                                .color(t.muted),
+                                        );
+                                    }
                                     let size_labels =
                                         ["S".to_string(), "M".to_string(), "L".to_string(), "XL".to_string()];
                                     let size_sel: Vec<bool> = (0..4).map(|i| size_idx == i).collect();
@@ -2377,7 +2500,7 @@ impl PlayerScreen {
                                         (G_SUB_TEXT, "Text", &colour_names, &text_sel),
                                         (G_SUB_BACK, "Background", &back_names, &back_sel),
                                     ];
-                                    for (group, label, labels, selected) in rows {
+                                    for (group, label, labels, selected) in rows.into_iter().filter(|_| style_ok) {
                                         ui.horizontal(|ui| {
                                             row_label(ui, t, label, t.chip_h);
                                             let top = ui.cursor().top();
@@ -2784,6 +2907,18 @@ impl Screen for PlayerScreen {
                     }
                 }
             }
+            "subretry" => {
+                let Ok(r) = payload.downcast::<Result<PlaybackPlan>>() else { return };
+                let Some((item, opts)) = self.sub_retry.take() else { return };
+                match *r {
+                    Ok(plan) => self.start_playback_inner(cx, item, plan, opts, true),
+                    Err(ApiError::Unauthorized) => cx.signed_out(),
+                    Err(e) => {
+                        self.loading = false;
+                        self.build_error = Some(e.to_string());
+                    }
+                }
+            }
             "next" => {
                 self.next_loading = false;
                 self.next_known = true;
@@ -3056,4 +3191,302 @@ fn section(ui: &mut egui::Ui, t: &Theme, text: &str) {
 fn row_label(ui: &mut egui::Ui, t: &Theme, text: &str, h: f32) {
     let (r, _) = ui.allocate_exact_size(egui::vec2(t.form_label_w * 0.6, h), egui::Sense::hover());
     ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, text, t.font(t.body_size), t.text);
+}
+
+/// FIX-4 R5: the player's own audio pick re-applies the default subtitle (drives the real screen).
+#[cfg(test)]
+mod fix4_tests {
+    use super::*;
+    use crate::app::test_support::World;
+
+    // fixture: 2 eng audio (default), 3 fre audio, 0 ger external sub, 4 eng embedded sub; the server's default
+    // sub 0 is ignored
+    fn plan() -> PlaybackPlan {
+        let info: PlaybackInfo = serde_json::from_str(
+            &std::fs::read_to_string(format!("{}/tests/fixtures/playbackinfo.json", env!("CARGO_MANIFEST_DIR")))
+                .unwrap(),
+        )
+        .unwrap();
+        PlaybackPlan { info, transcoding_url: None, source_bitrate: None }
+    }
+
+    fn film(id: &str) -> Item {
+        serde_json::from_str(&format!(r#"{{"Id":"{id}","Name":"Film","Type":"Movie"}}"#)).unwrap()
+    }
+
+    /// A playback started as Home Resume / next-prev start it: nothing chosen on a page.
+    fn play(w: &mut World, item: Item, opts: PlayOptions) -> PlayerScreen {
+        let mut p = new_player(item.clone(), opts.clone());
+        w.cx(|cx| p.start_playback(cx, item, plan(), opts));
+        p
+    }
+
+    /// The viewer picks subtitle `v` in the player's subtitle panel (the real list row).
+    fn panel_pick(w: &mut World, p: &mut PlayerScreen, v: Option<i32>) {
+        let row = p.subtitle_entries().iter().position(|(_, x)| *x == v).unwrap();
+        w.cx(|cx| p.sub_choice(cx, G_LIST, row));
+    }
+
+    #[test]
+    fn player_audio_pick_reapplies_the_default_subtitle() {
+        let mut w = World::signed_in(true);
+        let mut p = play(&mut w, film("i"), PlayOptions::default());
+        assert_eq!(p.subtitle, Some(None), "eng audio → Off");
+        w.cx(|cx| p.pick_audio(cx, 3));
+        assert_eq!(p.subtitle, Some(Some(4)), "fre audio → the English sub");
+        w.cx(|cx| p.pick_audio(cx, 2));
+        assert_eq!(p.subtitle, Some(None), "back to eng audio → Off");
+    }
+
+    #[test]
+    fn player_audio_pick_keeps_a_subtitle_the_viewer_picked() {
+        let mut w = World::signed_in(true);
+        let opts = PlayOptions { subtitle: Some(None), subtitle_picked: true, ..Default::default() };
+        let mut p = play(&mut w, film("i"), opts);
+        w.cx(|cx| p.pick_audio(cx, 3));
+        assert_eq!(p.subtitle, Some(None));
+    }
+
+    #[test]
+    fn a_player_pick_is_remembered_for_the_next_playback_after_a_restart() {
+        let mut w = World::signed_in(true);
+        let mut p = play(&mut w, film("i"), PlayOptions::default());
+        panel_pick(&mut w, &mut p, Some(0));
+        w.restart();
+        let next = play(&mut w, film("i"), PlayOptions::default());
+        assert_eq!(next.subtitle, Some(Some(0)), "Resume after a restart: the German sub");
+        assert_eq!(next.req.as_ref().unwrap().subtitle, Some(0), "and the player was asked for it");
+        let mut fre = play(&mut w, film("i"), PlayOptions::default());
+        w.cx(|cx| fre.pick_audio(cx, 3));
+        assert_eq!(fre.subtitle, Some(Some(0)), "fre audio would say the English sub 4; the remembered pick wins");
+    }
+
+    #[test]
+    fn a_player_pick_of_off_is_remembered_too() {
+        let mut w = World::signed_in(true);
+        let mut p = play(&mut w, film("i"), PlayOptions { audio: Some(3), ..Default::default() });
+        assert_eq!(p.subtitle, Some(Some(4)));
+        panel_pick(&mut w, &mut p, None);
+        w.restart();
+        let next = play(&mut w, film("i"), PlayOptions { audio: Some(3), ..Default::default() });
+        assert_eq!(next.subtitle, Some(None));
+    }
+
+    #[test]
+    fn a_player_pick_is_not_remembered_when_the_user_does_not_remember_selections() {
+        let mut w = World::signed_in(false);
+        let mut p = play(&mut w, film("i"), PlayOptions::default());
+        panel_pick(&mut w, &mut p, Some(0));
+        assert_eq!(p.subtitle, Some(Some(0)), "the pick still wins for this playback");
+        w.restart();
+        assert!(w.settings().sub_picks.is_empty(), "nothing stored");
+        assert_eq!(
+            play(&mut w, film("i"), PlayOptions::default()).subtitle,
+            Some(None),
+            "the default-subtitle rule, Off"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fix4_substyle_tests {
+    use super::*;
+    use crate::api::{Client, DeviceInfo, PlaybackInfo, PlaybackPlan, Session};
+    use crate::app::{AppOptions, Cx};
+    use crate::platform::{NullPlayer, Player, PlayerState, ShellRequests, Storage, TrackRef};
+    use crate::settings::MemStorage;
+    use crate::tasks::Pool;
+    use crate::ui::imageload::Images;
+    use std::sync::Arc;
+
+    /// A player that records the styles it is given; `renders` false = the TV's AVPlay.
+    struct Rec {
+        inner: NullPlayer,
+        renders: bool,
+        styles: Vec<SubStyle>,
+    }
+    impl Player for Rec {
+        fn load(&mut self, req: &PlayRequest) {
+            self.inner.load(req)
+        }
+        fn set_paused(&mut self, p: bool) {
+            self.inner.set_paused(p)
+        }
+        fn seek(&mut self, secs: f64) {
+            self.inner.seek(secs)
+        }
+        fn set_audio(&mut self, _: Option<TrackRef>) {}
+        fn set_subtitle(&mut self, _: Option<TrackRef>) {}
+        fn renders_subtitles(&self) -> bool {
+            self.renders
+        }
+        fn set_sub_style(&mut self, style: &SubStyle) {
+            self.styles.push(style.clone());
+        }
+        fn stop(&mut self) {
+            self.inner.stop()
+        }
+        fn state(&self) -> PlayerState {
+            self.inner.state()
+        }
+        fn position(&self) -> f64 {
+            self.inner.position()
+        }
+        fn duration(&self) -> Option<f64> {
+            None
+        }
+        fn draw_video(&mut self, _: u32, _: u32) {}
+    }
+
+    struct World {
+        theme: Theme,
+        client: Option<Client>,
+        settings: Settings,
+        store: Arc<dyn Storage>,
+        mem: Arc<MemStorage>,
+        tasks: Pool,
+        images: Images,
+        player: Rec,
+        opts: AppOptions,
+        overrides: std::collections::HashMap<String, String>,
+        changed: Vec<String>,
+        undo: Option<crate::app::PosterUndo>,
+        keys: std::collections::HashSet<Key>,
+        shell: ShellRequests,
+        nav: Vec<crate::app::Nav>,
+    }
+
+    fn world(renders: bool) -> World {
+        let mem = Arc::new(MemStorage::default());
+        let d = DeviceInfo { name: "t".into(), id: "d".into(), version: "0".into() };
+        let s = Session { user_id: "u".into(), user_name: "t".into(), token: "tok".into() };
+        World {
+            theme: Theme::placeholder(),
+            client: Some(Client::with_session("http://h:8096", d, s)),
+            settings: Settings::load(mem.as_ref()),
+            store: mem.clone(),
+            mem,
+            tasks: Pool::new(1),
+            images: Images::new(None),
+            player: Rec { inner: NullPlayer::default(), renders, styles: vec![] },
+            opts: AppOptions::default(),
+            overrides: Default::default(),
+            changed: vec![],
+            undo: None,
+            keys: Default::default(),
+            shell: ShellRequests::default(),
+            nav: vec![],
+        }
+    }
+
+    impl World {
+        fn cx(&mut self) -> Cx<'_> {
+            Cx {
+                theme: &self.theme,
+                client: &mut self.client,
+                settings: &mut self.settings,
+                store: &self.store,
+                tasks: &self.tasks,
+                images: &mut self.images,
+                player: &mut self.player,
+                opts: &self.opts,
+                admin: false,
+                poster_overrides: &mut self.overrides,
+                poster_changed: &mut self.changed,
+                poster_gen: 0,
+                undo: &mut self.undo,
+                keys_down: &self.keys,
+                shell: &mut self.shell,
+                now: 0.0,
+                sidebar: false,
+                screen_id: 1,
+                nav: &mut self.nav,
+            }
+        }
+        /// The settings as a later run of the app would read them back from storage.
+        fn reloaded(&self) -> Settings {
+            Settings::load(self.mem.as_ref())
+        }
+    }
+
+    fn plan() -> PlaybackPlan {
+        let info: PlaybackInfo = serde_json::from_str(
+            &std::fs::read_to_string(format!("{}/tests/fixtures/playbackinfo.json", env!("CARGO_MANIFEST_DIR")))
+                .unwrap(),
+        )
+        .unwrap();
+        PlaybackPlan { info, transcoding_url: None, source_bitrate: None }
+    }
+
+    #[test]
+    fn player_size_pick_saves_setting() {
+        let mut w = world(true);
+        let mut p = new_player(Item::default(), PlayOptions::default());
+        p.sub_choice(&mut w.cx(), G_SUB_SIZE, 3);
+        assert_eq!(w.settings.subtitles.style.size, SubSize::ExtraLarge);
+        assert_eq!(w.reloaded().subtitles.style.size, SubSize::ExtraLarge, "written to storage in the same frame");
+    }
+
+    #[test]
+    fn player_style_rows_all_save() {
+        let mut w = world(true);
+        let mut p = new_player(Item::default(), PlayOptions::default());
+        for (g, i) in [(G_SUB_FONT, 1), (G_SUB_WEIGHT, 1), (G_SUB_SHADOW, 1), (G_SUB_TEXT, 2), (G_SUB_BACK, 2)] {
+            p.sub_choice(&mut w.cx(), g, i);
+        }
+        let s = w.reloaded().subtitles.style;
+        assert_eq!(s.font, SubFont::ALL[1]);
+        assert_eq!(s.weight, SubWeight::ALL[1]);
+        assert_eq!(s.shadow, SubShadow::ALL[1]);
+        assert_eq!(s.text_colour, SUB_COLOURS[2].1);
+        assert_eq!(s.back_colour.as_deref(), Some(SUB_COLOURS[1].1));
+    }
+
+    #[test]
+    fn player_position_saves_unlifted_value() {
+        let mut w = world(true);
+        let mut p = new_player(Item::default(), PlayOptions::default());
+        p.osd_visible = true; // the OSD is up, so mpv gets a lifted position
+        let before = p.sub_style.position;
+        p.sub_choice(&mut w.cx(), G_SUB_POS, 1);
+        let want = before + 5.0;
+        assert_eq!(w.reloaded().subtitles.style.position, want);
+        let sent = w.player.styles.last().unwrap().position;
+        assert!(sent <= want, "mpv got the OSD-lifted position {sent}, the setting kept {want}");
+    }
+
+    #[test]
+    fn offset_and_secondary_not_saved() {
+        let mut w = world(true);
+        let mut p = new_player(Item::default(), PlayOptions::default());
+        p.sub_choice(&mut w.cx(), G_SUB_OFFSET, 1);
+        p.sub_choice(&mut w.cx(), G_SEC, 0);
+        assert!(w.mem.files.lock().unwrap().is_empty(), "nothing was written to storage");
+        assert_eq!(w.settings.subtitles.style, SubStyle::default());
+        assert!((p.sub_delay - 0.1).abs() < 1e-9, "the offset still applies for this playback");
+    }
+
+    #[test]
+    fn next_playback_starts_with_saved_style() {
+        let mut w = world(true);
+        let mut first = new_player(Item::default(), PlayOptions::default());
+        first.sub_choice(&mut w.cx(), G_SUB_SIZE, 3);
+        // a later film, from a fresh screen, reading what was saved
+        w.settings = w.reloaded();
+        let mut next = new_player(Item::default(), PlayOptions::default());
+        let item = Item { id: "i1".into(), ..Default::default() };
+        next.start_playback(&mut w.cx(), item, plan(), PlayOptions::default());
+        assert_eq!(next.sub_style.size, SubSize::ExtraLarge);
+        assert_eq!(w.player.styles.last().unwrap().size, SubSize::ExtraLarge, "and the player was given it");
+    }
+
+    #[test]
+    fn tv_style_rows_do_nothing_and_are_not_saved() {
+        let mut w = world(false);
+        let mut p = new_player(Item::default(), PlayOptions::default());
+        p.sub_choice(&mut w.cx(), G_SUB_SIZE, 3);
+        p.sub_choice(&mut w.cx(), G_SUB_POS, 1);
+        assert_eq!(p.sub_style, SubStyle::default());
+        assert!(w.mem.files.lock().unwrap().is_empty());
+    }
 }

@@ -3,11 +3,10 @@
 use super::parts;
 use crate::api::{Client, PublicInfo, Result};
 use crate::app::{Cx, Screen};
-use crate::discovery::{discover, DiscoveredServer};
+use crate::discovery::{search_lan, DiscoveredServer, Report};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
 use crate::settings::ServerEntry;
-use std::time::Duration;
 
 const G_SAVED: usize = 0;
 const G_FOUND: usize = 1;
@@ -23,6 +22,10 @@ pub struct Connect {
     focus: Focus,
     groups: Vec<Group>,
     started: bool,
+    /// C3: the saved server (Id) that didn't answer at its saved address. Discovery focuses it in the list; nothing is
+    /// sent to a new address until the user presses it, and then its public Id is checked before the saved session
+    /// (token) is used there (a discovery reply's Id is public, so anyone could answer with it).
+    follow: Option<String>,
 }
 
 pub fn screen(default_address: Option<String>) -> Box<dyn Screen> {
@@ -35,10 +38,52 @@ pub fn screen(default_address: Option<String>) -> Box<dyn Screen> {
         focus: Focus { group: G_FIELD, index: 0 },
         groups: vec![],
         started: false,
+        follow: None,
     })
 }
 
+/// C3: the last server didn't answer: look for it on the network and focus it when it is found (one press
+/// continues; see `Connect::follow`).
+pub fn refind(server_id: String) -> Box<dyn Screen> {
+    Box::new(Connect {
+        address: String::new(),
+        found: vec![],
+        searching: true,
+        busy: false,
+        error: None,
+        focus: Focus { group: G_FIELD, index: 0 },
+        groups: vec![],
+        started: false,
+        follow: Some(server_id),
+    })
+}
+
+/// C3: same, with servers a search already found (no second search).
+pub fn refind_with(server_id: String, found: Vec<DiscoveredServer>) -> Box<dyn Screen> {
+    let mut c = Connect {
+        address: String::new(),
+        found,
+        searching: false,
+        busy: false,
+        error: None,
+        focus: Focus { group: G_FIELD, index: 0 },
+        groups: vec![],
+        started: true,
+        follow: Some(server_id),
+    };
+    c.focus_followed();
+    Box::new(c)
+}
+
 impl Connect {
+    /// C3: focus the followed server in the found list, if it is there.
+    fn focus_followed(&mut self) {
+        let Some(id) = &self.follow else { return };
+        if let Some(i) = self.found.iter().position(|s| &s.id == id) {
+            self.focus = Focus { group: G_FOUND, index: i };
+        }
+    }
+
     fn connect(&mut self, cx: &mut Cx, address: String) {
         if self.busy {
             return;
@@ -106,11 +151,12 @@ impl Screen for Connect {
         match tag {
             "discover" => {
                 self.searching = false;
-                if let Ok(v) = payload.downcast::<Vec<DiscoveredServer>>() {
-                    self.found = *v;
+                if let Ok(r) = payload.downcast::<Report>() {
+                    self.found = r.servers();
                     if !self.found.is_empty() && self.address.is_empty() {
                         self.focus = Focus { group: G_FOUND, index: 0 };
                     }
+                    self.focus_followed();
                 }
             }
             "connect" => {
@@ -118,6 +164,19 @@ impl Screen for Connect {
                 let Ok(r) = payload.downcast::<Result<(Client, PublicInfo)>>() else { return };
                 match *r {
                     Ok((client, info)) => {
+                        // C3: the user picked the server we were looking for and its public info has the same Id:
+                        // carry on with the saved session at its new address (Home verifies it).
+                        let saved = cx.settings.servers.iter().find(|e| e.id == info.id).cloned();
+                        if let Some(mut entry) = saved.filter(|_| self.follow.as_deref() == Some(info.id.as_str())) {
+                            if let Some(session) = entry.session.clone() {
+                                entry.address = client.base.clone();
+                                cx.settings.remember(entry);
+                                cx.save_settings();
+                                *cx.client = Some(Client::with_session(&client.base, cx.device(), session));
+                                cx.reset(super::home::screen(true));
+                                return;
+                            }
+                        }
                         cx.settings.remember(ServerEntry {
                             id: info.id.clone(),
                             name: info.server_name.clone(),
@@ -138,7 +197,8 @@ impl Screen for Connect {
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
         if !self.started {
             self.started = true;
-            cx.spawn("discover", || discover(Duration::from_secs(2)));
+            let last = cx.settings.last().map(|e| e.address.clone());
+            cx.spawn("discover", move || search_lan(last.as_deref()));
         }
         let t = cx.theme;
         let mut saved_xs = vec![];
@@ -167,7 +227,11 @@ impl Screen for Connect {
                 }
                 ui.add_space(t.gap / 2.0);
             }
-            if self.searching {
+            if self.searching && self.follow.is_some() {
+                let name = cx.settings.last().map(|e| e.name.clone()).filter(|n| !n.is_empty());
+                let name = name.unwrap_or_else(|| "the server".into());
+                parts::muted(ui, t, &format!("Can't reach {name}. Looking for it on your network…"));
+            } else if self.searching {
                 parts::muted(ui, t, "Looking for servers on your network…");
             } else if self.found.is_empty() {
                 parts::muted(ui, t, "No servers found on your network. Type the address below.");

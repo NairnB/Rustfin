@@ -1,0 +1,119 @@
+# C3-POLISH #1: a playlist tile whose poster cannot be shown re-lays out the posters it has. Same route as fix3-mosaic
+# (viewer makes a playlist of "Amber Tide" + "Star Drift - Iron Tide", deletes it at the end; nothing else changes).
+# The server's data stays as it is: `image-stub` makes the app itself treat Amber Tide's poster as hung, then broken.
+#   c3-mosaic-loading   Amber Tide still loading: grey left half beside Iron Tide (before the 6 s give-up)
+#   c3-mosaic-stalled   still not loaded after 6 s: Iron Tide alone fills the whole tile (no grey cell)
+#   c3-mosaic-failed    Amber Tide's poster fails instead: the same, Iron Tide fills the tile
+#   c3-mosaic-restored  stubs off: both posters side by side again
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+# Home top bar → Search → "amber" → the film page
+key search
+wait-screen search
+idle
+type amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+# Add to… → New playlist… → name it after the film → Create
+key right 10
+key left 2
+key enter
+idle
+wait 300
+# FIX-3 A1/A3: Add to… opens lit on its first row; viewer owns no playlists yet, so that row is "New playlist…"
+key enter
+wait-screen new-playlist
+idle
+# FIX-3 A4: no "Use …" pill any more; type the film's name, Enter creates
+type Amber Tide
+idle
+key enter
+wait-screen playlist
+wait 800
+idle
+key back
+wait-screen movie
+key back
+wait-screen search
+key back
+wait-screen home
+idle
+# second film: "iron tide" → Add to… → Add to playlist… → the new playlist
+key search
+wait-screen search
+idle
+type iron tide
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key right 10
+key left 2
+key enter
+idle
+wait 300
+# the first row ("Add to playlist…") is lit → the new playlist is the only one listed
+key enter
+idle
+key enter
+wait 1500
+idle
+key back
+wait-screen search
+key back
+wait-screen home
+idle
+image-stub stall /Items/d3c77e19990ddca57a1a7b862f5dbdd4/Images/Primary
+click 130 497
+wait-screen playlists
+wait 2500
+idle
+shot c3-mosaic-loading
+wait 5000
+idle
+shot c3-mosaic-stalled
+image-stub clear
+image-stub fail /Items/d3c77e19990ddca57a1a7b862f5dbdd4/Images/Primary
+wait 300
+idle
+shot c3-mosaic-failed
+image-stub clear
+wait 1500
+idle
+shot c3-mosaic-restored
+key enter
+wait-screen playlist
+wait 800
+idle
+key up 10
+idle
+key right
+idle
+key enter
+idle
+key right
+idle
+key enter
+wait 1500
+idle
+quit
+# If a failed run left "AAA tour list" (or "Amber Tide") on jf-test, run tools/clean-tour-playlists.sh first (the tour assumes no playlists).

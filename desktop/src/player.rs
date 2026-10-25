@@ -108,19 +108,26 @@ impl MpvPlayer {
     fn apply_tracks(&mut self) {
         let Some(m) = &self.mpv else { return };
         let Some(req) = &self.req else { return };
-        for s in &req.external_subs {
-            m.command(&["sub-add", &s.url, "auto", &s.title]);
+        for c in track_commands(req) {
+            let c: Vec<&str> = c.iter().map(String::as_str).collect();
+            m.command(&c);
         }
-        let aid = tracks::aid(req, req.audio);
-        let sid = tracks::sid(req, req.subtitle);
-        m.command(&["set", "aid", &aid]);
-        m.command(&["set", "sid", &sid]);
     }
 
     /// Read a raw mpv property (the playtest hook uses this for track state).
     pub fn get_prop(&self, name: &str) -> Option<String> {
         self.mpv.as_ref().and_then(|m| m.get(name))
     }
+}
+
+/// The mpv commands that load the request's external subs and select its audio and subtitle. A subtitle of None is
+/// `sid no`, so mpv never falls back to the file's own default-flagged track (FIX-3 S2).
+fn track_commands(req: &PlayRequest) -> Vec<Vec<String>> {
+    let mut v: Vec<Vec<String>> =
+        req.external_subs.iter().map(|s| ["sub-add", &s.url, "auto", &s.title].map(String::from).to_vec()).collect();
+    v.push(vec!["set".into(), "aid".into(), tracks::aid(req, req.audio)]);
+    v.push(vec!["set".into(), "sid".into(), tracks::sid(req, req.subtitle)]);
+    v
 }
 
 impl Player for MpvPlayer {
@@ -258,5 +265,26 @@ impl Player for MpvPlayer {
             dropped_frames: num("frame-drop-count").map(|v| v as i64),
             buffer_secs: num("demuxer-cache-duration"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_tracks_off_sets_sid_no() {
+        let req = PlayRequest {
+            audio_indexes: vec![2],
+            subtitle_indexes: vec![4],
+            audio: Some(2),
+            subtitle: None,
+            ..Default::default()
+        };
+        let cmds = track_commands(&req);
+        assert_eq!(cmds.last().unwrap(), &["set", "sid", "no"]);
+        assert!(!cmds.iter().any(|c| c.iter().any(|a| a == "auto")));
+        let req = PlayRequest { subtitle: Some(4), ..req };
+        assert_eq!(track_commands(&req).last().unwrap(), &["set", "sid", "1"]);
     }
 }

@@ -1,21 +1,22 @@
 """The TV's on-screen keyboard as a route generator (core/src/ui/keyboard.rs, UXP5). Stdlib only.
 
 A task route line `osk <text>` (or `osk-clear <text>`: press clear first) becomes the shortest remote presses that
-type <text> on a freshly opened keyboard and close it with Back. Lower case, digits and the keyboard's symbols only
+type <text> on a freshly opened keyboard and close it with Back. Lower case, digits (on the letter layer) and the keyboard's symbols only
 (a capital needs shift: not worth the presses; the checks compare names without case).
 """
 import collections
 
-LETTERS = ["abcdefghij", "klmnopqrst", "uvwxyz.-_@"]
-SYMBOLS = ["1234567890", ":/.-_@?&=+", "!#$%^*()~,"]
-SIDE = [("shift", 1.5), ("layer", 1.5), ("clear", 1.5)]  # the left column: shift / 123 / clear (two presses from "a")
+LETTERS = ["1234567890", "abcdefghij", "klmnopqrst", "uvwxyz.-_@"]  # FIX-4: the digit row is on both layers
+SYMBOLS = ["1234567890", ":/.-_@?&=+", "!#$%^*()~,", "[]{}<>|;'\""]
+SIDE = [("shift", 1.5), ("layer", 1.5), ("clear", 1.5)]  # the left column of the rows under the digits (shift / 123 near "a")
 BOTTOM = [("space", 4.5), ("delete", 3.5), ("done", 3.5)]
 MAX_HELD = 4  # five or more repeated Left/Right inside 0.2 s make the real keyboard skip keys
 
 
 def _rows(symbols):
     src = SYMBOLS if symbols else LETTERS
-    return [[side] + [(c, 1.0) for c in r] for side, r in zip(SIDE, src)] + [list(BOTTOM)]
+    digits = [[(c, 1.15) for c in src[0]]]  # the digit row has no side key: its 10 keys span the full width
+    return digits + [[side] + [(c, 1.0) for c in r] for side, r in zip(SIDE, src[1:])] + [list(BOTTOM)]
 
 
 def _centre(row, col):
@@ -56,7 +57,7 @@ def _find(rows, ch):
 
 def presses(text, clear=False):
     """The key names (Left/Right/Up/Down/Enter/Back) that type `text`, from a fresh keyboard, then close it."""
-    symbols, focus, out = False, (0, 1, 2.0), []  # opens on "a" (column 0 is the shift key)
+    symbols, focus, out = False, (1, 1, 2.0), []  # opens on "a" (row 0 is the digits; column 0 the side keys)
 
     def go(target, rows):
         nonlocal focus
@@ -65,12 +66,12 @@ def presses(text, clear=False):
         out.append("Enter")
 
     if clear:
-        go((2, 0), _rows(symbols))
+        go((3, 0), _rows(symbols))
     for ch in text:
         rows = _rows(symbols)
         spot = _find(rows, ch)
         if spot is None:  # on the other layer: press 123 / abc, then look again
-            go((1, 0), rows)
+            go((2, 0), rows)
             symbols = not symbols
             rows = _rows(symbols)
             spot = _find(rows, ch)

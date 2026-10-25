@@ -1,0 +1,29 @@
+# args: --tv
+# FIX-5 hero-focus (FRICTION-6 #1): on TV Home at start Play wears the white focus ring and is lifted, the bar has only
+# a faint underline; after Right "•••" has the ring; after Up the bar holds focus.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 800
+shot fix5-herofocus-start
+key right
+idle
+wait 300
+shot fix5-herofocus-more
+key up
+idle
+wait 300
+shot fix5-herofocus-bar
+quit

@@ -506,7 +506,7 @@ impl PosterFlow {
         Some(self.full.get(&it.id).unwrap_or(it))
     }
 
-    fn init_tracks(&mut self) {
+    fn init_tracks(&mut self, cx: &Cx) {
         let Some(it) = self.full.get(&self.back.id) else { return };
         if self.back.tracks_for.as_deref() == Some(it.id.as_str()) {
             return;
@@ -515,7 +515,10 @@ impl PosterFlow {
         let first_audio =
             ms.and_then(|m| m.media_streams.iter().find(|s| s.kind == StreamKind::Audio)).map(|s| s.index);
         self.back.audio = ms.and_then(|m| m.default_audio_stream_index).or(first_audio);
-        self.back.subtitle = Some(ms.and_then(|m| m.default_subtitle_stream_index));
+        let remembered = cx.remembered_subtitle(it);
+        self.back.subtitle = Some(ms.and_then(|m| {
+            crate::playreq::default_subtitle(&cx.settings.subtitles, m, self.back.audio, remembered.as_ref())
+        }));
         self.back.tracks_for = Some(it.id.clone());
     }
 
@@ -586,7 +589,12 @@ impl PosterFlow {
                 let mut v: Vec<Option<i32>> = vec![None];
                 v.extend(self.streams(StreamKind::Subtitle).into_iter().map(|(_, i)| Some(i)));
                 let cur = v.iter().position(|&i| Some(i) == self.back.subtitle).unwrap_or(0) as i32;
-                self.back.subtitle = Some(v[(cur + dir).rem_euclid(v.len() as i32) as usize]);
+                let pick = v[(cur + dir).rem_euclid(v.len() as i32) as usize];
+                self.back.subtitle = Some(pick);
+                // FIX-4: the viewer's pick is remembered like one on the film page.
+                if let Some(it) = self.full.get(&self.back.id) {
+                    cx.remember_subtitle(it, it.media_sources.first(), pick);
+                }
             }
             Row::Season(_) => {
                 let n = self.back.seasons.as_ref().map(|s| s.len()).unwrap_or(0) as i32;
@@ -819,7 +827,7 @@ impl PosterFlow {
     /// control and episode rows (show). Every row shares the same column and the focused one is the white plate.
     fn draw_back(&mut self, ui: &mut egui::Ui, cx: &mut Cx, r: Rect) {
         let t = cx.theme;
-        self.init_tracks();
+        self.init_tracks(cx);
         let Some(it) = self.back_item().cloned() else { return };
         let ppp = ui.ctx().pixels_per_point();
         let p = ui.painter().clone();
@@ -894,7 +902,7 @@ impl PosterFlow {
                     for (k, (i, label)) in plays.iter().enumerate() {
                         let focused = self.back.focus == *i;
                         let resp = if k == 0 {
-                            widgets::play_pill(ui, t, label, focused)
+                            widgets::play_pill_for(ui, t, label, focused, parts::is_tv(ui.ctx()))
                         } else {
                             widgets::pill_button(ui, t, label, focused, false)
                         };
@@ -1417,5 +1425,39 @@ mod tests {
         assert!(inside(&q, pos2(5.0, 5.0)));
         assert!(!inside(&q, pos2(11.0, 5.0)));
         assert!(!inside(&q, pos2(9.0, 1.0)));
+    }
+}
+
+/// FIX-4: a subtitle picked on the back of a cover is remembered like one on the film page.
+#[cfg(test)]
+mod fix4_tests {
+    use super::*;
+    use crate::app::test_support::World;
+
+    // fixture: 2 eng audio (default), 3 fre audio, 0 ger external sub, 4 eng embedded sub
+    fn flipped(w: &mut World) -> PosterFlow {
+        let info: crate::api::PlaybackInfo = serde_json::from_str(
+            &std::fs::read_to_string(format!("{}/tests/fixtures/playbackinfo.json", env!("CARGO_MANIFEST_DIR")))
+                .unwrap(),
+        )
+        .unwrap();
+        let mut it: Item = serde_json::from_str(r#"{"Id":"i","Name":"Film","Type":"Movie"}"#).unwrap();
+        it.media_sources = info.media_sources;
+        let mut f = PosterFlow::new(Src::Fixed, vec![it.clone()], true, 0);
+        f.back.id = it.id.clone();
+        f.full.insert(it.id.clone(), it);
+        w.cx(|cx| f.init_tracks(cx));
+        f
+    }
+
+    #[test]
+    fn a_poster_flow_pick_is_remembered_after_a_restart() {
+        let mut w = World::signed_in(true);
+        let mut f = flipped(&mut w);
+        assert_eq!(f.back.subtitle, Some(None), "eng audio → Off");
+        w.cx(|cx| f.activate(cx, &Row::Subtitles(String::new()), 1));
+        assert_eq!(f.back.subtitle, Some(Some(0)));
+        w.restart();
+        assert_eq!(flipped(&mut w).back.subtitle, Some(Some(0)), "flipped again after a restart: the German sub");
     }
 }

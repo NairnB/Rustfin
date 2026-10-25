@@ -20,6 +20,9 @@ check() {  # check <session> <command…>: one step, must be ok with a JPEG
   [ "$(head -c2 "$jpg" | od -An -tx1 | tr -d ' ')" = ffd8 ] || { echo "FAIL: $s $*: $jpg is not a JPEG"; fail=1; return; }
   echo "$s: $* -> $(basename "$jpg") ($(stat -c %s "$jpg") bytes)"
 }
+# rig_has_cjk_font: the rig container must have a Japanese font, or libass draws Japanese subtitles as boxes.
+n=$("${RF_RUNNER:-/bin/false}" -n "rfd-$tag-font" -- 'fc-list :lang=ja | wc -l' 2>/dev/null | tail -1)
+case "$n" in ''|*[!0-9]*|0) echo "FAIL: rig_has_cjk_font: fc-list :lang=ja gave '${n:-nothing}'"; fail=1;; *) echo "rig_has_cjk_font: ok ($n fonts)";; esac
 "$RF" start --mode desk --session "$tag-desk" --user viewer --pass view-pass-1 --server $SRV || fail=1
 "$RF" start --mode tv --session "$tag-tv" --user viewer --pass view-pass-1 --server $SRV || fail=1
 if [ $fail = 0 ]; then

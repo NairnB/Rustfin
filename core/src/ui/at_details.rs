@@ -278,7 +278,12 @@ pub fn logo(cx: &mut Cx, ui: &Ui, item: &Item) -> Option<TextureId> {
     let hint: f32 = ui.data_mut(|d| d.get_temp(hint_key)).unwrap_or(1.0);
     let wide = if ninfo.loaded && hint > 1.0 {
         let wurl = cx.client.as_ref()?.logo_url(item, image_width_bucket(cx.theme.hero_logo_w * hint, ppp))?;
-        cx.images.get(&wurl).map(|wtex| (wtex, logo_pass(cx, ui, &wurl, wtex, hint_key)))
+        match cx.images.get(&wurl) {
+            Some(wtex) => Some((wtex, logo_pass(cx, ui, &wurl, wtex, hint_key))),
+            // the wide image failed to load or decode: keep the cropped narrow logo now, not after the wait
+            None if !cx.images.usable(&wurl) => Some((ntex, LogoInfo { loaded: true, ..LogoInfo::default() })),
+            None => None,
+        }
     } else {
         None
     };
@@ -336,7 +341,7 @@ fn logo_pass(cx: &mut Cx, ui: &Ui, url: &str, tex: TextureId, hint_key: Id) -> L
         std::thread::spawn(move || {
             let bytes = c.get_bytes(&url);
             let mut info = bytes.as_ref().map(|b| logo_info(b)).unwrap_or_default();
-            info.ok = bytes.is_ok();
+            info.ok &= bytes.is_ok();
             if let Some(img) = bytes.as_ref().ok().filter(|_| info.dark).and_then(|b| logo_halo_image(b, info.bounds)) {
                 let h = ctx.load_texture("logo-halo", img, egui::TextureOptions::LINEAR);
                 ctx.data_mut(|d| d.insert_temp(Id::new(("at-logo-halo", tex)), h));
@@ -358,6 +363,7 @@ fn logo_pass(cx: &mut Cx, ui: &Ui, url: &str, tex: TextureId, hint_key: Id) -> L
 const LOGO_MAX_FETCH_SCALE: f32 = 4.0;
 
 /// What one pass over a logo's pixels finds: whether it is too dark for the hero, and its visible bounds as a UV rect.
+/// `ok` = the bytes were fetched and decoded (`logo_info` sets it; false for the default).
 /// `loaded` is false until the pass has run (the logo is then not drawn, so the title never jumps from uncropped).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LogoInfo {
@@ -409,7 +415,7 @@ pub fn logo_info(bytes: &[u8]) -> LogoInfo {
         dark: sum / weight < 0.25,
         bounds: Rect::from_min_max(pos2(x0 as f32 / fw, y0 as f32 / fh), pos2(x1 as f32 / fw, y1 as f32 / fh)),
         loaded: false,
-        ok: false,
+        ok: true,
     }
 }
 
@@ -731,6 +737,10 @@ pub fn hero_title(ui: &mut Ui, t: &Theme, name: &str, logo: Option<TextureId>) {
         let (rect, _) = ui.allocate_exact_size(boxsz, Sense::hover());
         let hold: bool = ui.data_mut(|d| d.get_temp(Id::new(("at-logo-hold", tex)))).unwrap_or(false);
         if !info.loaded || hold {
+            // not ready to draw yet: the text title stands in the reserved box (never a blank one)
+            let job = text_job(name, t.font_w(t.hero_title_size, Weight::Bold), t.text, t.hero_text_w, 2);
+            let g = ui.fonts(|f| f.layout_job(job));
+            ui.painter().galley(pos2(rect.left(), (rect.bottom() - g.size().y).max(rect.top())), g, t.text);
             return;
         }
         let l = logo_layout(s, &info, boxsz, ui.ctx().pixels_per_point());
@@ -1140,19 +1150,39 @@ pub fn popover(
             if labels.is_empty() {
                 return;
             }
-            egui::ScrollArea::vertical()
+            // D2: on the frame it opens, start with the focused row as the last one in view and as many rows above it
+            // as fit (later focus moves just scroll the row into view).
+            let pass = inner.ctx().cumulative_pass_nr();
+            let seen_id = Id::new(("at-popover-seen", id));
+            let fresh = inner.data(|d| d.get_temp::<u64>(seen_id)).is_none_or(|last| last + 3 < pass);
+            inner.data_mut(|d| d.insert_temp(seen_id, pass));
+            let mut area = egui::ScrollArea::vertical()
                 .id_salt(("at-popover-scroll", id))
                 .max_height(t.menu_max_h)
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .show(&mut inner, |ui| {
-                    for (i, l) in labels.iter().enumerate() {
-                        let r = widgets::pill_button_width(ui, t, l, focus == Some(i), false, w);
-                        if moved && focus == Some(i) {
-                            r.scroll_to_me(None);
-                        }
-                        out.push(r);
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+            if let (true, Some(f)) = (fresh, focus) {
+                let view_h = (labels.len() as f32 * row_h).min(t.menu_max_h);
+                area = area.vertical_scroll_offset(widgets::dropdown_open_offset(f, labels.len(), row_h, view_h));
+            }
+            let scrolled = area.show(&mut inner, |ui| {
+                for (i, l) in labels.iter().enumerate() {
+                    let r = widgets::pill_button_width(ui, t, l, focus == Some(i), false, w);
+                    if moved && !fresh && focus == Some(i) {
+                        r.scroll_to_me(None);
                     }
-                });
+                    out.push(r);
+                }
+            });
+            // FIX-4 #8: a fade and a chevron on each edge that has rows hidden past it.
+            let view = scrolled.inner_rect;
+            let (above, below) =
+                widgets::dropdown_cues(scrolled.state.offset.y, scrolled.content_size.y, view.height());
+            if above {
+                widgets::dropdown_cue(&inner, t, view, true);
+            }
+            if below {
+                widgets::dropdown_cue(&inner, t, view, false);
+            }
         },
     );
     out

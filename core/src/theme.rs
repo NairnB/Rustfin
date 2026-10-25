@@ -229,6 +229,13 @@ pub struct Theme {
     pub osk_key_h: f32,
     pub osk_gap: f32,
     pub osk_text_h: f32,
+    /// FIX-4 #2: key label size, the typed line's size, the focused key's own lift, the gap under the panel, and the
+    /// brightness (0–1) of an unfocused key's text.
+    pub osk_key_text: f32,
+    pub osk_line_text: f32,
+    pub osk_focus_scale: f32,
+    pub osk_bottom: f32,
+    pub osk_dim: f32,
     // ---- Poster picker (PP) ----
     /// Candidate thumbnail size (≥ 220 px wide at 1080p).
     pub pp_thumb_w: f32,
@@ -405,9 +412,14 @@ impl Theme {
             badge_stroke: 1.5,
             group_max_w: 1100.0,
             osk_w: 960.0,
-            osk_key_h: 40.0,
+            osk_key_h: 60.0,
             osk_gap: 6.0,
-            osk_text_h: 44.0,
+            osk_text_h: 64.0,
+            osk_key_text: 26.0,
+            osk_line_text: 40.0,
+            osk_focus_scale: 1.18,
+            osk_bottom: 38.0,
+            osk_dim: 0.75,
             pp_thumb_w: 220.0,
             pp_thumb_h: 330.0,
             pp_preview_w: 360.0,
@@ -475,9 +487,24 @@ impl Theme {
         defs
     }
 
+    /// The palette for a theme choice: Black swaps the background tokens (page and sidebar) for true black.
+    pub fn for_choice(choice: crate::settings::ThemeChoice) -> Theme {
+        let mut t = Theme::placeholder();
+        if choice == crate::settings::ThemeChoice::Black {
+            t.bg = Color32::BLACK;
+            t.sidebar_fill = Color32::BLACK;
+        }
+        t
+    }
+
     /// Applies the theme to egui's own widgets (text fields, scroll bars) so they match.
     pub fn apply(&self, ctx: &egui::Context) {
         ctx.set_fonts(Self::fonts());
+        self.apply_style(ctx);
+    }
+
+    /// The colours and text styles of `apply`, without the fonts (safe to call again when only the palette changed).
+    pub fn apply_style(&self, ctx: &egui::Context) {
         let mut v = egui::Visuals::dark();
         v.panel_fill = self.bg;
         v.window_fill = self.surface;

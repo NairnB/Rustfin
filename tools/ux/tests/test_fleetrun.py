@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import fleetrun as F  # noqa: E402
@@ -126,6 +127,25 @@ class Prompt(unittest.TestCase):
         self.assertNotIn("jellyfin", " ".join(a))
 
 
+class AccountOwner(unittest.TestCase):
+    def test_o3_account_is_owned_and_deletes_only_itself(self):
+        calls = []
+        def fake_sh(args, **kw):
+            calls.append(args[1:])
+            return type("R", (), {"returncode": 0, "stdout": '{"user":"x","pass":"pw"}', "stderr": ""})()
+        with mock.patch.dict(os.environ, {"RF_OWNER": "me"}), mock.patch.object(F, "sh", fake_sh):
+            acc = F.Account("r1-t-desk-0", False)
+            acc.delete()
+        self.assertEqual(acc.name, "fleet-me-r1-t-desk-0")
+        self.assertEqual(calls, [["create", "r1-t-desk-0"], ["delete", "r1-t-desk-0"]])  # no sweep anywhere
+
+    def test_o1_no_owner_no_account(self):
+        env = {k: v for k, v in os.environ.items() if k != "RF_OWNER"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(F, "sh", side_effect=AssertionError("must not run")):
+            with self.assertRaises(RuntimeError):
+                F.Account("s", False)
+
+
 class StartOrder(unittest.TestCase):
     def test_history_is_seeded_before_the_app_starts(self):
         calls = []
@@ -188,6 +208,52 @@ class Counting(unittest.TestCase):
             self.assertIsNone(F.tester_commands("nope", 0))
         finally:
             F.FLEET_HOME = saved
+
+
+class Waits(unittest.TestCase):
+    def test_waits_not_counted_as_steps(self):
+        sent = ["click 1 1", "wait 3000", "key Down 3", "wait 100", "key Enter"]
+        self.assertEqual(F.ideal_steps(sent), 5)  # W1: 1 click + 3 + 1 press; the two waits count 0
+        self.assertEqual(F.ideal_steps(["wait 500"]), 0)
+
+    def test_record_has_waits(self):
+        import tempfile
+        self.assertEqual(F.wait_count(["wait 1", "key Down 3", "wait 2"]), 2)  # W2
+        saved = F.FLEET_HOME
+        try:
+            F.FLEET_HOME = tempfile.mkdtemp()
+            os.makedirs(os.path.join(F.FLEET_HOME, "s"))
+            with open(os.path.join(F.FLEET_HOME, "s", "cmds"), "w") as f:
+                f.write("click 1 1\nwait 100\nwait 100\n")
+            sent = F.tester_commands("s", 0)
+            self.assertEqual((F.ideal_steps(sent), F.wait_count(sent)), (1, 2))
+        finally:
+            F.FLEET_HOME = saved
+
+    def test_summary_shows_old_median_note(self):
+        rs = [rec(ideal=4, steps=4, waits=4, ratio=1.0), rec(ideal=4, steps=4, waits=0, ratio=1.0)]
+        md = F.summarize(rs, 1)
+        self.assertIn("| mode | runs | passed | success % | everyday success % | median steps/ideal (passed runs) | median commands/ideal (rounds 1-2 way) |", md)
+        self.assertIn("Waits are not steps. With waits counted (rounds 1-4 way) the median steps/ideal would be: desk 1.5", md)
+
+    def test_old_median_note_divides_by_the_old_ideal_waits_included(self):
+        # Sintel-like: ideal 4 presses + 1 wait; a tester run of 4 presses + 1 wait scored 1.0 the old way, not 1.25
+        md = F.summarize([rec(ideal=4, ideal_waits=1, steps=4, waits=1, ratio=1.0)], 1)
+        self.assertIn("the median steps/ideal would be: desk 1.0.", md)
+
+    def test_ratio_cmd_keeps_the_rounds_1_2_meaning(self):
+        import threading
+        task = {"id": "x", "goal": "g", "kind": "everyday", "needs_admin": False,
+                "route_desk": ["click 1 1", "wait 1000", "key Down 3"], "route_tv": ["key Enter"]}
+        sent = ["click 1 1", "wait 1000", "key Down 3"]
+        with _Patch(start_session=lambda *a: (None, None, 0), end_session=lambda s, a: None, plan_full=lambda: False,
+                    wait_for_load=lambda: None, run_tester=lambda *a: ("/t", {"result": "pass"}, "", None),
+                    out_lines=lambda s: 3, tester_commands=lambda s, b: sent,
+                    run_checks=lambda *a: {"pass": True, "reason": "ok"}):
+            r = F.test_one(None, task, "desk", 9, 1, threading.Event())
+        self.assertEqual((r["ideal"], r["ideal_waits"], r["steps"], r["waits"]), (4, 1, 4, 1))
+        self.assertEqual(r["ratio"], 1.0)
+        self.assertEqual(r["ratio_cmd"], 0.6)  # 3 commands / (4 presses + 1 wait) = rounds 1-2 way
 
 
 class Seeding(unittest.TestCase):
@@ -261,6 +327,93 @@ def _round(tasks, rdir, resume=False, repeat=True, fn=None, modes=("desk",)):
 
 def _lines(rdir):
     return [json.loads(l) for l in open(os.path.join(rdir, "results.jsonl"))]
+
+
+class Validation(unittest.TestCase):
+    def _jobs(self):
+        return [({"id": "a"}, "desk"), ({"id": "b"}, "tv"), ({"id": "c"}, "tv")]
+
+    def _fake(self, fail_first):
+        import threading
+        calls, live, worst, lock = [], [0], [0], threading.Lock()
+
+        def fake(api, t, m, rnd):
+            k = f"{t['id']}:{m}"
+            with lock:
+                n = calls.count(k)
+                calls.append(k)
+                live[0] += 1
+                worst[0] = max(worst[0], live[0])
+            import time
+            time.sleep(0.02)
+            with lock:
+                live[0] -= 1
+            return {"ok": not (k in fail_first and n < fail_first[k]), "reason": f"x{n}"}  # per-call reason: tests can tell the first failure from the retry
+        return fake, calls, worst
+
+    def test_failed_route_revalidated_once_serially(self):
+        fake, calls, worst = self._fake({"b:tv": 1, "c:tv": 99})
+        known = F.validate_routes(None, self._jobs(), 9, validate=fake)
+        self.assertEqual(calls.count("a:desk"), 1)
+        self.assertEqual(calls.count("b:tv"), 2)
+        self.assertEqual(calls.count("c:tv"), 2)  # once, not more
+        self.assertTrue(known["b:tv"]["ok"])
+        self.assertFalse(known["c:tv"]["ok"])
+        self.assertEqual(calls[3:], ["b:tv", "c:tv"])  # retries come after the parallel pass, one by one
+        self.assertGreaterEqual(worst[0], 1)
+
+    def test_retry_pass_named_in_summary(self):
+        fake, _, _ = self._fake({"b:tv": 1})
+        known = F.validate_routes(None, self._jobs(), 9, validate=fake)
+        self.assertTrue(known["b:tv"]["retry_pass"])
+        self.assertNotIn("retry_pass", known["a:desk"])
+        self.assertIn("passed only on the serial retry: b:tv", F.summarize([], 9, F.retry_notes(known)))
+        self.assertEqual(F.retry_notes({"a:desk": {"ok": True}}), [])
+
+    def test_first_reason_kept_and_notes_limited_to_this_run(self):
+        fake, _, _ = self._fake({"c:tv": 99})
+        known = F.validate_routes(None, self._jobs(), 9, validate=fake)
+        self.assertEqual(known["c:tv"]["first_reason"], "x0")
+        known["old:desk"] = {"ok": True, "retry_pass": True, "first_reason": "old"}  # from an earlier run's routes-ok.json
+        self.assertEqual(F.retry_notes(known, {"a:desk", "c:tv"}), [])
+        self.assertIn("old:desk", F.retry_notes(known)[0])
+
+    def _main(self, fail_first):
+        import tempfile
+        import threading
+        fake, calls, _ = self._fake(fail_first)
+        out = tempfile.mkdtemp()
+        tf = os.path.join(out, "tasks.yaml")
+        with open(tf, "w") as f:
+            f.write("x")
+        tasks = [{"id": i, "kind": "everyday", "route_desk": ["click 1 1"], "route_tv": ["key Enter"]} for i in "ab"]
+        # an earlier run left a retry-pass route that is not in this run
+        with open(os.path.join(out, "routes-ok.json"), "w") as f:
+            json.dump({"old:desk": {"ok": True, "retry_pass": True, "first_reason": "old"}}, f)
+        ran = []
+
+        def test_one(api, t, m, rnd, k, stop):
+            ran.append(f"{t['id']}:{m}")
+            return rec(task=t["id"], mode=m, run=k, session=f"s-{t['id']}-{m}")
+        with _Patch(load_tasks=lambda p: tasks, make_wrapper=lambda: None, validate_one=fake, test_one=test_one), \
+                mock.patch.object(F.jfapi.Api, "admin", classmethod(lambda cls: None)), \
+                mock.patch.object(F.signal, "signal"):
+            F.main(["--round", "9", "--out", out, "--tasks-file", tf])
+        with open(os.path.join(out, "round-9", "summary.md")) as f:
+            return f.read(), calls, ran
+
+    def test_main_retries_and_names_it_in_the_summary(self):
+        summary, calls, ran = self._main({"b:tv": 1})
+        self.assertEqual(calls.count("b:tv"), 2)
+        self.assertIn("passed only on the serial retry: b:tv (first failure: x0)", summary)
+        self.assertNotIn("old:desk", summary)  # an old run's route is not named
+        self.assertIn("b:tv", ran)  # a route that passed on the retry is run
+
+    def test_main_marks_twice_failed_route_bad_with_first_reason(self):
+        summary, calls, ran = self._main({"b:tv": 99})
+        self.assertEqual(calls.count("b:tv"), 2)
+        self.assertIn("b:tv (first failure: x0)", summary)
+        self.assertNotIn("b:tv", ran)
 
 
 class Robust(unittest.TestCase):
@@ -349,6 +502,35 @@ class Robust(unittest.TestCase):
                 F.start_session(None, {"needs_admin": False}, "desk", "s-del")
         self.assertEqual(deleted, [1])
         self.assertNotIn("s-del", F.ACTIVE)
+
+    def test_start_failure_deletes_user_before_clearing_the_session(self):
+        events = []
+
+        class Acc:
+            name, pw = "fleet-s", "p"
+            def __init__(self, session, admin): pass
+            def delete(self): events.append("delete")
+        bad = type("R", (), {"returncode": 1, "stdout": "", "stderr": "overloaded"})()
+        with _Patch(Account=Acc, seed=lambda *a: None, sh=lambda args, **kw: bad, RF_START_RETRY_WAIT=0,
+                    clear_session=lambda s: events.append("clear")):
+            with self.assertRaises(RuntimeError):
+                F.start_session(None, {"needs_admin": False}, "desk", "s-ord")
+        self.assertEqual(events[-2:], ["delete", "clear"])
+
+    def test_clear_session_still_runs_when_the_user_delete_fails(self):
+        events = []
+
+        class Acc:
+            name, pw = "fleet-s", "p"
+            def __init__(self, session, admin): pass
+            def delete(self): raise OSError("server gone")
+        bad = type("R", (), {"returncode": 1, "stdout": "", "stderr": "overloaded"})()
+        with _Patch(Account=Acc, seed=lambda *a: None, sh=lambda args, **kw: bad, RF_START_RETRY_WAIT=0,
+                    clear_session=lambda s: events.append("clear")):
+            with self.assertRaises(OSError):
+                F.start_session(None, {"needs_admin": False}, "desk", "s-ord2")
+        self.assertEqual(events[-1], "clear")
+        self.assertNotIn("s-ord2", F.ACTIVE)
 
     def test_seed_failure_also_deletes_user(self):
         deleted = []
@@ -476,7 +658,7 @@ class Robust(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(home, "s-keep")))
         self.assertEqual(open(os.path.join(home, "s-keep.failed1", "app.log")).read(), "boom")
         self.assertTrue(os.path.isdir(os.path.join(home, "s-keep.failed2")))
-        self.assertTrue(any(c[0] == "pkill" and c[-1].endswith("s-keep/launch.sh") for c in calls))
+        self.assertTrue(any(c[0] == "pkill" and c[-1].endswith("s-keep/") for c in calls))
         self.assertEqual(len([c for c in calls if c[:3] == ["docker", "rm", "-f"]]), 4)  # twice per clear: the launcher may be mid-start
 
     def test_last_start_timeout_clears_the_orphan_launcher(self):

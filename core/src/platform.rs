@@ -321,6 +321,11 @@ pub trait Player {
     fn seek(&mut self, secs: f64);
     fn set_audio(&mut self, track: Option<TrackRef>);
     fn set_subtitle(&mut self, track: Option<TrackRef>);
+    /// FIX-3 tv-subs: whether this backend draws subtitles itself. The TV's AVPlay does not, so there the server
+    /// burns the chosen subtitle into a transcode.
+    fn renders_subtitles(&self) -> bool {
+        true
+    }
     fn stop(&mut self);
     fn state(&self) -> PlayerState;
     fn position(&self) -> f64;

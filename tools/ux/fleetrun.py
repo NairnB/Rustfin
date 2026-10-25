@@ -104,12 +104,19 @@ def expand(obj, uniq):
 
 
 def ideal_steps(route):
-    """Commands in a route; `key NAME N` counts N presses (a tester sends one press per step)."""
+    """Presses in a route; `key NAME N` counts N presses (a tester sends one press per step). `wait` lines count 0."""
     n = 0
     for c in route:
+        if c.split()[:1] == ["wait"]:
+            continue
         m = re.fullmatch(r"key \S+ (\d+)", c.strip())
         n += int(m.group(1)) if m else 1
     return n
+
+
+def wait_count(cmds):
+    """`wait` lines among the commands (not presses: see ideal_steps)."""
+    return sum(1 for c in cmds if c.split()[:1] == ["wait"])
 
 
 def budget(task, mode):
@@ -273,7 +280,11 @@ def tester_commands(session, base):
 
 class Account:
     def __init__(self, session, admin):
-        self.session, self.name, self.pw = session, f"fleet-{session}", None
+        try:
+            self.name = jfapi.fleet_name(session)  # refuses without RF_OWNER, before anything is made
+        except jfapi.ApiError as e:
+            raise RuntimeError(str(e))
+        self.session, self.pw = session, None
         cmd = [os.path.join(HERE, "fleet-user.sh"), "create", session] + (["--admin"] if admin else [])
         r = sh(cmd, timeout=120)
         if r.returncode:
@@ -417,7 +428,8 @@ def clear_session(session):
             for again in (False, True):  # twice: a launcher that had just exec'd its runner has no container to remove yet
                 if again:
                     _sleep(CLEAR_RECHECK_WAIT)
-                subprocess.run(["pkill", "-f", os.path.join(d, "launch.sh")], capture_output=True, timeout=30)
+                # the session dir + "/" matches launch.sh and the runner it exec'd into (whose command line no longer names launch.sh)
+                subprocess.run(["pkill", "-f", os.path.join(d, "")], capture_output=True, timeout=30)
                 subprocess.run(["docker", "rm", "-f", f"rfd-{session}"], capture_output=True, timeout=60)
         except (subprocess.TimeoutExpired, OSError):
             pass
@@ -468,9 +480,11 @@ def start_session(api, task, mode, session):
         return acc, device_id_of(api, uid), base
     except BaseException as e:
         try:
-            if isinstance(e, RigError):
-                clear_session(session)  # the last start may have timed out: kill its launcher so no container appears later
-            acc.delete()
+            try:
+                acc.delete()  # first: clear_session waits, and the app must not stay signed in as a user that is going
+            finally:
+                if isinstance(e, RigError):
+                    clear_session(session)  # the last start may have timed out: kill its launcher so no container appears later
         finally:
             with ACTIVE_LOCK:
                 ACTIVE.pop(session, None)
@@ -531,6 +545,33 @@ def validate_one(api, task0, mode, rnd):
         return {"ok": False, "reason": f"{type(e).__name__}: {e}"}
     finally:
         end_session(session, acc)
+
+
+def validate_routes(api, jobs, rnd, validate=None):
+    """Validate every (task, mode) in parallel; each route that fails is re-validated once, alone, before it counts as bad.
+    A route that passes only on the retry carries retry_pass=True."""
+    validate = validate or validate_one
+    known = {}
+    with cf.ThreadPoolExecutor(MAX_SESSIONS) as ex:
+        futs = {ex.submit(validate, api, t, m, rnd): (t, m) for t, m in jobs}
+        for f in cf.as_completed(futs):
+            t, m = futs[f]
+            known[f"{t['id']}:{m}"] = f.result()
+    for t, m in jobs:
+        k = f"{t['id']}:{m}"
+        if not known[k].get("ok"):
+            first = known[k].get("reason")
+            r = dict(validate(api, t, m, rnd), first_reason=first)  # the first failure is the clue to an app fault
+            if r.get("ok"):
+                r["retry_pass"] = True
+            known[k] = r
+    return known
+
+
+def retry_notes(known, keys=None):
+    """Routes that passed only on the serial retry, with the reason they first failed. keys limits it to this run's routes."""
+    retried = sorted(k for k, v in known.items() if v.get("retry_pass") and (keys is None or k in keys))
+    return [f"{len(retried)} routes passed only on the serial retry: " + ", ".join(f"{k} (first failure: {known[k].get('first_reason')})" for k in retried)] if retried else []
 
 
 def tester_argv(session):
@@ -597,6 +638,7 @@ def test_one(api, task0, mode, rnd, k, stop_event):
     task = expand(task0, uniq)
     ideal = ideal_steps(task["route_" + mode])
     rec = {"task": task["id"], "mode": mode, "kind": task["kind"], "run": k, "session": session, "ideal": ideal,
+           "ideal_waits": wait_count(task["route_" + mode]),
            "ideal_commands": len(task["route_" + mode]), "budget": budget(task, mode),
            "shots": os.path.join(FLEET_HOME, session, "shots")}
     if stop_event.is_set() or plan_full():
@@ -610,13 +652,15 @@ def test_one(api, task0, mode, rnd, k, stop_event):
         tpath, tj, last, err = run_tester(task, mode, session)
         commands = max(out_lines(session) - base, 0)
         sent = tester_commands(session, base)
-        steps = ideal_steps(sent) if sent is not None else commands  # presses, counted like the ideal (`key X n` = n)
+        steps = ideal_steps(sent) if sent is not None else commands  # presses, counted like the ideal (`key X n` = n; waits 0)
+        waits = wait_count(sent) if sent is not None else 0
+        old_ideal = ideal + rec["ideal_waits"]
         res = run_checks(api, acc, task, session, t0, dev, (tj or {}).get("answer", "") or last)
         sc = scores_of(tj)
         rec.update(claim=(tj or {}).get("result", "no-json"), claimed_steps=(tj or {}).get("steps"), notes=(tj or {}).get("notes", ""),
-                   check=res, steps=steps, ratio=round(steps / ideal, 2) if ideal else None,
-                   # rounds 1-2 compared tester commands with ideal presses: kept so round 3 compares both ways
-                   commands=commands, ratio_cmd=round(commands / ideal, 2) if ideal else None,
+                   check=res, steps=steps, waits=waits, ratio=round(steps / ideal, 2) if ideal else None,
+                   # rounds 1-2 compared tester commands with the ideal's commands (its waits counted): kept so round 3 compares both ways
+                   commands=commands, ratio_cmd=round(commands / old_ideal, 2) if old_ideal else None,
                    scores=[{"screen": a, "score": b, "why": c} for a, b, c in sc], transcript=tpath)
         if err:
             rec["error"] = err
@@ -651,7 +695,7 @@ def summarize(records, rnd, notes=()):
     if rig:
         L += [f"**{len(rig)} runs hit a rig error (the driver or the app never came up, e.g. a busy host or an app crash before its command pipe opened; retried and re-queued): left out of the numbers below. Look at: "
               + ", ".join(f"{r['task']}/{r['mode']} (session {r['session']})" for r in rig) + "**", ""]
-    L += ["## Success", "", "Steps are presses on both sides (`key X n` = n). The last column is the rounds 1-2 measure: tester commands / ideal presses.", "",
+    L += ["## Success", "", "Steps are presses on both sides (`key X n` = n). The last column is the rounds 1-2 measure: tester commands / ideal commands (waits counted on both sides).", "",
           "| mode | runs | passed | success % | everyday success % | median steps/ideal (passed runs) | median commands/ideal (rounds 1-2 way) |",
           "|---|---|---|---|---|---|---|"]
     for m in MODES:
@@ -666,6 +710,14 @@ def summarize(records, rnd, notes=()):
         L.append(f"| {m} | {len(rs)} | {len(ok)} | {100 * len(ok) // len(rs)} | "
                  f"{(100 * len(evok) // len(ev)) if ev else '-'} | {statistics.median(ratios) if ratios else '-'} | "
                  f"{statistics.median(cratios) if cratios else '-'} |")
+    old = []
+    for m in MODES:
+        v = [round((r["steps"] + r.get("waits", 0)) / (r["ideal"] + r.get("ideal_waits", 0)), 2) for r in ran
+             if r["mode"] == m and r["check"]["pass"] and r.get("ideal") and r.get("steps") is not None]
+        if v:
+            old.append(f"{m} {statistics.median(v)}")
+    if old:
+        L += ["", "Waits are not steps. With waits counted (rounds 1-4 way) the median steps/ideal would be: " + ", ".join(old) + "."]
     by = {}
     for r in ran:
         for s in r.get("scores", []):
@@ -810,16 +862,14 @@ def main(argv=None):
         known = _jload(ok_path)
     else:
         known = _jload(ok_path) if os.path.exists(ok_path) else {}
-        with cf.ThreadPoolExecutor(MAX_SESSIONS) as ex:
-            futs = {ex.submit(validate_one, api, t, m, a.round): (t["id"], m) for t, m in jobs_from(tasks, modes)}
-            for f in cf.as_completed(futs):
-                known[f"{futs[f][0]}:{futs[f][1]}"] = f.result()
+        known.update(validate_routes(api, jobs_from(tasks, modes), a.round))
         with open(ok_path, "w") as f:
             json.dump(known, f, indent=1, sort_keys=True)
     bad_routes = [k for t, m in jobs_from(tasks, modes) for k in [f"{t['id']}:{m}"] if not known.get(k, {}).get("ok")]
     notes = []
+    notes += retry_notes(known, {f"{t['id']}:{m}" for t, m in jobs_from(tasks, modes)})
     if bad_routes:
-        notes.append(f"{len(bad_routes)} routes did not validate ({'run anyway' if a.force_invalid else 'skipped'}): " + ", ".join(bad_routes))
+        notes.append(f"{len(bad_routes)} routes did not validate ({'run anyway' if a.force_invalid else 'skipped'}): " + ", ".join(f"{k} (first failure: {known.get(k, {}).get('first_reason') or known.get(k, {}).get('reason')})" for k in bad_routes))
         print("routes not ok:", ", ".join(bad_routes), file=sys.stderr)
 
     todo = [(t, m) for t, m in jobs_from(tasks, modes) if a.force_invalid or f"{t['id']}:{m}" not in bad_routes]

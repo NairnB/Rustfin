@@ -259,8 +259,15 @@ impl Screen for SignIn {
         match tag {
             "info" => {
                 if let Ok(v) = payload.downcast::<Result<PublicInfo>>() {
-                    if let Ok(info) = *v {
-                        self.info = Some(info);
+                    match *v {
+                        Ok(info) => self.info = Some(info),
+                        // C3: the saved server doesn't answer: look for it (it may have a new address)
+                        Err(ApiError::Network(_)) => {
+                            if let Some(id) = self.server_id(cx) {
+                                cx.reset(super::connect::refind(id));
+                            }
+                        }
+                        Err(_) => {}
                     }
                 }
             }
@@ -365,7 +372,9 @@ impl Screen for SignIn {
             ui.add_space(t.gap / 2.0);
             parts::muted(ui, t, &server);
             ui.add_space(t.gap);
-            if !entries.is_empty() {
+            // FIX-4 (review 4): with the TV keyboard up, the tiles make way so the fields and buttons sit above it.
+            let kb_open = super::keyboard::is_open(ui.ctx());
+            if !entries.is_empty() && !kb_open {
                 parts::centered_row(ui, "users", |ui| {
                     for i in 0..=entries.len() {
                         let focused = self.focus == Focus { group: G_USERS, index: i };
@@ -472,8 +481,13 @@ impl Screen for SignIn {
             None => {}
         }
         let buttons = if self.qc_shown() { 4 } else { 3 };
+        // Tiles hidden under the keyboard: keep last frame's row so Up after it closes still reaches them.
+        let users = match self.groups.first() {
+            Some(g) if user_xs.is_empty() && !entries.is_empty() => g.clone(),
+            _ => Group { len: user_xs.len(), cols: user_xs.len().max(1), xs: user_xs },
+        };
         self.groups = vec![
-            Group { len: user_xs.len(), cols: user_xs.len().max(1), xs: user_xs },
+            users,
             Group { len: 1, cols: 1, xs: username_x },
             Group { len: 1, cols: 1, xs: password_x },
             Group { len: 1, cols: 1, xs: remember_x },

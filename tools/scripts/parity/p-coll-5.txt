@@ -113,3 +113,4 @@ key enter
 wait 1500
 idle
 quit
+# If a failed run left "AAA tour list" (or "Amber Tide") on jf-test, run tools/clean-tour-playlists.sh first (the tour assumes no playlists).

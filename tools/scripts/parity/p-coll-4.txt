@@ -62,9 +62,9 @@ idle
 shot p-coll-4-open
 key enter
 wait-screen player
-wait 3000
+wait 1000
 shot p-coll-4-play
-key back
+# the fixture film is 3 s long: the last entry ending returns to the playlist page by itself (Back here would pop to the list)
 wait-screen playlist
 idle
 # clean up: Delete playlist → confirm (dialog: Cancel | Delete, focus starts on Cancel). Let each key's frame
@@ -81,3 +81,4 @@ key enter
 wait 1500
 idle
 quit
+# If a failed run left "AAA tour list" on jf-test, run tools/clean-tour-playlists.sh first (the tour assumes no playlists).

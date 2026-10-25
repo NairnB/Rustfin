@@ -2,7 +2,7 @@
 use jf_core::nav::Focus;
 use jf_core::theme::Theme;
 use jf_core::ui::at_library::field_ring;
-use jf_core::ui::search::{focus_after_keyboard, results_top, KbExit};
+use jf_core::ui::search::{focus_after_keyboard, KbExit};
 
 // Group order in Search: field, Top results, Films, Shows, Episodes, Collections, People, Suggested, mentions, genres.
 const NONE: [usize; 10] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -47,12 +47,4 @@ fn field_focus_look_differs_from_unfocused() {
     assert!(field_ring(&t, false).is_none());
     let ring = field_ring(&t, true).expect("focused field has a ring");
     assert!(ring.width > 0.0 && ring.color.a() > 0);
-}
-
-/// Q4: the first result row sits at the same height with the keyboard open or closed.
-#[test]
-fn results_top_is_stable_when_keyboard_hides() {
-    let t = Theme::placeholder();
-    assert_eq!(results_top(&t, 100.0, true, false), results_top(&t, 100.0, false, false));
-    assert_eq!(results_top(&t, 100.0, true, true), results_top(&t, 100.0, false, true));
 }

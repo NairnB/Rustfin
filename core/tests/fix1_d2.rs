@@ -19,28 +19,6 @@ fn new_playlist_hint_is_a_label() {
     assert_eq!(name_hint(true), "Collection name");
 }
 
-/// FIX-2 #17: a file whose subtitle is flagged default shows that subtitle on the page (the player turns it on).
-#[test]
-fn page_subtitle_follows_the_files_default_flag() {
-    use jf_core::api::{MediaSource, MediaStream, StreamKind};
-    use jf_core::ui::item::page_default_subtitle;
-    let sub = |index, is_default, is_forced| MediaStream {
-        index,
-        kind: StreamKind::Subtitle,
-        is_default,
-        is_forced,
-        ..Default::default()
-    };
-    let mut ms = MediaSource { media_streams: vec![sub(2, false, false), sub(3, true, false)], ..Default::default() };
-    assert_eq!(page_default_subtitle(&ms), Some(3));
-    ms.media_streams = vec![sub(2, false, false), sub(4, false, true)];
-    assert_eq!(page_default_subtitle(&ms), Some(4), "forced counts when nothing is default");
-    ms.media_streams = vec![sub(2, false, false)];
-    assert_eq!(page_default_subtitle(&ms), None, "no flag → Off");
-    ms.default_subtitle_stream_index = Some(2);
-    assert_eq!(page_default_subtitle(&ms), Some(2), "the server's own default wins");
-}
-
 /// FIX-2 #14: dark logos are found by their visible pixels' brightness (transparent pixels don't count).
 #[test]
 fn dark_logo_detection() {

@@ -1,5 +1,5 @@
 # P-USER-2 parity tour (G12, RR8): Display tab — year switches, date format, backdrops on/off, screensaver.
-# Language and theme are left as they are (design round).
+# Language is English only for now; the theme is toured in ux/fix3-theme-black.txt.
 wait-screen connect
 wait 2500
 idle

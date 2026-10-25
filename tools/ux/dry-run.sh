@@ -10,6 +10,7 @@ if [ -f "$rf_env" ]; then
 fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RF_FLEET_HOME="$(mktemp -d "${RF_FLEET_HOME:-$HOME/rf-fleet}-dry.XXXXXX")"; export RF_FLEET_HOME
+export RF_OWNER="${RF_OWNER:-dryrun}"
 export FLEET_OUT="$RF_FLEET_HOME/out"
 export RF_DRIVE="$HERE/tests/fake_rf_drive.py"
 export TESTER_CMD="$HERE/fake-tester.sh"
@@ -17,7 +18,7 @@ export TESTER_CMD="$HERE/fake-tester.sh"
 export FAKE_START_FAIL="r0-mark-watched-desk-1:2" RF_START_RETRY_WAIT=1
 "$HERE/fleet-run" --round 0 --tasks play-sintel,mark-watched,resume-film --modes desk,tv --repeat-on-signal
 python3 -I - "$FLEET_OUT" "$HERE" <<'PY'
-import json, sys
+import json, os, sys
 out, here = sys.argv[1:3]
 sys.path.insert(0, here)
 import jfapi
@@ -31,7 +32,7 @@ ok = json.load(open(out + "/routes-ok.json"))
 assert not bad, bad
 assert len(ok) == 6 and all(v["ok"] for v in ok.values()), ok
 assert all(r["steps"] > 0 and r["ratio"] for r in recs), recs
-left = [u["Name"] for u in jfapi.Api.admin().get("/Users") if u["Name"].startswith("fleet-")]
+left = [u["Name"] for u in jfapi.Api.admin().get("/Users") if u["Name"].startswith("fleet-" + os.environ["RF_OWNER"] + "-")]
 assert not left, f"fleet users left behind: {left}"
 print("dry run OK:", len(recs), "runs, one rig error re-queued, routes ok, no fleet users left")
 PY

@@ -111,7 +111,7 @@ class TasksFile(unittest.TestCase):
         self.assertIn("type guest-ab12cd", e["route_desk"])
 
     def test_ideal_counts_repeated_presses(self):
-        self.assertEqual(fleetrun.ideal_steps(["key Up", "key Right 3", "type x", "wait 500"]), 6)
+        self.assertEqual(fleetrun.ideal_steps(["key Up", "key Right 3", "type x", "wait 500"]), 5)  # W1: the wait counts 0
 
 
 if __name__ == "__main__":

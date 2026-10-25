@@ -1,0 +1,57 @@
+# FIX-3 player-subs-start proof on jf-real (needs jf-real; not in the render suite). Sintel: the film page's subtitle choice,
+# the player started from Play, and the player started from Home -> Continue watching -> Resume must all show the same subtitle.
+# Needs Sintel in Continue watching: the first play runs past its first lines (60 s), so leaving it makes Sintel the top
+# Continue-watching card. Sintel's English cues (1:47, 1:51, 1:58 ...) fall in the shots taken 20 / 24 / 30 s into the
+# first play (it resumes at ~1:26): a frame with no text there is Off, not a missing cue.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-real:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+wait 3000
+idle
+shot fix3-subs-real-home
+key search
+wait-screen search
+idle
+type Sintel
+wait 800
+idle
+key down
+key enter
+wait-screen movie
+idle
+wait 2500
+idle
+shot fix3-subs-real-page
+key enter
+wait-screen player
+wait 20000
+shot fix3-subs-real-player-from-page
+wait 4000
+shot fix3-subs-real-player-line2
+wait 6000
+shot fix3-subs-real-player-line3
+wait 30000
+key back
+wait-screen movie
+key back
+wait 500
+key back
+wait-screen home
+idle
+wait 500
+key enter
+wait-screen player
+wait 4000
+shot fix3-subs-real-player-from-home
+quit

@@ -5,7 +5,6 @@ use crate::api::{ApiError, Item, ItemKind, Result};
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::Key;
-use crate::theme::Theme;
 
 const G_FIELD: usize = 0;
 const G_TOP: usize = 1;
@@ -41,12 +40,6 @@ pub fn focus_after_keyboard(lens: &[usize], exit: KbExit) -> Focus {
         Some(gi) => Focus { group: gi + 1, index: 0 },
         None => Focus { group: G_FIELD, index: 0 },
     }
-}
-
-/// FIX-3 Q4: the y of the results area, under the field and the "Searching…" line. It does not depend on the
-/// keyboard (an overlay), so the first row stays put when the keyboard hides.
-pub fn results_top(t: &Theme, field_bottom: f32, _keyboard_open: bool, searching: bool) -> f32 {
-    field_bottom + if searching { t.gap / 2.0 + t.body_size } else { 0.0 }
 }
 
 /// D12: the best matches across films, shows, episodes, collections and people, by how well the name matches the
@@ -259,7 +252,15 @@ impl Screen for Search {
                     self.focus = focus_after_keyboard(&self.group_lens(), exit);
                     return true;
                 }
-                self.focus = move_focus(&self.groups, self.focus, key);
+                let next = move_focus(&self.groups, self.focus, key);
+                if key == Key::Up {
+                    match super::library::up_key(self.focus, next, !cx.sidebar) {
+                        super::library::UpKey::Move(f) => self.focus = f,
+                        super::library::UpKey::Pop => cx.pop(),
+                    }
+                } else {
+                    self.focus = next;
+                }
                 true
             }
             Key::Back => false,

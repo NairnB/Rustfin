@@ -1,0 +1,81 @@
+# args: --tv
+# FIX-5 F5-OSK-RESUME: the TV keyboard comes back where you left it. Add user form (TV), type "guest-", Up four times
+# (three rows to the digit row, then off it: the keyboard closes), Enter: it reopens on the key it was left on.
+# Read-only: nothing is saved to the server.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 1500
+fast-forward 60
+key up
+key right 6
+key enter
+key down 2
+key enter
+wait-screen settings
+idle
+key right 6
+key down 3
+key enter
+wait-screen admin
+idle
+key down 4
+key enter
+wait-screen users
+idle
+key up
+key enter
+wait-screen useradd
+idle
+key enter
+idle
+key right 4
+key right 2
+key enter
+key down
+key down
+key down
+key left
+key up
+key enter
+key down
+key right
+key up
+key up
+key up
+key enter
+key right 4
+key down
+key enter
+key right
+key enter
+key left 2
+key down
+key enter
+shot fix5-osk-typed
+key up 3
+wait 250
+shot fix5-osk-top-row
+key up
+idle
+shot fix5-osk-left
+key enter
+idle
+wait 400
+shot fix5-osk-back-on-key
+key down 3
+wait 250
+shot fix5-osk-dash
+quit

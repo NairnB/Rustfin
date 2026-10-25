@@ -147,6 +147,10 @@ tools/ux/rf-drive stop try1
     does it.
   - `RF_FLEET_HOME` — where session folders live (default `$HOME/rf-fleet`).
   - `RF_LOCKS` — folder for the eight session-slot locks and the user-creation lock (default `$RF_FLEET_HOME/locks`).
+  - `RF_OWNER` — **required to create or sweep fleet users**: whose users these are (lower-case letters and digits,
+    not `r<number>`). Users are named `fleet-<owner>-<session>`; no default, so jobs sharing a server never touch
+    each other's users.
+    `FLEET_USER_PREFIX=fleet-<owner>-` is accepted as the same thing when `RF_OWNER` is unset.
   - `RF_PLAN_CMD` — optional; a command whose output is checked before each run so the fleet stops when a plan is
     nearly spent. Unset means no check.
   - `RF_CLAUDE_CONFIG` — optional; sets `CLAUDE_CONFIG_DIR` for the AI testers only when present.
@@ -164,6 +168,10 @@ server, not by what the tester says:
   `summary.md`. `tools/ux/dry-run.sh` runs the whole loop with a fake driver and no model.
 - It creates and deletes users and plays and marks things watched, so it needs a **throwaway Jellyfin server** with
   its own admin login (`JF_REAL_URL` points at it; see `tools/ux/jfapi.py`). Never aim it at a server you use.
+- `tools/ux/fleet-user.sh sweep --owner <o> [keep-session…]` deletes only `fleet-<o>-*` users; a sweep without
+  `--owner` is refused. `fleet-user.sh list --legacy` lists owner-less `fleet-*` users (old naming) so a person can
+  decide; nothing deletes them automatically. `r<number>` is refused as an owner (old session names start that way).
+  An old user whose session name itself had a dash (`fleet-team2-x`) looks like an owned one; names alone can't tell.
 - Its unit tests: `python3 -I -m unittest discover tools/ux/tests`.
 
 ## 6. Leak gate (before sharing any package)

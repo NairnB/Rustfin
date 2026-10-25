@@ -62,6 +62,8 @@ pub struct Home {
     leaving: bool,
     /// Who is signed in, noted when leaving so Sign out can drop their saved session.
     user_id: Option<String>,
+    /// C3: the server was looked for on the network once already (it didn't answer at its saved address).
+    refind: bool,
 }
 
 /// The user menu. On the TV, Favourites and Playlists live here (the bar holds the libraries, UX R2).
@@ -102,6 +104,7 @@ pub fn screen(verify_session: bool) -> Box<dyn Screen> {
         hero_for: None,
         leaving: false,
         user_id: None,
+        refind: false,
     })
 }
 
@@ -550,9 +553,28 @@ impl Screen for Home {
                         .or_else(|| cx.client.as_ref().map(|c| c.base.clone()))
                         .unwrap_or_else(|| "the server".to_string());
                     self.offline = Some(name);
+                    // C3: look for the server on the network (no token is sent: discovery only). If it answers at a
+                    // new address, Connect lists it focused; the saved session goes there only after the user's press.
+                    if !self.refind {
+                        self.refind = true;
+                        if let Some(e) = cx.settings.last().cloned() {
+                            cx.spawn("refind", move || {
+                                let found = crate::discovery::search_lan(Some(&e.address)).servers();
+                                let moved = found.iter().any(|s| s.id == e.id && s.address != e.address);
+                                moved.then_some((e.id, found))
+                            });
+                        }
+                    }
                 }
                 Err(_) => {}
             },
+            "refind" => {
+                type Moved = Option<(String, Vec<crate::discovery::DiscoveredServer>)>;
+                let Ok(moved) = payload.downcast::<Moved>() else { return };
+                if let Some((id, found)) = *moved {
+                    cx.reset(super::connect::refind_with(id, found));
+                }
+            }
             _ => {}
         }
     }

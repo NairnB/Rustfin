@@ -82,16 +82,6 @@ enum Action {
     ChangePoster,
 }
 
-/// FIX-2 #17: the subtitle the page shows before the viewer picks one — the source's default index, else a track
-/// the file flags as default or forced (what the server and player turn on by themselves), else Off. The page then
-/// says what will really play.
-pub fn page_default_subtitle(ms: &crate::api::MediaSource) -> Option<i32> {
-    ms.default_subtitle_stream_index.filter(|&i| i >= 0).or_else(|| {
-        let subs = || ms.media_streams.iter().filter(|s| s.kind == StreamKind::Subtitle);
-        subs().find(|s| s.is_default).or_else(|| subs().find(|s| s.is_forced)).map(|s| s.index)
-    })
-}
-
 /// D6: an open list picker — its rows, a note for when it has none, and the button that opened it.
 type Picker = (Vec<(String, Action)>, at::Note<'static>, Action);
 
@@ -173,6 +163,8 @@ pub struct ItemScreen {
     audio: Option<i32>,
     subtitle: Option<Option<i32>>,
     tracks_init: bool,
+    tracks_picked: bool,
+    sub_picked: bool,
     audio_open: bool,
     subtitle_open: bool,
     pending_open: Option<String>,
@@ -215,6 +207,14 @@ pub struct ItemScreen {
     focus: Focus,
     groups: Vec<Group>,
     started: bool,
+    // FIX-4 PL2: opened from a poster's "Add to…": the Add-to menu goes up on the first frame.
+    add_on_open: bool,
+}
+
+/// FIX-4 #7: the page Previous / Next episode opens: the neighbouring episode's own page (never the player). A new
+/// page starts with focus on its first button, which is Play.
+pub fn ep_neighbour_page(ep: Option<Item>) -> Option<Box<dyn Screen>> {
+    ep.map(screen)
 }
 
 pub fn screen(item: Item) -> Box<dyn Screen> {
@@ -224,65 +224,88 @@ pub fn screen(item: Item) -> Box<dyn Screen> {
 /// Like `screen`, but remembers the place (library/collection id) the item was opened from so the admin
 /// "Position…" control can write the right `rf-order` tag (R-F4-2). Series and seasons ignore it.
 pub fn screen_in(item: Item, place: Option<String>) -> Box<dyn Screen> {
+    screen_with(item, place, false)
+}
+
+/// FIX-4 PL2: the item's page with its Add-to menu open (what "+" does), for a poster's "Add to…".
+pub fn screen_add_to(item: Item, place: Option<String>) -> Box<dyn Screen> {
+    screen_with(item, place, true)
+}
+
+/// FIX-4 PL2: true once when the page was asked to open its Add-to menu; the flag is spent.
+pub fn take_add_menu_request(pending: &mut bool) -> bool {
+    std::mem::take(pending)
+}
+
+fn screen_with(item: Item, place: Option<String>, add_on_open: bool) -> Box<dyn Screen> {
     match &item.kind {
         ItemKind::Series => show_page::screen(item, None),
         ItemKind::Season => show_page::screen_for_season(item),
         // G7 (P-COLL-1): a collection opens its own page.
         ItemKind::BoxSet => collection::screen(item),
         _ => {
-            let kind = item.kind.clone();
-            Box::new(ItemScreen {
-                pref_sub: String::new(),
-                item,
-                kind,
-                full: None,
-                loading: true,
-                error: None,
-                seasons: vec![],
-                episodes: vec![],
-                next_up: vec![],
-                audio: None,
-                subtitle: None,
-                tracks_init: false,
-                audio_open: false,
-                subtitle_open: false,
-                pending_open: None,
-                more_open: false,
-                info_jump: false,
-                pending_copy: None,
-                toast_pending: None,
-                toast: None,
-                is_admin: false,
-                section: admin_actions::SectionMove::new(),
-                place,
-                position: admin_actions::PositionMove::new(),
-                story: admin_actions::StoryEdit::new(),
-                prev_ep: None,
-                next_ep: None,
-                trailers: vec![],
-                specials: vec![],
-                parts: vec![],
-                similar: vec![],
-                media_info: vec![],
-                version: 0,
-                version_open: false,
-                add_open: false,
-                add_mode: AddMode::Root,
-                playlists: None,
-                collections: None,
-                in_collections: vec![],
-                add_note: None,
-                overview_open: false,
-                btn_rects: vec![],
-                focus: Focus { group: G_BTN, index: 0 },
-                groups: vec![],
-                started: false,
-            })
+            let mut screen = ItemScreen::new(item, place);
+            screen.add_on_open = add_on_open;
+            Box::new(screen)
         }
     }
 }
 
 impl ItemScreen {
+    fn new(item: Item, place: Option<String>) -> ItemScreen {
+        let kind = item.kind.clone();
+        ItemScreen {
+            pref_sub: String::new(),
+            item,
+            kind,
+            full: None,
+            loading: true,
+            error: None,
+            seasons: vec![],
+            episodes: vec![],
+            next_up: vec![],
+            audio: None,
+            subtitle: None,
+            tracks_init: false,
+            tracks_picked: false,
+            sub_picked: false,
+            audio_open: false,
+            subtitle_open: false,
+            pending_open: None,
+            more_open: false,
+            info_jump: false,
+            pending_copy: None,
+            toast_pending: None,
+            toast: None,
+            is_admin: false,
+            section: admin_actions::SectionMove::new(),
+            place,
+            position: admin_actions::PositionMove::new(),
+            story: admin_actions::StoryEdit::new(),
+            prev_ep: None,
+            next_ep: None,
+            trailers: vec![],
+            specials: vec![],
+            parts: vec![],
+            similar: vec![],
+            media_info: vec![],
+            version: 0,
+            version_open: false,
+            add_open: false,
+            add_mode: AddMode::Root,
+            playlists: None,
+            collections: None,
+            in_collections: vec![],
+            add_note: None,
+            overview_open: false,
+            btn_rects: vec![],
+            focus: Focus { group: G_BTN, index: 0 },
+            groups: vec![],
+            started: false,
+            add_on_open: false,
+        }
+    }
+
     fn current(&self) -> &Item {
         self.full.as_ref().unwrap_or(&self.item)
     }
@@ -326,14 +349,15 @@ impl ItemScreen {
         (0..n).map(|i| (version_label(i, self.current().media_sources.get(i), &self.media_info), i)).collect()
     }
 
-    fn init_tracks(&mut self) {
+    fn init_tracks(&mut self, cx: &Cx) {
         if self.tracks_init {
             return;
         }
+        let remembered = cx.remembered_subtitle(self.current());
         let (default_audio, default_subtitle, first_audio) = match self.source() {
             Some(ms) => (
                 ms.default_audio_stream_index,
-                page_default_subtitle(ms),
+                crate::playreq::default_subtitle(&cx.settings.subtitles, ms, None, remembered.as_ref()),
                 ms.media_streams.iter().find(|s| s.kind == StreamKind::Audio).map(|s| s.index),
             ),
             None => (None, None, None),
@@ -341,6 +365,33 @@ impl ItemScreen {
         self.audio = Some(default_audio.or(first_audio).unwrap_or(0));
         self.subtitle = Some(default_subtitle.map(Some).unwrap_or(None));
         self.tracks_init = true;
+    }
+
+    /// FIX-4 R5: a new audio track re-applies the default subtitle unless the viewer already picked one.
+    fn pick_audio(&mut self, i: i32, cx: &Cx) {
+        self.audio = Some(i);
+        self.tracks_picked = true;
+        let remembered = cx.remembered_subtitle(self.current());
+        if let Some(ms) = self.source() {
+            let prefs = &cx.settings.subtitles;
+            self.subtitle = crate::playreq::subtitle_after_audio_pick(
+                prefs,
+                ms,
+                i,
+                remembered.as_ref(),
+                self.sub_picked,
+                self.subtitle,
+            );
+        }
+    }
+
+    /// The viewer picked subtitle `v` (None = Off): it wins for this playback and is remembered (FIX-4).
+    fn pick_subtitle(&mut self, cx: &mut Cx, v: Option<i32>) {
+        self.subtitle = Some(v);
+        self.tracks_picked = true;
+        self.sub_picked = true;
+        let item = self.current().clone();
+        cx.remember_subtitle(&item, self.source(), v);
     }
 
     /// UXP2 (D14): the chosen version's tracks of one kind as `(stream index, name a person reads)` —
@@ -647,10 +698,12 @@ impl ItemScreen {
             from_start,
             audio: self.audio.or(Some(0)),
             subtitle: self.subtitle.or(Some(None)),
+            subtitle_picked: self.sub_picked,
             // G8 (P-ITEM-11): the chosen version, only when there is a choice.
             media_source_id: (self.current().media_sources.len() > 1)
                 .then(|| self.source().map(|m| m.id.clone()))
                 .flatten(),
+            remembered_subtitle: None,
         }
     }
 
@@ -896,6 +949,8 @@ impl ItemScreen {
                 self.version_open = false;
                 // the new version has its own tracks
                 self.tracks_init = false;
+                self.tracks_picked = false;
+                self.sub_picked = false;
             }
             // G8 (P-ITEM-8)
             Action::Trailer => match self.trailer() {
@@ -906,11 +961,11 @@ impl ItemScreen {
                 None => {}
             },
             Action::AudioPick(i) => {
-                self.audio = Some(i);
+                self.pick_audio(i, cx);
                 self.audio_open = false;
             }
             Action::SubtitlePick(v) => {
-                self.subtitle = Some(v);
+                self.pick_subtitle(cx, v);
                 self.subtitle_open = false;
             }
             Action::OpenSection => {
@@ -977,15 +1032,13 @@ impl ItemScreen {
                 self.story.open = false;
                 self.focus = Focus { group: G_BTN, index: self.story_button_index() };
             }
-            // G4 (P-TV-9): play the neighbouring episode from an episode page.
-            Action::PlayPrevEp => {
-                if let Some(ep) = self.prev_ep.clone() {
-                    cx.push(player::screen(ep, PlayOptions::default()));
-                }
-            }
-            Action::PlayNextEp => {
-                if let Some(ep) = self.next_ep.clone() {
-                    cx.push(player::screen(ep, PlayOptions::default()));
+            // FIX-4 #7: Previous / Next episode open the neighbour's page in place of this one (Back returns to
+            // where this page was opened from); nothing plays and no progress is reported.
+            Action::PlayPrevEp | Action::PlayNextEp => {
+                let ep = if matches!(a, Action::PlayPrevEp) { self.prev_ep.clone() } else { self.next_ep.clone() };
+                if let Some(page) = ep_neighbour_page(ep) {
+                    cx.pop();
+                    cx.push(page);
                 }
             }
             // G4 (P-ITEM-17)
@@ -1038,14 +1091,14 @@ impl ItemScreen {
             if self.audio_open {
                 let picked = self.audio_entries().get(self.focus.index).map(|(_, i)| *i);
                 if let Some(i) = picked {
-                    self.audio = Some(i);
+                    self.pick_audio(i, cx);
                 }
                 self.audio_open = false;
                 self.focus = Focus { group: G_BTN, index: self.audio_button_index() };
             } else {
                 let picked = self.subtitle_entries().get(self.focus.index).map(|(_, v)| *v);
                 if let Some(v) = picked {
-                    self.subtitle = Some(v);
+                    self.pick_subtitle(cx, v);
                 }
                 self.subtitle_open = false;
                 self.focus = Focus { group: G_BTN, index: self.subtitle_button_index() };
@@ -1864,8 +1917,12 @@ impl ItemScreen {
         if !self.started {
             self.started = true;
             self.spawn_loads(cx);
+            if take_add_menu_request(&mut self.add_on_open) {
+                self.is_admin = cx.admin;
+                self.open_add_menu(cx);
+            }
         }
-        self.init_tracks();
+        self.init_tracks(cx);
         self.is_admin = cx.admin;
         let t = cx.theme;
         let mut more_x: Option<f32> = None;
@@ -2203,17 +2260,7 @@ impl Screen for ItemScreen {
                 }
             }
             Key::Up | Key::Down | Key::Left | Key::Right => {
-                // An open picker is a fresh menu: Down from the buttons always lands on its first entry (the focus
-                // memory is keyed by layout, so another film's menu would otherwise decide where it lands).
-                let into_list = key == Key::Down
-                    && self.focus.group == G_BTN
-                    && self.picker_open()
-                    && self.groups.get(G_LIST).is_some_and(|g| g.len > 0);
-                self.focus = if into_list {
-                    Focus { group: G_LIST, index: 0 }
-                } else {
-                    move_focus(&self.groups, self.focus, key)
-                };
+                self.focus = arrow_focus(&self.groups, self.focus, key, self.picker_open());
                 true
             }
             _ => false,
@@ -2228,6 +2275,8 @@ impl Screen for ItemScreen {
                 match *r {
                     Ok(it) => {
                         self.full = Some(it);
+                        // the full item carries the media sources the card lacked: show what will really play
+                        self.tracks_init &= self.tracks_picked;
                         self.error = None;
                     }
                     Err(ApiError::Unauthorized) => cx.signed_out(),
@@ -2398,10 +2447,57 @@ impl Screen for ItemScreen {
     }
 }
 
+/// Where an arrow key moves the film page's focus (`menu_open`: one of its drop-down menus is open).
+fn arrow_focus(groups: &[Group], f: Focus, key: Key, menu_open: bool) -> Focus {
+    let list = groups.get(G_LIST).map_or(0, |g| g.len);
+    if menu_open && key == Key::Down {
+        // An open picker is a fresh menu: Down from the buttons always lands on its first entry (the focus
+        // memory is keyed by layout, so another film's menu would otherwise decide where it lands).
+        if f.group == G_BTN && list > 0 {
+            return Focus { group: G_LIST, index: 0 };
+        }
+        // Down past an open menu's last row stays on it (focus never leaves the menu for the page below).
+        if f.group == G_LIST && f.index + 1 >= list {
+            return f;
+        }
+    }
+    move_focus(groups, f, key)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::external_links;
+    use super::{arrow_focus, external_links, G_BTN, G_LIST, G_MORE, G_PEOPLE};
+    use crate::nav::{Focus, Group};
+    use crate::platform::Key;
     use std::collections::HashMap;
+
+    /// The film page with a 3-row menu open under the buttons and the cast row below it.
+    fn page() -> Vec<Group> {
+        let mut g = vec![Group { len: 0, cols: 1, xs: vec![] }; G_PEOPLE + 1];
+        g[G_MORE] = Group { len: 1, cols: 1, xs: vec![100.0] };
+        g[G_BTN] = Group { len: 4, cols: 4, xs: vec![100.0, 200.0, 300.0, 400.0] };
+        g[G_LIST] = Group { len: 3, cols: 1, xs: vec![300.0; 3] };
+        g[G_PEOPLE] = Group { len: 5, cols: 5, xs: vec![100.0, 300.0, 500.0, 700.0, 900.0] };
+        g
+    }
+
+    /// C3-POLISH #5: Down on an open menu's last row keeps focus there; with the menu closed the same key goes on to
+    /// the cast row (what the open menu used to do too, leaving focus outside it).
+    #[test]
+    fn down_on_an_open_menus_last_row_stays_in_the_menu() {
+        let g = page();
+        let last = Focus { group: G_LIST, index: 2 };
+        assert_eq!(arrow_focus(&g, last, Key::Down, true), last);
+        assert_eq!(arrow_focus(&g, last, Key::Down, false).group, G_PEOPLE, "without the catch focus leaves");
+        // the rows above still move down, and Up still leaves the menu's first row for the buttons
+        assert_eq!(arrow_focus(&g, Focus { group: G_LIST, index: 1 }, Key::Down, true), last);
+        assert_eq!(arrow_focus(&g, Focus { group: G_LIST, index: 0 }, Key::Up, true).group, G_BTN);
+        // Down from the buttons opens onto the menu's first row
+        assert_eq!(
+            arrow_focus(&g, Focus { group: G_BTN, index: 3 }, Key::Down, true),
+            Focus { group: G_LIST, index: 0 }
+        );
+    }
 
     #[test]
     fn external_links_movie() {
@@ -2513,6 +2609,117 @@ mod tests {
         assert_eq!(version_label(0, Some(&src), &[info()]), "Ember Rising - 4K");
         assert_eq!(version_label(1, None, &[]), "Version 2");
     }
+
+    // FIX-4 #7: drive the real handler. A Cx over throwaway parts; `do_action` pushes onto `nav`, which the app would
+    // apply with `apply_nav` (Pop → Push replaces this page, so Back returns to where it was opened from).
+    use crate::app::{AppOptions, Nav};
+    use crate::platform::NullPlayer;
+    use crate::settings::{MemStorage, Settings};
+
+    fn ep(id: &str, n: i64) -> Item {
+        Item { id: id.into(), name: format!("Episode {n}"), kind: ItemKind::Episode, ..Default::default() }
+    }
+
+    /// An episode page (Episode 2) with a neighbour on each side, run through `f` with a Cx; returns the nav it asked
+    /// for and the player (so a started playback shows).
+    fn run_on_ep_page(f: impl FnOnce(&mut ItemScreen, &mut Cx)) -> (Vec<Nav>, NullPlayer) {
+        let mut page = ItemScreen::new(ep("e2", 2), None);
+        page.prev_ep = Some(ep("e1", 1));
+        page.next_ep = Some(ep("e3", 3));
+        let theme = crate::theme::Theme::for_choice(Default::default());
+        let store: std::sync::Arc<dyn crate::platform::Storage> = std::sync::Arc::new(MemStorage::default());
+        let mut settings = Settings::load(store.as_ref());
+        let tasks = crate::tasks::Pool::new(1);
+        let mut images = crate::ui::imageload::Images::new(None);
+        let mut player = NullPlayer::default();
+        let opts = AppOptions::default();
+        let (mut overrides, mut changed, mut undo) = (HashMap::new(), vec![], None);
+        let (keys, mut shell, mut client, mut nav) = (Default::default(), Default::default(), None, vec![]);
+        {
+            let mut cx = Cx {
+                theme: &theme,
+                client: &mut client,
+                settings: &mut settings,
+                store: &store,
+                tasks: &tasks,
+                images: &mut images,
+                player: &mut player,
+                opts: &opts,
+                admin: false,
+                poster_overrides: &mut overrides,
+                poster_changed: &mut changed,
+                poster_gen: 0,
+                undo: &mut undo,
+                keys_down: &keys,
+                shell: &mut shell,
+                now: 0.0,
+                sidebar: false,
+                screen_id: 1,
+                nav: &mut nav,
+            };
+            f(&mut page, &mut cx);
+        }
+        (nav, player)
+    }
+
+    /// The nav a neighbour press must ask for: Pop then Push of an item page — never the player.
+    fn assert_replaces_with_page(nav: &[Nav], player: &NullPlayer) {
+        assert_eq!(nav.len(), 2, "one Pop and one Push");
+        assert!(matches!(nav[0], Nav::Pop), "this page leaves first, so Back returns to where it was opened from");
+        match &nav[1] {
+            Nav::Push(s) => {
+                assert!(!s.shows_video(), "the neighbour's page, not the player");
+                assert_eq!(s.name(), "episode", "an episode page");
+            }
+            _ => panic!("expected a Push of the neighbour's page"),
+        }
+        assert!(player.last.is_none(), "nothing was loaded into the player (no playback report, no progress)");
+    }
+
+    #[test]
+    fn prev_ep_opens_page_not_player() {
+        let (nav, player) = run_on_ep_page(|p, cx| p.do_action(cx, Action::PlayPrevEp));
+        assert_replaces_with_page(&nav, &player);
+    }
+
+    #[test]
+    fn next_ep_opens_page_not_player() {
+        let (nav, player) = run_on_ep_page(|p, cx| p.do_action(cx, Action::PlayNextEp));
+        assert_replaces_with_page(&nav, &player);
+    }
+
+    /// E1: the swap is Pop-then-Push (stack depth unchanged), and no neighbour means nothing happens.
+    #[test]
+    fn back_after_ep_nav_returns_to_origin() {
+        let (nav, _) = run_on_ep_page(|p, cx| p.do_action(cx, Action::PlayNextEp));
+        assert!(matches!(nav.as_slice(), [Nav::Pop, Nav::Push(_)]));
+        let (nav, _) = run_on_ep_page(|p, cx| {
+            p.next_ep = None;
+            p.do_action(cx, Action::PlayNextEp)
+        });
+        assert!(nav.is_empty(), "no next episode: no navigation");
+    }
+
+    /// E2: the actions touch the player not at all (Play is the control; it does load it).
+    #[test]
+    fn no_progress_written_on_ep_nav() {
+        let (nav, player) = run_on_ep_page(|p, cx| {
+            p.do_action(cx, Action::PlayPrevEp);
+            p.do_action(cx, Action::PlayNextEp);
+        });
+        assert!(player.last.is_none());
+        assert!(!nav.iter().any(|n| matches!(n, Nav::Push(s) if s.shows_video())), "no player screen is pushed");
+        let (nav, _) = run_on_ep_page(|p, cx| p.do_action(cx, Action::Play { from_start: true }));
+        assert!(matches!(&nav[..], [Nav::Push(s)] if s.shows_video()), "control: Play does push the player");
+    }
+
+    /// E4: the neighbour's page opens with focus on the first button, which is Play.
+    #[test]
+    fn focus_on_play_after_ep_nav_tv() {
+        let page = ItemScreen::new(ep("e1", 1), None);
+        assert_eq!(page.focus, Focus { group: G_BTN, index: 0 });
+        assert!(matches!(page.movie_buttons()[0].1, Action::Play { .. }));
+    }
 }
 
 /// The film page's card row height: a 16:9 card with one caption line, or a poster with its title + year block.
@@ -2553,5 +2760,116 @@ mod fix2_tests {
         let names = |v: Vec<(i32, String)>| v.into_iter().map(|(_, l)| l).collect::<Vec<_>>();
         assert_eq!(names(order_tracks(rows.clone(), "eng")), ["English", "Chinese", "German", "Japanese"]);
         assert_eq!(names(order_tracks(rows, "")), ["Chinese", "English", "German", "Japanese"]);
+    }
+}
+
+/// FIX-4 R5: the film page's own audio pick re-applies the default subtitle; a subtitle the viewer picks is kept with
+/// the settings while their "Remember subtitle selections" is on (drives the real screen and settings store).
+#[cfg(test)]
+mod fix4_tests {
+    use super::{Action, ItemScreen};
+    use crate::api::{Item, PlaybackInfo};
+    use crate::app::test_support::World;
+
+    // fixture: 2 eng audio (default), 3 fre audio, 0 ger external sub, 4 eng embedded sub; the server's default sub
+    // 0 is ignored
+    fn film(id: &str, kind: &str, series: Option<&str>) -> Item {
+        let info: PlaybackInfo = serde_json::from_str(
+            &std::fs::read_to_string(format!("{}/tests/fixtures/playbackinfo.json", env!("CARGO_MANIFEST_DIR")))
+                .unwrap(),
+        )
+        .unwrap();
+        let mut item: Item =
+            serde_json::from_str(&format!(r#"{{"Id":"{id}","Name":"Film","Type":"{kind}"}}"#)).unwrap();
+        item.series_id = series.map(String::from);
+        item.media_sources = info.media_sources;
+        item.media_sources[0].default_subtitle_stream_index = Some(0);
+        item
+    }
+
+    /// A freshly opened page, its tracks set up as on its first frame.
+    fn open(w: &mut World, item: &Item) -> ItemScreen {
+        let mut p = ItemScreen::new(item.clone(), None);
+        p.full = Some(item.clone());
+        w.cx(|cx| p.init_tracks(cx));
+        p
+    }
+
+    #[test]
+    fn page_audio_pick_reapplies_the_default_subtitle() {
+        let mut w = World::signed_in(true);
+        let mut p = open(&mut w, &film("i", "Movie", None));
+        assert_eq!(p.subtitle, Some(None), "eng audio, the server's default sub 0 ignored");
+        w.cx(|cx| p.pick_audio(3, cx));
+        assert_eq!(p.subtitle, Some(Some(4)), "fre audio → the English sub");
+        w.cx(|cx| p.pick_audio(2, cx));
+        assert_eq!(p.subtitle, Some(None), "back to eng audio → Off");
+    }
+
+    #[test]
+    fn page_audio_pick_keeps_a_subtitle_the_viewer_picked() {
+        let mut w = World::signed_in(true);
+        let mut p = open(&mut w, &film("i", "Movie", None));
+        w.cx(|cx| p.do_action(cx, Action::SubtitlePick(Some(0))));
+        w.cx(|cx| p.pick_audio(3, cx));
+        assert_eq!(p.subtitle, Some(Some(0)));
+    }
+
+    #[test]
+    fn a_page_pick_is_remembered_after_a_restart() {
+        let mut w = World::signed_in(true);
+        let it = film("i", "Movie", None);
+        let mut p = open(&mut w, &it);
+        w.cx(|cx| p.do_action(cx, Action::SubtitlePick(Some(0))));
+        w.restart();
+        assert_eq!(open(&mut w, &it).subtitle, Some(Some(0)), "reopened after a restart: the German sub");
+        assert_eq!(open(&mut w, &film("j", "Movie", None)).subtitle, Some(None), "another film: Off");
+    }
+
+    #[test]
+    fn a_page_pick_of_off_is_remembered_too() {
+        let mut w = World::signed_in(true);
+        let it = film("i", "Movie", None);
+        let mut p = open(&mut w, &it);
+        w.cx(|cx| p.pick_audio(3, cx));
+        assert_eq!(p.subtitle, Some(Some(4)));
+        w.cx(|cx| p.do_action(cx, Action::SubtitlePick(None)));
+        w.restart();
+        let mut again = open(&mut w, &it);
+        w.cx(|cx| again.pick_audio(3, cx));
+        assert_eq!(again.subtitle, Some(None), "remembered Off beats the foreign-audio rule");
+    }
+
+    #[test]
+    fn nothing_is_remembered_when_the_user_does_not_remember_selections() {
+        let mut w = World::signed_in(false);
+        let it = film("i", "Movie", None);
+        let mut p = open(&mut w, &it);
+        w.cx(|cx| p.do_action(cx, Action::SubtitlePick(Some(0))));
+        assert_eq!(p.subtitle, Some(Some(0)), "the pick still wins for this playback");
+        w.restart();
+        assert!(w.settings().sub_picks.is_empty(), "nothing stored");
+        assert_eq!(open(&mut w, &it).subtitle, Some(None), "reopened: the default-subtitle rule, Off");
+    }
+
+    #[test]
+    fn a_kept_pick_is_not_used_once_the_user_turns_remembering_off() {
+        let mut w = World::signed_in(true);
+        let it = film("i", "Movie", None);
+        let mut p = open(&mut w, &it);
+        w.cx(|cx| p.do_action(cx, Action::SubtitlePick(Some(0))));
+        w.set_remember(false);
+        w.restart();
+        assert_eq!(open(&mut w, &it).subtitle, Some(None), "the default-subtitle rule, Off");
+    }
+
+    #[test]
+    fn an_episode_pick_is_remembered_for_the_series() {
+        let mut w = World::signed_in(true);
+        let mut p = open(&mut w, &film("e1", "Episode", Some("show")));
+        w.cx(|cx| p.do_action(cx, Action::SubtitlePick(Some(0))));
+        w.restart();
+        assert_eq!(open(&mut w, &film("e2", "Episode", Some("show"))).subtitle, Some(Some(0)), "next episode");
+        assert_eq!(open(&mut w, &film("x1", "Episode", Some("other"))).subtitle, Some(None), "another show");
     }
 }

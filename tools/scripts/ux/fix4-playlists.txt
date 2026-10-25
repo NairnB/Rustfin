@@ -1,0 +1,44 @@
+# args: --tv
+# FIX-4 PL1/PL2 (TV): a poster's Info menu has "Add to…" (after Favourite, before Poster Flow); it opens the film's
+# page with the Add-to menu up and its first row lit; New playlist… opens the name form. Creates nothing.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key up 20
+key left 10
+key right 3
+key enter
+wait-screen library
+idle
+wait 600
+key info
+idle
+wait 300
+key down 4
+idle
+shot fix4-info-add-to
+key enter
+wait-screen movie
+wait 1000
+idle
+shot fix4-add-menu-up
+key enter
+wait-screen new-playlist
+idle
+wait 300
+shot fix4-new-playlist
+key back
+wait-screen movie
+quit

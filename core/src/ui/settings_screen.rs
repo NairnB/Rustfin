@@ -8,7 +8,7 @@ use crate::api::{image_width_bucket, ApiError, Client, Result, SegmentKind};
 use crate::app::{Cx, Screen};
 use crate::nav::{move_focus, Focus, Group};
 use crate::platform::{parse_hex_colour, sub_colour_index, Key, SubFont, SubShadow, SubSize, SubWeight, SUB_COLOURS};
-use crate::settings::{DateFormat, HomeSection, Screensaver, SubMode, SubPrefs};
+use crate::settings::{DateFormat, HomeSection, Screensaver, SubMode, SubPrefs, ThemeChoice};
 use egui::{vec2, Sense};
 
 const G_TABS: usize = 0;
@@ -128,6 +128,7 @@ enum Dd {
     NextUpDays,
     SaverMode,
     SaverMinutes,
+    Theme,
 }
 
 /// Why a picture change failed: our own check (plain words) or the server.
@@ -173,6 +174,7 @@ pub struct SettingsScreen {
     next_up_days: widgets::DropdownState,
     saver_mode: widgets::DropdownState,
     saver_minutes: widgets::DropdownState,
+    theme: widgets::DropdownState,
 
     // Subtitles (G5): saved as soon as anything changes (FIX-1 #11); `chip` is the focused chip within a chip row.
     subs: SubPrefs,
@@ -229,6 +231,7 @@ pub fn screen() -> Box<dyn Screen> {
         skip_back: widgets::DropdownState::default(),
         skip_forward: widgets::DropdownState::default(),
         date_format: widgets::DropdownState::default(),
+        theme: widgets::DropdownState::default(),
         next_up_days: widgets::DropdownState::default(),
         saver_mode: widgets::DropdownState::default(),
         saver_minutes: widgets::DropdownState::default(),
@@ -275,7 +278,7 @@ impl SettingsScreen {
             Tab::Home => HomeSection::ALL.len(),
             Tab::Playback => PLAYBACK_FIXED + SegmentKind::SKIPPABLE.len(),
             Tab::Subtitles => 11,
-            Tab::Display => 6,
+            Tab::Display => 7,
             Tab::QuickConnect => 2,
             Tab::Server => 2 + usize::from(self.admin),
             Tab::Tmdb => usize::from(self.tmdb_editing) * 2 + usize::from(!self.tmdb_editing),
@@ -327,6 +330,9 @@ impl SettingsScreen {
         if !self.saver_minutes.open {
             self.saver_minutes.highlighted =
                 SAVER_MINUTES.iter().position(|&(_, m)| m == cx.settings.screensaver_minutes).unwrap_or(1);
+        }
+        if !self.theme.open {
+            self.theme.highlighted = ThemeChoice::ALL.iter().position(|&c| c == cx.settings.theme).unwrap_or(0);
         }
         if !self.sub_text.open {
             self.sub_text.highlighted = sub_colour_index(&self.subs.style.text_colour).unwrap_or(SUB_COLOURS.len());
@@ -393,6 +399,7 @@ impl SettingsScreen {
             Dd::NextUpDays => cx.settings.next_up_days = NEXT_UP_DAYS[i].1,
             Dd::SaverMode => cx.settings.screensaver = Screensaver::ALL[i],
             Dd::SaverMinutes => cx.settings.screensaver_minutes = SAVER_MINUTES[i].1,
+            Dd::Theme => cx.settings.theme = ThemeChoice::ALL[i],
             Dd::SubMode | Dd::SubText | Dd::SubBack | Dd::SubLang => {}
         }
         cx.save_settings();
@@ -460,6 +467,11 @@ impl SettingsScreen {
                 self.saver_minutes = s;
                 ev
             }
+            Dd::Theme => {
+                let (s, ev) = widgets::dropdown_key(self.theme, key, ThemeChoice::ALL.len());
+                self.theme = s;
+                ev
+            }
         };
         if let Some(widgets::DropdownEvent::Pick(i)) = ev {
             self.apply_pick(cx, dd, i);
@@ -504,6 +516,8 @@ impl SettingsScreen {
                     Some(Dd::SaverMode)
                 } else if self.saver_minutes.open {
                     Some(Dd::SaverMinutes)
+                } else if self.theme.open {
+                    Some(Dd::Theme)
                 } else {
                     None
                 }
@@ -677,6 +691,7 @@ impl SettingsScreen {
                 }
                 4 => self.saver_mode.open = true,
                 5 => self.saver_minutes.open = true,
+                6 => self.theme.open = true,
                 _ => {}
             },
             Tab::QuickConnect => match i {
@@ -1432,6 +1447,19 @@ impl SettingsScreen {
             self.saver_minutes.highlighted = i;
             self.saver_minutes.open = false;
             self.apply_pick(cx, Dd::SaverMinutes, i);
+        }
+        // P-USER-2: theme.
+        let themes: Vec<String> = ThemeChoice::ALL.iter().map(|c| c.label().to_string()).collect();
+        let f6 = self.focused(6);
+        let out = widgets::dropdown_row(ui, t, &mut self.theme, "Theme", &themes, f6);
+        xs.push(out.button_x);
+        if out.button_hovered {
+            self.set_content(6);
+        }
+        if let Some(i) = out.item_clicked {
+            self.theme.highlighted = i;
+            self.theme.open = false;
+            self.apply_pick(cx, Dd::Theme, i);
         }
         xs
     }

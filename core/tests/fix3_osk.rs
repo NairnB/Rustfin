@@ -67,7 +67,7 @@ fn password_never_auto_capitalises() {
         focus(&mut k, Cap::Space);
         k.press(Key::Enter);
         assert!(!k.shift, "{}", f.hint);
-        assert_eq!(layout(false, k.shift)[0][1].cap, Cap::Char('a'));
+        assert_eq!(layout(false, k.shift)[1][1].cap, Cap::Char('a'));
     }
 }
 
@@ -125,10 +125,11 @@ fn shift_and_layer_within_two_presses_of_start() {
 #[test]
 fn up_and_down_leave_as_before() {
     let mut k = KeyboardState::new();
+    assert_eq!(k.press(Key::Up), Effect::None); // the digit row is above the letters (FIX-4)
     assert_eq!(k.press(Key::Up), Effect::Leave(Key::Up));
     let mut k = KeyboardState::new();
     assert_eq!(k.press(Key::Down), Effect::None);
-    assert_eq!(k.row, 1);
+    assert_eq!(k.row, 2);
     let last = k.layout().len() - 1;
     k.row = last;
     k.col = 0;

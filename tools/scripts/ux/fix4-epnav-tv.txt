@@ -1,0 +1,51 @@
+# args: --tv
+# FIX-4 #7 (E4, TV): after Previous / Next episode the new page's Play has focus (white plate), nothing plays.
+# Remote keys only. Viewer, Drift Rebels: episode page → Previous (the special) → Next (back to episode 1).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+type Drift Rebels
+wait 600
+idle
+key down
+key enter
+wait-screen show
+wait 1000
+idle
+key down 2
+idle
+key enter
+wait-screen episode
+idle
+wait 300
+key right
+idle
+shot fix4-epnav-tv-prev-pressed
+key enter
+wait-screen episode
+wait 1500
+idle
+shot fix4-epnav-tv-after-prev
+key right
+idle
+key enter
+wait-screen episode
+wait 1500
+idle
+shot fix4-epnav-tv-after-next
+quit

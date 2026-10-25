@@ -303,7 +303,7 @@ impl Person {
         });
         for (i, r) in rs.iter().enumerate() {
             xs.push(r.rect.center().x);
-            if pointer_moved && r.hovered() {
+            if pointer_moved && r.hovered() && parts::hover_moves_focus(ui.ctx()) {
                 self.focus = Focus { group: G_LIST, index: i };
             }
             if r.clicked() {
@@ -413,7 +413,7 @@ impl Person {
                             }
                         }
                         xs.push(rect.center().x);
-                        if resp.hovered() {
+                        if resp.hovered() && parts::hover_moves_focus(&resp.ctx) {
                             self.focus = Focus { group: G_LIST, index: i };
                         }
                         if focused && crate::ui::shell::keyboard_focus(&resp.ctx) {
@@ -470,7 +470,7 @@ impl Person {
                 let focused = self.focus.group == G_DETAIL;
                 let r = parts::button(ui, t, "Back", focused, false);
                 xs.push(r.rect.center().x);
-                if r.hovered() {
+                if r.hovered() && parts::hover_moves_focus(ui.ctx()) {
                     self.focus = Focus { group: G_DETAIL, index: 0 };
                 }
                 if r.clicked() {
@@ -589,7 +589,7 @@ impl Screen for Person {
             let focused = self.focus.group == G_RETRY;
             let r = parts::button(ui, t, "Retry", focused, false);
             retry_xs.push(r.rect.center().x);
-            if r.hovered() {
+            if r.hovered() && parts::hover_moves_focus(ui.ctx()) {
                 self.focus = Focus { group: G_RETRY, index: 0 };
             }
             if r.clicked() {

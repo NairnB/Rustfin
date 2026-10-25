@@ -1,0 +1,54 @@
+# P-TV-7 parity tour (RR5): the "Missing episodes" option also lists episodes that have not aired ("Airs 14 Oct",
+# not playable). Runs against its own throwaway server (tools/testserver/shoot-unaired.sh starts it, host jf-tv7; not in the default render set): the series
+# "Airs Later" has two aired episodes and one that airs 1 Jan 2099. Signs in as viewer, shoots the season with the
+# option off (unaired row hidden: p-tv-7-off), turns it on (p-tv-7-unaired: "Airs 1 Jan" row), then off again.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-tv7:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key search
+wait-screen search
+idle
+type Airs Later
+wait 600
+idle
+key down
+key enter
+wait-screen show
+wait 2500
+idle
+shot p-tv-7-unaired-off
+# UX #5 / D8: "Missing episodes" lives in the ••• menu (last hero button): open it, Down to the entry, Enter.
+key right 4
+key enter
+idle
+key down
+key enter
+wait 1500
+idle
+shot p-tv-7-unaired
+# focus the unaired card (a click on its ▶ spot opens the page instead of playing: show_page.rs is_unaired)
+key down
+key right 2
+idle
+shot p-tv-7-unaired-focus
+key up
+key right 4
+# back to hidden (same path)
+key enter
+idle
+key down
+key enter
+wait 1000
+quit

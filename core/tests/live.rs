@@ -278,3 +278,13 @@ fn person_and_their_items() {
     names.sort();
     assert_eq!(names, ["Star Drift - Beacon", "Star Drift - Ember Rising", "Star Drift - Shadow Accord"]);
 }
+
+// FIX-4: the user's "Remember subtitle selections" as the app reads it at sign-in = the user's Configuration (read only)
+#[test]
+fn remember_subtitle_selections_reads_the_users_configuration() {
+    let Some(u) = url() else { return };
+    let c = signed(&u);
+    let id = c.session.as_ref().unwrap().user_id.clone();
+    let want = c.user(&id).unwrap().configuration.expect("configuration").remember_subtitle_selections;
+    assert_eq!(c.remember_subtitle_selections().unwrap(), want);
+}

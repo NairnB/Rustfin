@@ -119,6 +119,7 @@ impl ItemGrid {
         top: f32,
         xs: &[f32],
         focus: Option<usize>,
+        hovered: Option<usize>,
     ) {
         let Some(art) = self.art else { return };
         let t = cx.theme;
@@ -140,20 +141,52 @@ impl ItemGrid {
             }
             let Some(posters) = self.mosaics.get(&it.id) else { continue };
             let TileArt::Posters(posters) = tile_art(posters, it) else { continue };
-            let lifted = (focus == Some(i) && super::shell::keyboard_focus(ui.ctx())) || ui.rect_contains_pointer(tile);
+            // The same rule as the card underneath (its pointer area includes the label, and on TV the mouse lights nothing).
+            let lifted = parts::card_lit(ui.ctx(), focus == Some(i), hovered == Some(i));
             let a = t.ease(ui.ctx().animate_bool_with_time(egui::Id::new(("mosaic", &it.id)), lifted, t.focus_time));
             let lifted_rect = widgets::lift(tile, t.focus_scale, a);
-            ui.painter().rect_filled(lifted_rect, t.card_radius, t.skeleton);
             let Some(client) = cx.client.as_ref() else { return };
-            let urls: Vec<Option<String>> =
-                posters.iter().map(|p| client.image_url(p, ImageKind::Primary, w)).collect();
-            for (rect, url) in playlists::mosaic_rects(posters.len(), lifted_rect).into_iter().zip(urls) {
-                if let Some(tex) = url.and_then(|u| cx.images.get(&u)) {
+            let urls: Vec<String> = posters.iter().filter_map(|p| client.image_url(p, ImageKind::Primary, w)).collect();
+            // Every poster is asked for each frame, so a slow one keeps loading (and its wait keeps counting).
+            let posters: Vec<(String, Option<egui::TextureId>)> = urls
+                .into_iter()
+                .map(|u| {
+                    let tex = cx.images.get(&u);
+                    (u, tex)
+                })
+                .collect();
+            // Posters that failed, or are still loading `STALL` after they were asked for, are dropped and the rest
+            // re-laid out; none left: the card's own art (server image or placeholder) stays showing.
+            let now = crate::time::Instant::now();
+            let cells = mosaic_cells(
+                posters,
+                |(u, tex)| tex.is_some() || (cx.images.usable(u) && !cx.images.stalled(u, now)),
+                lifted_rect,
+            );
+            if cells.is_empty() {
+                continue;
+            }
+            if cells.iter().any(|(_, (_, tex))| tex.is_none()) {
+                // a poster still loading is dropped when its wait runs out, even if nothing else repaints
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+            }
+            ui.painter().rect_filled(lifted_rect, t.card_radius, t.skeleton);
+            for (rect, (_, tex)) in cells {
+                if let Some(tex) = tex {
                     paint_cell(ui, tex, rect, lifted_rect, t.card_radius);
                 }
             }
+            // The card's top light band was painted under the mosaic: draw it again over the posters.
+            parts::card_sheen(ui, t, lifted_rect, a);
         }
     }
+}
+
+/// A playlist tile's cells: the posters `shows` keeps, in order, laid out over the whole `tile` (a dropped poster
+/// leaves no cell behind). Empty: none left to show.
+fn mosaic_cells<T>(posters: Vec<T>, shows: impl Fn(&T) -> bool, tile: egui::Rect) -> Vec<(egui::Rect, T)> {
+    let kept: Vec<T> = posters.into_iter().filter(|p| shows(p)).collect();
+    playlists::mosaic_rects(kept.len(), tile).into_iter().zip(kept).collect()
 }
 
 /// One mosaic cell: the poster centre-cropped to `rect` with a hair of gap, rounded only on the tile's outer corners.
@@ -306,7 +339,7 @@ impl Screen for ItemGrid {
             let focus = (self.focus.group == GRID).then_some(self.focus.index);
             let o = parts::grid(ui, cx, &cells, cols, focus, items.len());
             if self.art.is_some() {
-                self.paint_mosaics(ui, cx, &items, cols, top, &o.xs, focus);
+                self.paint_mosaics(ui, cx, &items, cols, top, &o.xs, focus, o.hovered);
             }
             out = Some(o);
         });
@@ -690,5 +723,29 @@ impl Screen for Collection {
                 cx.push(super::item::screen(it));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use egui::{pos2, Rect};
+
+    const TILE: Rect = Rect { min: pos2(0.0, 0.0), max: pos2(200.0, 300.0) };
+
+    /// C3-POLISH #1: a poster that cannot be shown gives its cell up; the others are laid out as if it never was.
+    #[test]
+    fn a_dropped_poster_leaves_no_cell_and_the_rest_fill_the_tile() {
+        // two posters, the second failed: the first fills the whole tile (not its left half beside a grey cell)
+        assert_eq!(mosaic_cells(vec!["a", "bad"], |p| *p != "bad", TILE), [(TILE, "a")]);
+        // three, the middle one failed: the two left split the tile in halves (not the three-poster layout)
+        let left = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 300.0));
+        let right = Rect::from_min_max(pos2(100.0, 0.0), pos2(200.0, 300.0));
+        assert_eq!(mosaic_cells(vec!["a", "bad", "c"], |p| *p != "bad", TILE), [(left, "a"), (right, "c")]);
+        // none left: no cells (the card keeps its own art)
+        assert!(mosaic_cells(vec!["bad"], |_| false, TILE).is_empty());
+        // all fine: unchanged
+        assert_eq!(mosaic_cells(vec!["a", "b"], |_| true, TILE), [(left, "a"), (right, "b")]);
     }
 }

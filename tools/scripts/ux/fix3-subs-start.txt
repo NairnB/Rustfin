@@ -1,0 +1,47 @@
+# FIX-3 player-subs-start (S1/S3): the film page's Subtitles line and the player's subtitle agree, from the film page
+# and from Home -> Resume (jf-test stands in for Sintel, which lives on jf-real). Amber Tide's page (full item loaded) shows what will play; Play and Resume start with the same.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 300
+shot fix3-subs-start-home
+key search
+wait-screen search
+type Amber Tide
+wait 1200
+idle
+key down
+key enter
+wait-screen movie
+wait 1500
+idle
+shot fix3-subs-start-page
+key enter
+wait-screen player
+wait 3000
+shot fix3-subs-start-player-from-page
+key back
+wait-screen movie
+key back
+wait 500
+key back
+wait-screen home
+idle
+wait 300
+key enter
+wait-screen player
+wait 3000
+shot fix3-subs-start-player-from-home
+quit

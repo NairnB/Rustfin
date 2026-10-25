@@ -127,6 +127,12 @@ pub fn is_tv(ctx: &egui::Context) -> bool {
     ctx.data(|d| d.get_temp::<bool>(egui::Id::new("jf-tv"))).unwrap_or(false)
 }
 
+/// Whether the pointer hovering a control moves focus to it. Not on TV: the remote drives focus there, and a
+/// mouse nudge must not pull it away.
+pub fn hover_moves_focus(ctx: &egui::Context) -> bool {
+    !is_tv(ctx)
+}
+
 /// Called by the app each frame: `true` on the TV build.
 pub fn set_tv(ctx: &egui::Context, tv: bool) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("jf-tv"), tv));
@@ -167,6 +173,13 @@ pub fn card_glow(ui: &Ui, t: &Theme, r: Rect, a: f32) {
         color: t.focus_glow.gamma_multiply(a),
     };
     ui.painter().add(glow.as_shape(r, t.card_radius));
+}
+
+/// The sheen when the card style draws one (desktop only), for art painted over a card's own.
+pub fn card_sheen(ui: &Ui, t: &Theme, r: Rect, a: f32) {
+    if card_focus_style(is_tv(ui.ctx()), a > 0.01, false).sheen {
+        sheen(ui, t, r, a);
+    }
 }
 
 /// A light band fading down from the top of the lifted art (stepped, top corners rounded).
@@ -672,7 +685,18 @@ pub fn pill_bar(
     focused: Option<usize>,
     user: Option<&str>,
 ) -> (RowOut, Option<Rect>) {
-    let t = cx.theme;
+    pill_bar_themed(ui, cx.theme, labels, current, focused, user)
+}
+
+/// `pill_bar` from a theme alone (all it needs of the context).
+pub fn pill_bar_themed(
+    ui: &mut Ui,
+    t: &Theme,
+    labels: &[&str],
+    current: usize,
+    focused: Option<usize>,
+    user: Option<&str>,
+) -> (RowOut, Option<Rect>) {
     let mut out = RowOut { clicked: None, hovered: None, xs: vec![] };
     let user_i = labels.len();
     let n = labels.len() + usize::from(user.is_some());
@@ -708,10 +732,21 @@ pub fn pill_bar(
         // FIX-2 #3: the current tab is text + underline while focus is elsewhere — only the focused item has a plate.
         let rest = if (i == current && focused.is_some()) || resp.hovered() { t.glass } else { Color32::TRANSPARENT };
         let ink = widgets::plate(ui, t, *rect, seg_h / 2.0, rest, a, t.pill_focus_scale);
-        let ink = if i == current || a > 0.5 { ink } else { t.text.gamma_multiply(0.7) };
+        // FIX-4 #3: on TV with the bar unfocused the current tab is dim too — only its underline marks it.
+        let bright = a > 0.5 || (i == current && !(is_tv(ui.ctx()) && focused.is_none()));
+        let ink = if bright { ink } else { t.text.gamma_multiply(0.7) };
         if i == current && a < 0.5 && i != user_i {
             let w = ui.fonts(|f| f.layout_no_wrap(labels[i].to_string(), font.clone(), ink).size().x);
-            widgets::selected_mark(ui, t, *rect, w, ink);
+            if is_tv(ui.ctx()) && focused.is_none() {
+                // FIX-5 H3: with the cursor elsewhere (the hero) the mark is a faint, thin hint, not a "you are here".
+                let mark = Rect::from_center_size(
+                    pos2(rect.center().x, rect.bottom() - t.bar_inset),
+                    vec2((w * 0.6).max(t.gap / 2.0), t.badge_stroke),
+                );
+                ui.painter().rect_filled(mark, t.badge_stroke / 2.0, ink.gamma_multiply(0.5));
+            } else {
+                widgets::selected_mark(ui, t, *rect, w, ink);
+            }
         }
         if i == user_i {
             let name = user.unwrap_or_default();
@@ -1279,7 +1314,11 @@ pub fn hero(ui: &mut Ui, cx: &mut Cx, item: &Item, focus: Option<usize>) -> RowO
         egui::UiBuilder::new().max_rect(row).layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = t.gap / 2.0;
-            let r = widgets::play_pill_for(ui, t, &label, focus == Some(0), !cx.opts.desktop);
+            let tv = !cx.opts.desktop;
+            let r = widgets::hero_play_pill(ui, t, &label, focus == Some(0), tv);
+            if tv {
+                ui.add_space(widgets::hero_lift_room(t, r.rect.width()));
+            }
             let m = widgets::round_button(ui, t, Icon::More, focus == Some(1));
             for (i, r) in [r, m].iter().enumerate() {
                 out.xs.push(r.rect.center().x);

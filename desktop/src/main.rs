@@ -329,6 +329,9 @@ impl Shell {
         if let Some(secs) = step.fast_forward {
             self.app.advance_clock(secs);
         }
+        if let Some((mode, pats)) = &step.image_stub {
+            self.app.images.stub(mode, &pats.iter().map(String::as_str).collect::<Vec<_>>());
+        }
         if let Some(t) = &step.text {
             g.egui.egui_winit.egui_input_mut().events.push(egui::Event::Text(t.clone()));
         }

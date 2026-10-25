@@ -352,6 +352,13 @@ struct QcConnect {
 #[serde(rename_all = "PascalCase", default)]
 struct UserDto {
     policy: UserPolicy,
+    configuration: UserConfig,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct UserConfig {
+    remember_subtitle_selections: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -962,6 +969,19 @@ impl Client {
         }
     }
 
+    /// FIX-4: the signed-in user's "Remember subtitle selections" (`/Users/Me` → Configuration.RememberSubtitleSelections).
+    pub fn remember_subtitle_selections(&self) -> Result<bool> {
+        match self.get_json::<UserDto>("/Users/Me") {
+            Ok(u) => Ok(u.configuration.remember_subtitle_selections),
+            Err(ApiError::NotFound) => {
+                let uid = self.user_id()?;
+                let u: UserDto = self.get_json(&format!("/Users/{uid}"))?;
+                Ok(u.configuration.remember_subtitle_selections)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// R-TAG-6: re-read the full item, replace its tag list with `edit(current tags)`, post it back; every other
     /// field unchanged. Returns the new tag list. Non-admin → `ApiError::Forbidden`.
     pub fn update_tags(&self, item_id: &str, edit: impl FnOnce(&[String]) -> Vec<String>) -> Result<Vec<String>> {
@@ -1247,7 +1267,9 @@ impl Client {
             "/Items?userId={uid}&IncludeItemTypes=Playlist&Recursive=true&SortBy=SortName&SortOrder=Ascending&Fields={CARD_FIELDS}"
         );
         let page: Page = self.get_json(&path)?;
-        Ok(page.items)
+        // FIX-4 PL4: each playlist id once (first-seen order), for the Playlists page and the Add-to picker alike
+        let mut seen = std::collections::HashSet::new();
+        Ok(page.items.into_iter().filter(|i| seen.insert(i.id.clone())).collect())
     }
 
     /// G7 / P-COLL-5: create a video playlist holding `ids`; returns the new playlist id.

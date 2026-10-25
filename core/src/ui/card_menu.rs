@@ -16,6 +16,8 @@ pub enum MenuAct {
     Details,
     ToggleWatched,
     ToggleFavourite,
+    /// FIX-4 PL1: open the item's page with its Add-to menu up.
+    AddTo,
     PosterFlow,
     /// PP-1: open the poster picker for this item.
     ChangePoster,
@@ -36,6 +38,10 @@ pub fn entries(item: &Item, admin: bool) -> Vec<(MenuAct, String)> {
         MenuAct::ToggleFavourite,
         if ud.is_favorite { "Remove from Favourites" } else { "Add to Favourites" }.to_string(),
     ));
+    // FIX-4 PL1: playlists are reachable from the poster (films, episodes and videos can be added).
+    if matches!(item.kind, ItemKind::Movie | ItemKind::Episode | ItemKind::Other) {
+        v.push((MenuAct::AddTo, "Add to…".to_string()));
+    }
     v.push((
         MenuAct::ChangePoster,
         if admin { "Change poster…".to_string() } else { "Change poster (just for you)…".to_string() },
@@ -143,6 +149,10 @@ pub fn run(cx: &mut Cx, item: &Item, act: MenuAct, place: Option<String>) -> Opt
             cx.push(super::item::screen_in(item.clone(), place));
             None
         }
+        MenuAct::AddTo => {
+            cx.push(super::item::screen_add_to(item.clone(), place));
+            None
+        }
         MenuAct::ToggleWatched | MenuAct::ToggleFavourite => {
             let mut next = item.clone();
             let ud = next.user_data.get_or_insert_with(Default::default);
@@ -196,11 +206,14 @@ mod tests {
     fn film_menu_plays_and_says_what_the_toggles_do() {
         let e = entries(&film(false, false), true);
         let labels: Vec<&str> = e.iter().map(|(_, l)| l.as_str()).collect();
-        assert_eq!(labels, ["Play", "Details", "Mark watched", "Add to Favourites", "Change poster…", "Poster Flow"]);
+        assert_eq!(
+            labels,
+            ["Play", "Details", "Mark watched", "Add to Favourites", "Add to…", "Change poster…", "Poster Flow"]
+        );
         let e = entries(&film(true, true), false);
         assert_eq!(e[2].1, "Mark unwatched");
         assert_eq!(e[3].1, "Remove from Favourites");
-        assert_eq!(e[4].1, "Change poster (just for you)…");
+        assert_eq!(e[5].1, "Change poster (just for you)…");
     }
 
     #[test]
@@ -220,7 +233,7 @@ mod tests {
         for _ in 0..10 {
             m.key(Key::Down);
         }
-        assert_eq!(m.focus, 5, "no wrap past the last row");
+        assert_eq!(m.focus, 6, "no wrap past the last row");
         assert_eq!(m.key(Key::Back), MenuKey::Close);
         assert_eq!(m.key(Key::Info), MenuKey::Close);
     }

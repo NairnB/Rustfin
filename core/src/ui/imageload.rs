@@ -5,7 +5,7 @@ use crate::api::Client;
 use crate::images::{cache_key, DiskCache, Lru};
 use crate::tasks::Pool;
 use crate::time::Instant;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -14,6 +14,9 @@ const MAX_TEXTURES: usize = 1500;
 /// PP review #2: a remote poster fetched at full original size is downscaled once to this width and the smaller
 /// image cached, so a 3000 px TheMovieDb/Fanart original isn't decoded for every card.
 const MAX_TEX_W: u32 = 1280;
+/// C3-POLISH: an image still not loaded this long after it was first asked for is given up on by screens that can
+/// show something else instead (a playlist tile re-lays out its other posters). It still loads, and shows once it has.
+pub const STALL: std::time::Duration = std::time::Duration::from_secs(6);
 
 type Decoded = (String, Option<egui::ColorImage>);
 
@@ -28,6 +31,11 @@ pub struct Images {
     inflight: HashSet<String>,
     failed: HashSet<String>,
     asked: HashSet<String>,
+    /// When each image not loaded yet was first asked for (on screen without a break; see `STALL`).
+    waiting: HashMap<String, Instant>,
+    /// Render tours only (`image-stub`): URLs containing one of these fail, or never load.
+    stub_fail: Vec<String>,
+    stub_stall: Vec<String>,
     tx: Sender<Decoded>,
     rx: Receiver<Decoded>,
     pub loaded_total: usize,
@@ -47,6 +55,9 @@ impl Images {
             inflight: HashSet::new(),
             failed: HashSet::new(),
             asked: HashSet::new(),
+            waiting: HashMap::new(),
+            stub_fail: vec![],
+            stub_stall: vec![],
             tx,
             rx,
             loaded_total: 0,
@@ -61,7 +72,7 @@ impl Images {
     /// False for an image that cannot be shown: one that failed to load, or a `file://` outside the allowed
     /// folders / gone from this device. Callers fall back to the server's own image (never a blank card).
     pub fn usable(&self, url: &str) -> bool {
-        if self.failed.contains(url) {
+        if self.failed.contains(url) || stub_hit(&self.stub_fail, url) {
             return false;
         }
         !url.starts_with("file://") || crate::api::poster::file_url_allowed(url, &self.file_roots)
@@ -72,11 +83,42 @@ impl Images {
         self.failed.clear();
     }
 
+    /// True while `url` is still not loaded `STALL` after it was first asked for (at `now`); false once it has a
+    /// texture, failed (see `usable`), or was not asked for.
+    pub fn stalled(&self, url: &str, now: Instant) -> bool {
+        // (`waiting` only holds what `get` could not hand a texture for; a load removes it)
+        self.waiting.get(url).is_some_and(|t| now.saturating_duration_since(*t) >= STALL)
+    }
+
+    /// Render tours (`image-stub fail|stall <substring>…`): from now on an image whose URL contains one of `pats`
+    /// fails to load, or never loads (it is not queued, so tours still go idle). `clear` drops both lists.
+    pub fn stub(&mut self, mode: &str, pats: &[&str]) {
+        let pats = pats.iter().map(|p| p.to_string());
+        match mode {
+            "fail" => self.stub_fail.extend(pats),
+            "stall" => self.stub_stall.extend(pats),
+            _ => {
+                self.stub_fail.clear();
+                self.stub_stall.clear();
+            }
+        }
+    }
+
     /// Texture for `url` if ready; otherwise queues it at the front (it is on screen now).
     pub fn get(&mut self, url: &str) -> Option<egui::TextureId> {
         self.asked.insert(url.to_string());
+        if stub_hit(&self.stub_fail, url) {
+            return None;
+        }
+        if stub_hit(&self.stub_stall, url) {
+            self.waiting.entry(url.to_string()).or_insert_with(Instant::now);
+            return None;
+        }
         if let Some(t) = self.textures.get(&url.to_string()) {
             return Some(t.id());
+        }
+        if !self.failed.contains(url) {
+            self.waiting.entry(url.to_string()).or_insert_with(Instant::now);
         }
         if self.wanted(url) {
             self.queue.push_front(url.to_string());
@@ -100,6 +142,7 @@ impl Images {
     pub fn begin_frame(&mut self, ctx: &egui::Context) {
         for (url, img) in self.rx.try_iter().collect::<Vec<_>>() {
             self.inflight.remove(&url);
+            self.waiting.remove(&url);
             match img {
                 Some(img) => {
                     let tex = ctx.load_texture(cache_key(&url), img, egui::TextureOptions::LINEAR);
@@ -118,6 +161,8 @@ impl Images {
     pub fn end_frame(&mut self, ctx: &egui::Context) {
         let asked = std::mem::take(&mut self.asked);
         self.queue.retain(|u| asked.contains(u));
+        // off screen for a frame: the wait starts again next time
+        self.waiting.retain(|u, _| asked.contains(u));
         while self.inflight.len() < MAX_INFLIGHT {
             let Some(url) = self.queue.pop_front() else { break };
             self.start(url, ctx.clone());
@@ -175,5 +220,43 @@ impl Images {
 
     pub fn pending(&self) -> usize {
         self.inflight.len() + self.queue.len()
+    }
+}
+
+fn stub_hit(pats: &[String], url: &str) -> bool {
+    pats.iter().any(|p| url.contains(p.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_image_still_loading_after_stall_counts_as_stalled() {
+        let mut im = Images::new(None);
+        let t0 = Instant::now();
+        assert_eq!(im.get("http://s/a"), None);
+        assert!(!im.stalled("http://s/a", t0), "just asked: still loading");
+        assert!(im.stalled("http://s/a", t0 + STALL + std::time::Duration::from_millis(50)));
+        assert!(!im.stalled("http://s/never-asked", t0 + STALL * 2));
+        // a frame where nobody drew it: the wait starts again
+        im.end_frame(&egui::Context::default());
+        im.end_frame(&egui::Context::default());
+        assert!(!im.stalled("http://s/a", t0 + STALL * 2));
+    }
+
+    #[test]
+    fn stubbed_images_fail_or_never_load_without_holding_up_idle() {
+        let mut im = Images::new(None);
+        im.stub("fail", &["/bad/"]);
+        im.stub("stall", &["/slow/"]);
+        assert_eq!(im.get("http://s/bad/1"), None);
+        assert!(!im.usable("http://s/bad/1"));
+        assert_eq!(im.get("http://s/slow/1"), None);
+        assert!(im.usable("http://s/slow/1"));
+        assert!(im.stalled("http://s/slow/1", Instant::now() + STALL));
+        assert_eq!(im.pending(), 0, "nothing queued for a stubbed image");
+        im.stub("clear", &[]);
+        assert!(im.usable("http://s/bad/1"));
     }
 }

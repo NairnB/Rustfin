@@ -13,6 +13,8 @@
 //!   mark <label>           print "MARK <label> <ms since start>"
 //!   bench-keys <key> <n>   press <key> once per frame for n frames; print frame-time stats
 //!   mem                    print resident memory (Linux)
+//!   image-stub <fail|stall|clear> [substring…]   from now on images whose URL contains a substring fail to load, or
+//!                          never load (a broken or hung poster without touching the server's data); clear = off
 //!   quit
 //! Mouse (x, y in screenshot pixels, top-left = 0 0):
 //!   move <x> <y>           move the pointer there (hover)
@@ -47,6 +49,8 @@ pub enum Cmd {
     Mark(String),
     BenchKeys(Key, usize),
     Mem,
+    /// Tours: make matching images fail or never load (`Images::stub`).
+    ImageStub(String, Vec<String>),
     Quit,
     Mouse(Mouse),
     /// One pointer move per frame along a line, timed on the app clock.
@@ -111,6 +115,11 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
                 Cmd::BenchKeys(k, p.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?)
             }
             "mem" => Cmd::Mem,
+            "image-stub" => {
+                let mut w = rest.split_whitespace().map(String::from);
+                let mode = w.next().filter(|m| matches!(m.as_str(), "fail" | "stall" | "clear")).ok_or_else(bad)?;
+                Cmd::ImageStub(mode, w.collect())
+            }
             "quit" => Cmd::Quit,
             "move" | "click" | "scroll" | "right-click" => {
                 let n: Vec<f32> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
@@ -233,6 +242,8 @@ pub struct Step {
     pub text: Option<String>,
     pub shot: Option<String>,
     pub fast_forward: Option<f64>,
+    /// `image-stub`: mode and URL substrings.
+    pub image_stub: Option<(String, Vec<String>)>,
     pub mouse: Option<Mouse>,
     /// The keys are a held key's repeats (`key <k> <n>` with n > 1).
     pub held: bool,
@@ -430,6 +441,7 @@ impl Runner {
                 }
             }
             Cmd::Mem => println!("MEM rss_mb={:.1}", rss_mb()),
+            Cmd::ImageStub(mode, pats) => s.image_stub = Some((mode, pats)),
             Cmd::Mouse(m) => s.mouse = Some(m),
             Cmd::Glide { from, to, ms } => {
                 let k = (((clock - self.since_clock) * 1000.0) / ms.max(1) as f64).min(1.0) as f32;
@@ -492,6 +504,16 @@ mod tests {
         assert_eq!(m[7], "Key(Back, 1)");
         assert!(parse("click 10").is_err());
         assert!(parse("mouse middle").is_err());
+    }
+
+    #[test]
+    fn image_stub_parses_and_is_not_a_drive_command() {
+        let v = parse("image-stub fail /Items/abc/ /Items/def/\nimage-stub clear").unwrap();
+        let m: Vec<String> = v.iter().map(|c| format!("{c:?}")).collect();
+        assert_eq!(m[0], "ImageStub(\"fail\", [\"/Items/abc/\", \"/Items/def/\"])");
+        assert_eq!(m[1], "ImageStub(\"clear\", [])");
+        assert!(parse("image-stub break x").is_err());
+        assert!(parse_drive("image-stub fail x", false).is_err(), "testers cannot break images");
     }
 
     #[test]

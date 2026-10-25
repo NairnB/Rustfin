@@ -1,0 +1,149 @@
+# args: --tv
+# FIX-4 K1-K4: the TV keyboard on the sign-in password field. `view-pass-1` is typed on the letter layer (digit row, dash on the
+# letter rows) with no 123 press; bigger keys with a margin under the panel, a single lit key, a large typed line. Signs nothing in.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+key enter
+idle
+key right 4
+wait 250
+key right 4
+wait 250
+key right
+key enter
+key left 4
+key enter
+key right 2
+key down
+key down
+key enter
+key right 2
+key up
+key enter
+key left 4
+wait 250
+key left
+key up
+key enter
+key right 4
+key down
+key enter
+key right
+key enter
+key down
+key down
+key left 2
+key up
+key left
+key up
+key enter
+key right
+key up
+key enter
+key right 4
+wait 250
+key right
+key up
+key right
+key enter
+key right 2
+key enter
+key left
+key enter
+key left 3
+key enter
+key back
+idle
+key down
+key enter
+wait-screen signin
+idle
+key enter
+idle
+key down
+key down
+key down
+key right 2
+key up
+key right
+key up
+key enter
+key left 4
+wait 250
+key left
+key up
+key enter
+key right 4
+key down
+key enter
+key right
+key enter
+key left 4
+wait 250
+key left
+key up
+key enter
+key right 3
+key down
+key enter
+key back
+key down
+key enter
+idle
+key right
+key down
+key down
+key enter
+key down
+key right 2
+key up
+key up
+key up
+key enter
+key left 4
+key enter
+key left 2
+key down
+key down
+key enter
+key right 4
+wait 250
+key right
+key enter
+key left 2
+key up
+key enter
+key left 4
+wait 250
+key left
+key up
+key enter
+key down
+key down
+key down
+key right 2
+key up
+key up
+key enter
+key enter
+key left
+key down
+key enter
+key left
+key down
+key left
+key up
+key left
+key up
+key up
+key up
+key enter
+idle
+wait 400
+shot fix4-osk-typed
+key back
+wait 300
+quit

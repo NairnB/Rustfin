@@ -1,0 +1,37 @@
+# FIX-4 #8: Sintel on jf-real has many subtitle tracks: the Subtitles drop-down opens with the selection and rows above in view, a fade + chevron on each edge with hidden rows. Needs jf-real (not jf-test).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-real:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+wait 3000
+idle
+key search
+wait-screen search
+idle
+type Sintel
+wait 800
+idle
+key down
+key enter
+wait-screen movie
+idle
+wait 1500
+shot fix4-long-page
+key right 4
+key enter
+wait 800
+shot fix4-long-open
+key down 12
+wait 800
+shot fix4-long-down
+quit

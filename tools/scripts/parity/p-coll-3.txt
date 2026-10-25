@@ -26,9 +26,9 @@ key down
 key enter
 wait-screen movie
 idle
-# Add to… → Add to collection… → Star Drift Saga
+# Add to… (the buttons end …, Add to…, Favourite, More: right clamps on More, two lefts reach Add to…) → Add to collection… → Star Drift Saga
 key right 10
-key left
+key left 2
 key enter
 idle
 key down
@@ -39,7 +39,7 @@ key enter
 wait 1500
 idle
 key right 10
-key left
+key left 2
 key enter
 idle
 key down 3

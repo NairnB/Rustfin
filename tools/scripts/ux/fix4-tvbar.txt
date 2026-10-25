@@ -1,0 +1,25 @@
+# args: --tv
+# FIX-4 tv-bar (FRICTION-5 #3): on TV Home at start only Play is white, "Home" grey with its underline; after Up the
+# bar holds focus and its focused item is the white plate.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+wait 800
+shot fix4-tvbar-start
+key up
+idle
+wait 300
+shot fix4-tvbar-focused
+quit

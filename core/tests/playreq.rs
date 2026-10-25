@@ -36,7 +36,9 @@ fn episode_request_defaults() {
     assert_eq!(r.external_subs[0].index, 0);
     assert!(r.external_subs[0].url.ends_with("/Subtitles/0/0/Stream.srt?api_key=tok"));
     assert_eq!(r.audio, ms.default_audio_stream_index.or(Some(2)));
-    assert_eq!(r.subtitle, ms.default_subtitle_stream_index);
+    // FIX-4: the server's DefaultSubtitleStreamIndex is ignored; eng audio and no remembered pick → Off
+    assert_eq!(ms.default_subtitle_stream_index, Some(0));
+    assert_eq!(r.subtitle, None);
     assert!(r.title.starts_with("Night Shift Stories · S1E"), "{}", r.title);
 }
 

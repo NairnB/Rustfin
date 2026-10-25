@@ -28,6 +28,9 @@ fn logo_bounds_find_visible_pixels() {
     let none = logo_info(b"not an image");
     assert_eq!(none.bounds, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)));
     assert!(!none.dark);
+    // undecodable bytes are not "ok" (a wide fetch that fetched but cannot be read must not replace the narrow logo)
+    assert!(!none.ok);
+    assert!(info.ok);
 }
 
 #[test]
@@ -130,4 +133,48 @@ fn wide_fetch_failure_keeps_the_cropped_narrow_logo() {
     // the wide texture never arrives → after the wait the narrow one is drawn
     assert_eq!(logo_choice(narrow, 4.0, None, LOGO_WIDE_WAIT - 0.1), Some((1, false)));
     assert_eq!(logo_choice(narrow, 4.0, None, LOGO_WIDE_WAIT + 0.1), Some((1, true)));
+}
+
+/// C3-POLISH #6: while the logo is not ready its reserved box shows the text title, bottom-aligned like the logo; a
+/// title long enough for two lines stays inside the box (never drawn up over the line above).
+#[test]
+fn pending_logo_box_shows_the_text_title_inside_the_box() {
+    use egui::epaint::Shape;
+    use jf_core::theme::Theme;
+    let drawn = |name: &str| {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(Theme::fonts());
+        let t = Theme::placeholder();
+        let mut boxr = Rect::NOTHING;
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                let top = ui.cursor().top();
+                // a logo texture whose pass has not run: the pending state
+                jf_core::ui::at_details::hero_title(ui, &t, name, Some(egui::TextureId::User(77)));
+                boxr = Rect::from_min_size(pos2(ui.min_rect().left(), top), vec2(t.hero_logo_w, t.hero_logo_h));
+            });
+        });
+        let text: Vec<(Rect, usize)> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                Shape::Text(s) => Some((s.visual_bounding_rect(), s.galley.rows.len())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text.len(), 1, "one text title, not a blank box");
+        (boxr, text[0].0, text[0].1)
+    };
+    let (b, r, rows) = drawn("Elephants Dream");
+    assert_eq!(rows, 1);
+    assert!(
+        (r.bottom() - b.bottom()).abs() < 20.0 && r.top() >= b.top(),
+        "one line sits at the box bottom: {r:?} in {b:?}"
+    );
+    let (b, r, rows) = drawn("Agent 327: Operation Barbershop and the Very Long Subtitle");
+    assert_eq!(rows, 2, "two lines at most");
+    assert!(
+        r.top() >= b.top() - 0.5 && r.bottom() <= b.bottom() + 0.5,
+        "two lines stay inside the box: {r:?} in {b:?}"
+    );
 }

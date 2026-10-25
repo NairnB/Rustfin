@@ -1,0 +1,40 @@
+# args: --tv
+# P-USER-2 (theme): Settings → Display → Theme: Black; Home turns true black at once, and stays so after leaving Settings.
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+shot fix3-theme-tv-dark-home
+key up 20
+key right 10
+key enter
+idle
+key down 2
+key enter
+wait-screen settings
+idle
+key right 4
+idle
+key down 7
+key enter
+key down
+key enter
+idle
+shot fix3-theme-tv-black-settings
+key back
+key back
+wait-screen home
+idle
+shot fix3-theme-tv-black-home
+quit

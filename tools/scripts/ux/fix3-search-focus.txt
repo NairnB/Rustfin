@@ -1,5 +1,5 @@
 # args: --tv
-# FIX-3 tv-search-focus (FRICTION-4 #1): type "si" on the TV keyboard, press Up out of it -> the first result (Sintel) is lit; then Down/Up back and "done" does the same.
+# FIX-3 tv-search-focus (FRICTION-4 #1): type "si" on the TV keyboard, press Up out of it -> the first result (Distant Signal) is lit; then Down/Up back and "done" does the same.
 wait-screen connect
 wait 2500
 idle

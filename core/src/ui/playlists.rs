@@ -15,11 +15,16 @@ pub fn list() -> Box<dyn Screen> {
     collection::grid_screen_art(
         "playlists",
         "Playlists",
-        "No playlists yet. Open a film, choose Add to… and then New playlist….",
+        empty_text(),
         |c| c.playlists(),
         screen,
         Some(|c, p| c.playlist_posters(&p.id, MOSAIC_READ).map(|v| mosaic_pick(&v)).unwrap_or_default()),
     )
+}
+
+/// FIX-4 PL3: the empty Playlists page says where playlists come from.
+pub fn empty_text() -> &'static str {
+    "No playlists yet. Use Add to… on any film or episode to start one."
 }
 
 /// FIX-3 #9: how many entries are read to find four distinct posters.

@@ -1,6 +1,6 @@
 //! Saved servers and sessions (SPEC §6, R-SET-*). Stored as `settings.json` through `Storage`.
 //! Signatures fixed by the lead; bodies are packet C2.
-use crate::api::{ExtraFilters, Filters, LibraryQuery, SegmentKind, Session, SortBy};
+use crate::api::{ExtraFilters, Filters, Item, ItemKind, LibraryQuery, SegmentKind, Session, SortBy};
 use crate::platform::{Storage, SubStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -64,6 +64,26 @@ impl Screensaver {
             Screensaver::None => "None",
             Screensaver::Backdrops => "Backdrops",
             Screensaver::Logo => "Logo",
+        }
+    }
+}
+
+/// The colour theme (P-USER-2): Dark is the default look, Black swaps the backgrounds for true black (OLED TVs).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    #[default]
+    Dark,
+    Black,
+}
+
+impl ThemeChoice {
+    pub const ALL: [ThemeChoice; 2] = [ThemeChoice::Dark, ThemeChoice::Black];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::Dark => "Dark",
+            ThemeChoice::Black => "Black",
         }
     }
 }
@@ -185,6 +205,8 @@ pub struct Settings {
     pub show_story_year: bool,
     /// P-USER-2: how dates are shown.
     pub date_format: DateFormat,
+    /// P-USER-2: Dark (default) or Black (true-black backgrounds).
+    pub theme: ThemeChoice,
     /// P-USER-2: draw backdrops on item / show pages.
     pub backdrops: bool,
     /// P-USER-4: preferred audio language (display name; empty = any).
@@ -219,6 +241,30 @@ pub struct Settings {
     pub screensaver: Screensaver,
     /// RR8 / P-USER-2: idle minutes before the screensaver starts.
     pub screensaver_minutes: u32,
+    /// FIX-4: per user id, their Jellyfin "Remember subtitle selections" (Configuration.RememberSubtitleSelections)
+    /// as last read from the server at sign-in.
+    pub remember_subs: HashMap<String, bool>,
+    /// FIX-4: per user id, the subtitle they picked per film / series (`sub_pick_key` → pick); kept and used only
+    /// while their `remember_subs` is on.
+    pub sub_picks: HashMap<String, HashMap<String, SubPick>>,
+}
+
+/// FIX-4 (lead's decision, 24 Oct): a subtitle the viewer picked. `index` is the `MediaStream.Index`, -1 = they
+/// chose Off; `language` and `forced` find the same track in another episode of the series.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(default)]
+pub struct SubPick {
+    pub index: i32,
+    pub language: Option<String>,
+    pub forced: bool,
+}
+
+/// FIX-4: what a subtitle pick is kept under — an episode's series (one pick for the whole show), else the item.
+pub fn sub_pick_key(item: &Item) -> String {
+    match (&item.kind, &item.series_id) {
+        (ItemKind::Episode, Some(series)) => series.clone(),
+        _ => item.id.clone(),
+    }
 }
 
 /// When to show subtitles (P-USER-5). `Default` = the server's default for the item.
@@ -300,6 +346,7 @@ impl Default for Settings {
             show_release_year: true,
             show_story_year: true,
             date_format: DateFormat::Iso,
+            theme: ThemeChoice::Dark,
             backdrops: true,
             preferred_audio_language: String::new(),
             max_streaming_bitrate: 0,
@@ -317,6 +364,8 @@ impl Default for Settings {
             next_up_days: 0,
             screensaver: Screensaver::None,
             screensaver_minutes: 3,
+            remember_subs: HashMap::new(),
+            sub_picks: HashMap::new(),
         }
     }
 }
@@ -374,6 +423,22 @@ impl Settings {
     pub fn last(&self) -> Option<&ServerEntry> {
         let id = self.last_server.as_deref()?;
         self.servers.iter().find(|e| e.id == id)
+    }
+    /// FIX-4: `user_id`'s remembered subtitle for `item`; None unless their "Remember subtitle selections" is on.
+    pub fn remembered_sub(&self, user_id: &str, item: &Item) -> Option<&SubPick> {
+        if !self.remember_subs.get(user_id).copied().unwrap_or(false) {
+            return None;
+        }
+        self.sub_picks.get(user_id)?.get(&sub_pick_key(item))
+    }
+    /// FIX-4: keep `user_id`'s subtitle `pick` for `item` when their "Remember subtitle selections" is on; true when
+    /// it was kept (the caller saves).
+    pub fn remember_sub(&mut self, user_id: &str, item: &Item, pick: SubPick) -> bool {
+        if !self.remember_subs.get(user_id).copied().unwrap_or(false) {
+            return false;
+        }
+        self.sub_picks.entry(user_id.to_string()).or_default().insert(sub_pick_key(item), pick);
+        true
     }
     /// R-SET-4: drop the session of server `id` (keeps the server).
     pub fn forget_session(&mut self, id: &str) {

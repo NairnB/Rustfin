@@ -1,0 +1,32 @@
+# FIX-4 #8: the film page Subtitles drop-down (Amber Tide on jf-test: Off + 2 tracks). A list that fits shows no fade or chevron. For the long-list cue see fix4-dropdown-long(.tv).txt (jf-real Sintel).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type tester
+key down
+type test-pass-1
+key enter
+wait-screen home
+idle
+key search
+wait-screen search
+type Amber Tide
+wait 1200
+idle
+key down
+key enter
+wait-screen movie
+wait 1500
+idle
+shot fix4-page
+key right 3
+key enter
+wait 500
+shot fix4-dropdown-fits
+quit

@@ -1,0 +1,45 @@
+# args: --tv
+# C3-POLISH #2 (TV): the flipped Poster Flow card follows the FIX-3 tv-hero-focus rule — Play is white only while it
+# has focus; with focus on the row below it is the glass plate. Viewer, a film library → Info → Poster Flow → flip.
+# Nothing is changed on the server.
+#   c3-tv-flow-play-focused   flipped, focus on Play: white plate
+#   c3-tv-flow-play-glass     Down to the first setting row: Play is glass (not white)
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+key up 20
+key left 10
+key right 3
+key enter
+wait-screen library
+idle
+wait 600
+key info
+idle
+wait 300
+key down 9
+key enter
+wait-screen posterflow
+idle
+wait 600
+key enter
+wait 900
+idle
+shot c3-tv-flow-play-focused
+key down
+wait 600
+idle
+shot c3-tv-flow-play-glass
+quit

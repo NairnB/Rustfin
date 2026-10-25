@@ -1,6 +1,6 @@
 # args: --tv
-# UXP5: TV on-screen keyboard — connect + sign in as viewer with arrows and Enter only (the app's own keyboard).
-# Key paths generated from tools/ux/osk.py (FIX-3 layout: shift / 123 / clear in a left column); each ends with Back.
+# UXP5: TV on-screen keyboard — connect + sign in with arrows and Enter only (the app's own keyboard).
+# Key paths generated from tools/ux/osk.py (FIX-4 layout: a digit row on top, then delete / shift / 123 / clear in a left column); each ends with Back.
 wait-screen connect
 wait 2500
 idle
@@ -10,32 +10,9 @@ key enter
 idle
 key right 4
 wait 250
-key right 3
-key enter
-key right 2
-key down
-key enter
-key enter
-key left 4
-key enter
-key left 4
+key right 4
 wait 250
-key left 2
-key enter
 key right
-key enter
-key right
-key enter
-key enter
-key left 2
-key enter
-key down
-key down
-key right 2
-key up
-key right
-key up
-key up
 key enter
 key left 4
 key enter
@@ -64,11 +41,13 @@ key left
 key up
 key enter
 key right
+key up
 key enter
 key right 4
 wait 250
-key right 3
+key right
 key up
+key right
 key enter
 key right 2
 key enter
@@ -163,8 +142,7 @@ key left
 key up
 key left
 key up
-key enter
-key right
+key up
 key up
 key enter
 idle

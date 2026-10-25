@@ -3,6 +3,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -119,6 +120,33 @@ def load_env():
             os.environ.setdefault(k, v.strip().strip("\"'"))
 
 
+def owner():
+    """Who owns the fleet users this process makes: RF_OWNER, lower-case letters and digits only. No default, so two
+    jobs sharing a server can never sweep each other's users. (`r<digits>` is the old session-name shape: not an owner.)"""
+    o = os.environ.get("RF_OWNER", "")
+    if not o:  # the other lead's name for the same thing: FLEET_USER_PREFIX=fleet-<owner>-
+        m = re.fullmatch(r"fleet-([a-z0-9]+)-", os.environ.get("FLEET_USER_PREFIX", ""))
+        o = m.group(1) if m else ""
+    if not re.fullmatch(r"[a-z0-9]+", o) or re.fullmatch(r"r[0-9]+", o):
+        raise ApiError("RF_OWNER is required (letters a-z and digits only, not r<number>): it names whose fleet users these are")
+    return o
+
+
+def fleet_name(session):
+    return f"fleet-{owner()}-{session}"
+
+
+def sweep_names(names, own, keep=()):
+    """The users an owner's sweep deletes: `fleet-<own>-*` except the kept sessions. Nobody else's."""
+    kept = {f"fleet-{own}-{k}" for k in keep}
+    return [n for n in names if n.startswith(f"fleet-{own}-") and n not in kept]
+
+
+def legacy_names(names):
+    """fleet-* users with no owner: `fleet-<session>` or the old `fleet-r<N>-...` session names."""
+    return [n for n in names if n.startswith("fleet-") and not re.match(r"fleet-(?!r[0-9]+-)[a-z0-9]+-", n)]
+
+
 def fleet_home():
     return os.environ.get("RF_FLEET_HOME") or os.path.join(os.path.expanduser("~"), "rf-fleet")
 
@@ -155,6 +183,11 @@ def clean_user_data(api, uid):
 def create_user(api, name, password, admin=False):
     u = api.post("/Users/New", {"Name": name, "Password": password})
     clean_user_data(api, u["Id"])
+    # the server remembers track choices per item and user id, and reuses ids: start on the true default tracks
+    cfg = api.get(f"/Users/{u['Id']}")["Configuration"]
+    cfg["RememberAudioSelections"] = False
+    cfg["RememberSubtitleSelections"] = False
+    api.post(f"/Users/{u['Id']}/Configuration", cfg)
     if admin:
         pol = api.get(f"/Users/{u['Id']}")["Policy"]
         pol["IsAdministrator"] = True
@@ -192,23 +225,38 @@ def _user_cli(argv):
     if argv and argv[0] == "presign" and len(argv) == 5:
         presign(*argv[1:])
         return 0
-    if len(argv) < 2 or argv[0] not in ("create", "delete", "sweep"):
-        print("usage: fleet-user.sh create|delete <session> [--admin] | sweep [keep-session...]", file=sys.stderr)
+    usage = "usage: fleet-user.sh create|delete <session> [--admin] | sweep --owner <o> [keep-session...] | list --legacy"
+    if argv and argv[0] == "sweep":
+        if len(argv) < 3 or argv[1] != "--owner":
+            print("fleet-user: sweep needs --owner <o> (it deletes only that owner's fleet-<o>-* users)", file=sys.stderr)
+            return 2
+        if not re.fullmatch(r"[a-z0-9]+", argv[2]) or re.fullmatch(r"r[0-9]+", argv[2]):
+            print("fleet-user: --owner must be letters a-z and digits only, not r<number> (that is the old session-name shape)", file=sys.stderr)
+            return 2
+    elif argv and argv[0] == "list":
+        if argv[1:] != ["--legacy"]:
+            print(usage, file=sys.stderr)
+            return 2
+    elif len(argv) < 2 or argv[0] not in ("create", "delete"):
+        print(usage, file=sys.stderr)
         return 2
-    cmd, session = argv[0], argv[1] if argv[0] != "sweep" else ""
+    cmd = argv[0]
     api = Api.admin()
     if cmd == "create":
-        name, pw = f"fleet-{session}", secrets.token_urlsafe(12)
+        name, pw = fleet_name(argv[1]), secrets.token_urlsafe(12)
         with create_lock():
             delete_user(api, name)  # a leftover from a crashed run
             create_user(api, name, pw, admin="--admin" in argv)
         print(json.dumps({"user": name, "pass": pw}))
     elif cmd == "delete":
-        delete_user(api, f"fleet-{session}")
-    else:  # sweep: remove every fleet-* user except the ones named
-        keep = {f"fleet-{s}" for s in argv[1:]}
+        delete_user(api, fleet_name(argv[1]))
+    elif cmd == "list":  # fleet users with no owner, for a human to decide; deletes nothing
+        for n in legacy_names([u["Name"] for u in api.get("/Users") or []]):
+            print(n)
+    else:  # sweep: remove this owner's fleet users except the sessions named
+        doomed = set(sweep_names([u["Name"] for u in api.get("/Users") or []], argv[2], argv[3:]))
         for u in api.get("/Users") or []:
-            if u["Name"].startswith("fleet-") and u["Name"] not in keep:
+            if u["Name"] in doomed:
                 api.delete(f"/Users/{u['Id']}")
                 print("deleted", u["Name"])
     try:

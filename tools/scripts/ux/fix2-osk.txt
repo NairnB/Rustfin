@@ -34,7 +34,8 @@ shot fix2-osk-eight-rights
 key enter
 idle
 wait 600
-key up
+# FIX-4: the digit row sits above the letters, so leaving takes a second Up
+key up 2
 idle
 wait 600
 shot fix2-osk-up-leaves

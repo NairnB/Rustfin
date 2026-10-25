@@ -226,7 +226,7 @@ impl Screen for Browse {
 
         let r = parts::button(ui, t, "Shuffle", self.focus.group == G_SHUFFLE, true);
         let shuffle_x = r.rect.center().x;
-        if pointer_moved && r.hovered() {
+        if pointer_moved && r.hovered() && parts::hover_moves_focus(ui.ctx()) {
             self.focus = Focus { group: G_SHUFFLE, index: 0 };
         }
         let shuffle_clicked = r.clicked();

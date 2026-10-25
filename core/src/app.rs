@@ -142,6 +142,35 @@ impl Cx<'_> {
         }
         self.save_settings();
     }
+    /// FIX-4: the signed-in viewer's remembered subtitle for `item`; None unless their Jellyfin "Remember subtitle
+    /// selections" is on.
+    pub fn remembered_subtitle(&self, item: &crate::api::Item) -> Option<crate::settings::SubPick> {
+        let uid = self.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_id.as_str())?;
+        self.settings.remembered_sub(uid, item).cloned()
+    }
+    /// FIX-4: keep the viewer's subtitle pick `val` (None = Off) of `ms`'s streams for `item`, saved with the
+    /// settings, when their "Remember subtitle selections" is on.
+    pub fn remember_subtitle(
+        &mut self,
+        item: &crate::api::Item,
+        ms: Option<&crate::api::MediaSource>,
+        val: Option<i32>,
+    ) {
+        let Some(uid) = self.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_id.clone()) else {
+            return;
+        };
+        let stream = val.and_then(|i| {
+            ms?.media_streams.iter().find(|s| s.kind == crate::api::StreamKind::Subtitle && s.index == i)
+        });
+        let pick = crate::settings::SubPick {
+            index: val.unwrap_or(-1),
+            language: stream.and_then(|s| s.language.clone()),
+            forced: stream.is_some_and(|s| s.is_forced),
+        };
+        if self.settings.remember_sub(&uid, item, pick) {
+            self.save_settings();
+        }
+    }
     pub fn device(&self) -> DeviceInfo {
         device_info(self.settings, self.opts)
     }
@@ -194,6 +223,8 @@ fn device_info(s: &Settings, o: &AppOptions) -> DeviceInfo {
 /// Screen id reserved for the admin check result (real screen ids start at 1).
 const ADMIN_SCREEN: u64 = 0;
 const ADMIN_TAG: &str = "admin";
+/// FIX-4: the signed-in user's "Remember subtitle selections" (read with the admin check).
+const REMEMBER_SUBS_TAG: &str = "remember-subs";
 /// NAV: the server's libraries for the sidebar (loaded with the admin check).
 const VIEWS_TAG: &str = "views";
 /// Screen id reserved for the screensaver's backdrop list.
@@ -268,6 +299,9 @@ pub struct App {
     tv_kb: Option<ui::keyboard::KeyboardState>,
     tv_field: Option<ui::keyboard::TvField>,
     tv_kb_auto: u64,
+    /// FIX-5: the keyboard as it was closed, per field of the current screen — screen id, field hint, password
+    /// flag, state — so Enter on the same field opens it on the key the viewer left.
+    tv_kb_saved: Vec<(u64, String, bool, ui::keyboard::KeyboardState)>,
     /// FIX-1 #10: when text last arrived from a physical keyboard (TV); typing stands the on-screen keyboard
     /// down only for `TV_TEXT_QUIET` seconds after it, so the remote keyboard never latches off.
     tv_text_at: Option<f64>,
@@ -282,7 +316,7 @@ impl App {
         }
         let disk = DiskCache::new(store.cache_dir().join("img"), 500 << 20).ok();
         let mut app = App {
-            theme: Theme::placeholder(),
+            theme: Theme::for_choice(settings.theme),
             opts,
             client: None,
             settings,
@@ -317,6 +351,7 @@ impl App {
             tv_kb: None,
             tv_field: None,
             tv_kb_auto: 0,
+            tv_kb_saved: Vec::new(),
             tv_text_at: None,
         };
         let mut roots = vec![crate::api::poster::poster_store_dir(&app.store.cache_dir())];
@@ -434,6 +469,13 @@ impl App {
             ctx.request_repaint();
             return;
         }
+        // P-USER-2: a changed theme choice applies at once.
+        let want = Theme::for_choice(self.settings.theme);
+        if want != self.theme {
+            self.theme = want;
+            self.theme.apply_style(ctx);
+            ctx.style_mut(|s| s.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand));
+        }
         // NAV: focus marks follow the last input — keys turn them on, the mouse moving, clicking or wheeling turns them
         // off. In mouse mode the focused item no longer scrolls itself into view (it would undo the wheel).
         if keys.iter().any(|k| matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::Enter)) {
@@ -494,6 +536,18 @@ impl App {
                 if d.screen == ADMIN_SCREEN && d.tag == ADMIN_TAG {
                     if let Ok(b) = d.payload.downcast::<bool>() {
                         self.admin = *b;
+                    }
+                    None
+                } else if d.screen == ADMIN_SCREEN && d.tag == REMEMBER_SUBS_TAG {
+                    // FIX-4: kept per user id with the settings; only applied if that user is still signed in.
+                    if let Ok(r) = d.payload.downcast::<Option<(String, bool)>>() {
+                        let cur = self.client.as_ref().and_then(|c| c.session.as_ref()).map(|s| s.user_id.clone());
+                        if let Some((uid, on)) = *r {
+                            if Some(&uid) == cur.as_ref() && self.settings.remember_subs.get(&uid) != Some(&on) {
+                                self.settings.remember_subs.insert(uid, on);
+                                let _ = self.settings.save(self.store.as_ref());
+                            }
+                        }
                     }
                     None
                 } else if d.screen == ADMIN_SCREEN && d.tag == VIEWS_TAG {
@@ -641,6 +695,16 @@ impl App {
             } else {
                 egui::Frame::NONE.fill(theme_bg).inner_margin(margin)
             };
+            // FIX-4: with the TV keyboard open the page ends above it (the keyboard is painted over that strip).
+            ui::keyboard::set_open(ctx, self.tv_kb.is_some() && !self.opts.desktop);
+            if let Some(kb) = self.tv_kb.as_ref().filter(|_| !self.opts.desktop) {
+                let h = ui::keyboard::reserved_height(cx.theme, kb.layout().len());
+                egui::TopBottomPanel::bottom("tv-kb-reserve")
+                    .frame(egui::Frame::NONE.fill(theme_bg))
+                    .exact_height(h)
+                    .show_separator_line(false)
+                    .show(ctx, |_| {});
+            }
             egui::CentralPanel::default().frame(frame).show(ctx, |ui| screen.ui(ui, &mut cx));
         }
         self.draw_poster_toast(ctx);
@@ -678,7 +742,7 @@ impl App {
         }
         // FIX-2 #1d: a screen asked for the keyboard on its focused field (e.g. a picked user's password).
         if self.tv_kb.is_none() && ui::keyboard::take_request(ctx) {
-            self.tv_kb = Some(KeyboardState::for_field(&field));
+            self.tv_kb = Some(self.tv_kb_open(top_id, &field));
         }
         if self.tv_kb.is_none() && self.screen_name() == "search" && self.tv_kb_auto != top_id {
             self.tv_kb_auto = top_id;
@@ -688,43 +752,46 @@ impl App {
         for &k in keys {
             let Some(kb) = self.tv_kb.as_mut() else {
                 if k == Key::Enter {
-                    self.tv_kb = Some(KeyboardState::for_field(&field));
+                    self.tv_kb = Some(self.tv_kb_open(top_id, &field));
                 } else {
                     out.push(k);
                 }
                 continue;
             };
-            let backspace = |ctx: &egui::Context, n: usize| {
-                ctx.input_mut(|i| {
-                    for _ in 0..n {
-                        i.events.push(egui::Event::Key {
-                            key: egui::Key::Backspace,
-                            physical_key: None,
-                            pressed: true,
-                            repeat: false,
-                            modifiers: Default::default(),
-                        });
-                    }
-                })
-            };
             match kb.press_at(k, Some(now)) {
-                Effect::None => {}
-                Effect::Type(c) => ctx.input_mut(|i| i.events.push(egui::Event::Text(c.to_string()))),
-                Effect::Delete => {
-                    backspace(ctx, 1);
-                    let mut rest = field.text.clone();
-                    rest.pop();
-                    kb.retitle(&rest);
+                e @ (Effect::Type(_) | Effect::Delete | Effect::Clear) => {
+                    ui::keyboard::apply_text(ctx, kb, &field.text, e);
                 }
-                Effect::Clear => backspace(ctx, field.text.chars().count()),
-                Effect::Close => self.tv_kb = None,
+                Effect::None => {}
+                Effect::Close => self.tv_kb_close(top_id, &field),
                 Effect::Leave(k) => {
-                    self.tv_kb = None;
+                    self.tv_kb_close(top_id, &field);
                     out.push(k);
                 }
             }
         }
         out
+    }
+
+    /// FIX-5 R2/R3: the keyboard for `field` — on the kept key if it was closed on this screen and field, else on "a".
+    fn tv_kb_open(&self, top_id: u64, field: &ui::keyboard::TvField) -> ui::keyboard::KeyboardState {
+        match self
+            .tv_kb_saved
+            .iter()
+            .find(|(id, hint, pw, _)| *id == top_id && *hint == field.hint && *pw == field.password)
+        {
+            Some((.., saved)) => ui::keyboard::KeyboardState::for_field_resume(field, saved),
+            None => ui::keyboard::KeyboardState::for_field(field),
+        }
+    }
+
+    /// FIX-5 R1: close the keyboard, keeping where it was left.
+    fn tv_kb_close(&mut self, top_id: u64, field: &ui::keyboard::TvField) {
+        if let Some(kb) = self.tv_kb.take() {
+            self.tv_kb_saved
+                .retain(|(id, hint, pw, _)| *id == top_id && !(*hint == field.hint && *pw == field.password));
+            self.tv_kb_saved.push((top_id, field.hint.clone(), field.password, kb));
+        }
     }
 
     /// UXP5: draw the on-screen keyboard (a click on a key counts as Enter on it) and remember which field is up.
@@ -736,9 +803,16 @@ impl App {
         if let Some((row, col)) = ui::keyboard::draw(ctx, &self.theme, kb, field) {
             (kb.row, kb.col) = (row, col);
             match kb.activate() {
-                ui::keyboard::Effect::Type(c) => ctx.input_mut(|i| i.events.push(egui::Event::Text(c.to_string()))),
-                ui::keyboard::Effect::Close => self.tv_kb = None,
-                _ => {}
+                ui::keyboard::Effect::Close => {
+                    let field = field.clone();
+                    if let Some(&(top_id, _)) = self.stack.last() {
+                        self.tv_kb_close(top_id, &field);
+                    }
+                    self.tv_kb = None;
+                }
+                e => {
+                    ui::keyboard::apply_text(ctx, kb, &field.text, e);
+                }
             }
             ctx.request_repaint();
         }
@@ -881,6 +955,12 @@ impl App {
                 if c.session.is_some() {
                     let v = c.clone();
                     self.tasks.spawn(ADMIN_SCREEN, VIEWS_TAG, move || v.views().unwrap_or_default());
+                }
+                if let Some(uid) = c.session.as_ref().map(|s| s.user_id.clone()) {
+                    let r = c.clone();
+                    self.tasks.spawn(ADMIN_SCREEN, REMEMBER_SUBS_TAG, move || {
+                        r.remember_subtitle_selections().ok().map(|on| (uid, on))
+                    });
                 }
                 if c.session.is_some() {
                     let p = c.clone();
@@ -1077,6 +1157,73 @@ impl App {
     }
 }
 
+/// Tests of a single screen: a `Cx` over a signed-in app and a `NullPlayer`.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::platform::NullPlayer;
+    use crate::settings::MemStorage;
+
+    /// A signed-in app (user "u") over a `MemStorage` that outlives it: `restart` reads the settings back from
+    /// storage as the next run of the app would.
+    pub(crate) struct World {
+        app: App,
+        mem: Arc<MemStorage>,
+        player: NullPlayer,
+        nav: Vec<Nav>,
+    }
+
+    impl World {
+        /// `remember`: the user's Jellyfin "Remember subtitle selections", as read at sign-in.
+        pub(crate) fn signed_in(remember: bool) -> World {
+            let mem = Arc::new(MemStorage::default());
+            let mut app = App::new(mem.clone(), AppOptions::default());
+            let d = DeviceInfo { name: "t".into(), id: "d".into(), version: "0".into() };
+            let s = crate::api::Session { user_id: "u".into(), user_name: "t".into(), token: "tok".into() };
+            app.client = Some(Client::with_session("http://h:8096", d, s));
+            app.settings.remember_subs.insert("u".into(), remember);
+            let _ = app.settings.save(app.store.as_ref());
+            World { app, mem, player: NullPlayer::default(), nav: vec![] }
+        }
+        pub(crate) fn settings(&self) -> &Settings {
+            &self.app.settings
+        }
+        /// The user's "Remember subtitle selections" as read at a later sign-in.
+        pub(crate) fn set_remember(&mut self, on: bool) {
+            self.app.settings.remember_subs.insert("u".into(), on);
+            let _ = self.app.settings.save(self.app.store.as_ref());
+        }
+        pub(crate) fn restart(&mut self) {
+            self.app.settings = Settings::load(self.mem.as_ref());
+        }
+        pub(crate) fn cx<R>(&mut self, f: impl FnOnce(&mut Cx) -> R) -> R {
+            let a = &mut self.app;
+            let mut cx = Cx {
+                theme: &a.theme,
+                client: &mut a.client,
+                settings: &mut a.settings,
+                store: &a.store,
+                tasks: &a.tasks,
+                images: &mut a.images,
+                player: &mut self.player,
+                opts: &a.opts,
+                admin: a.admin,
+                poster_overrides: &mut a.poster_overrides,
+                poster_changed: &mut a.poster_changed,
+                poster_gen: a.poster_gen,
+                undo: &mut a.undo,
+                keys_down: &a.keys_down,
+                shell: &mut a.shell,
+                now: 0.0,
+                sidebar: false,
+                screen_id: 1,
+                nav: &mut self.nav,
+            };
+            f(&mut cx)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1104,6 +1251,53 @@ mod tests {
         a.apply_nav(vec![Nav::Reset(s(names[0]))], &mut p);
         a.apply_nav(names[1..].iter().map(|n| Nav::Push(s(n))).collect(), &mut p);
         (a, p)
+    }
+
+    /// A one-answer HTTP server: every request gets `body` as JSON.
+    fn stub(body: String) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for conn in l.incoming() {
+                let Ok(mut conn) = conn else { continue };
+                let mut r = BufReader::new(conn.try_clone().unwrap());
+                let mut h = String::new();
+                while r.read_line(&mut h).is_ok_and(|n| n > 0) && h != "\r\n" {
+                    h.clear();
+                }
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn sign_in_reads_remember_subtitle_selections_into_the_saved_settings() {
+        for on in [true, false] {
+            let base = stub(format!(r#"{{"Id":"u","Configuration":{{"RememberSubtitleSelections":{on}}}}}"#));
+            let mem = Arc::new(MemStorage::default());
+            let mut a = App::new(mem.clone(), AppOptions::default());
+            let mut p = NullPlayer::default();
+            a.apply_nav(vec![Nav::Reset(s("home"))], &mut p);
+            let d = DeviceInfo { name: "t".into(), id: "d".into(), version: "0".into() };
+            let session = crate::api::Session { user_id: "u".into(), user_name: "t".into(), token: "tok".into() };
+            a.client = Some(Client::with_session(&base, d, session));
+            let ctx = egui::Context::default();
+            let saved = || Settings::load(mem.as_ref()).remember_subs.get("u").copied();
+            for _ in 0..500 {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| a.frame(ctx, &mut p, &[]));
+                if saved().is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert_eq!(saved(), Some(on), "RememberSubtitleSelections {on} read at sign-in and saved");
+        }
     }
 
     #[test]

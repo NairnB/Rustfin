@@ -3,7 +3,7 @@ use crate::api::{
     ticks_to_secs, with_stream_indexes, Client, Item, ItemKind, MediaSource, PlaybackInfo, PlaybackPlan, StreamKind,
 };
 use crate::platform::{ExternalSub, PlayRequest};
-use crate::settings::{SubMode, SubPrefs};
+use crate::settings::{SubMode, SubPick, SubPrefs};
 use crate::ui::player::PlayOptions;
 
 /// - url = `client.stream_url(item.id, media_source.id)` of the source named by `opts.media_source_id` (P-ITEM-11),
@@ -66,7 +66,7 @@ pub fn build_with_prefs(
     let audio = opts.audio.or(ms.default_audio_stream_index).or_else(|| audio_indexes.first().copied());
     let subtitle = match opts.subtitle {
         Some(s) => s,
-        None => apply_sub_prefs(prefs, ms),
+        None => default_subtitle(prefs, ms, audio, opts.remembered_subtitle.as_ref()),
     };
 
     let title = if item.kind == ItemKind::Episode {
@@ -103,6 +103,19 @@ pub fn build_plan_burnt(
     opts: &PlayOptions,
     prefs: &SubPrefs,
 ) -> Option<(PlayRequest, Option<i32>)> {
+    build_plan_burnt_on(true, client, item, plan, opts, prefs)
+}
+
+/// FIX-3 T1: `build_plan_burnt` for a backend that does (`renders_subtitles`) or does not draw subtitles itself.
+/// One that does not has every chosen subtitle, external ones too, burnt in by the server.
+pub fn build_plan_burnt_on(
+    renders_subtitles: bool,
+    client: &Client,
+    item: &Item,
+    plan: &PlaybackPlan,
+    opts: &PlayOptions,
+    prefs: &SubPrefs,
+) -> Option<(PlayRequest, Option<i32>)> {
     let mut req = build_with_prefs(client, item, &plan.info, opts, prefs)?;
     let mut burnt = None;
     if let Some(url) = &plan.transcoding_url {
@@ -110,14 +123,16 @@ pub fn build_plan_burnt(
         // R-SUBS-6: only a subtitle stream the chosen source really has is burnt; any other choice is sent as none.
         let source = pick_source(&plan.info, opts.media_source_id.as_deref());
         burnt = req.subtitle.filter(|s| {
-            !req.external_subs.iter().any(|e| e.index == *s)
+            (!renders_subtitles || !req.external_subs.iter().any(|e| e.index == *s))
                 && source.is_some_and(|ms| {
-                    ms.media_streams.iter().any(|m| m.index == *s && m.kind == StreamKind::Subtitle && !m.is_external)
+                    ms.media_streams.iter().any(|m| {
+                        m.index == *s && m.kind == StreamKind::Subtitle && (!m.is_external || !renders_subtitles)
+                    })
                 })
         });
         req.url = with_stream_indexes(url, req.audio, Some(burnt.unwrap_or(-1)), burnt.is_some());
         req.audio_indexes = req.audio.into_iter().collect();
-        req.subtitle = req.subtitle.filter(|s| req.external_subs.iter().any(|e| e.index == *s));
+        req.subtitle = req.subtitle.filter(|s| renders_subtitles && req.external_subs.iter().any(|e| e.index == *s));
         req.subtitle_indexes.clear();
     }
     Some((req, burnt))
@@ -126,6 +141,81 @@ pub fn build_plan_burnt(
 /// G8 / P-ITEM-11: the media source with id `want`, else the first one.
 pub fn pick_source<'a>(info: &'a PlaybackInfo, want: Option<&str>) -> Option<&'a MediaSource> {
     want.and_then(|id| info.media_sources.iter().find(|m| m.id == id)).or_else(|| info.media_sources.first())
+}
+
+/// FIX-4 (24 Oct): the subtitle a viewer gets when they have not picked one — the film page, the player, Home
+/// Resume, Poster Flow and next/prev all ask this, with the chosen audio track (None = the source's default audio) and
+/// the viewer's own earlier pick (`remembered`, kept by the app while their RememberSubtitleSelections is on).
+/// Mode `Default` ignores the file's and the server's default / forced flags and `DefaultSubtitleStreamIndex`: a
+/// remembered Off, or a remembered pick that still finds its subtitle stream (same index and language, else — another
+/// episode — the same language and forced flag), wins; else English (or unknown) audio → Off; any other audio →
+/// the English forced subtitle if the film has one, else the first full English one, else the viewer's preferred
+/// language, else Off. The other modes follow `apply_sub_prefs`.
+pub fn default_subtitle(
+    prefs: &SubPrefs,
+    ms: &MediaSource,
+    audio: Option<i32>,
+    remembered: Option<&SubPick>,
+) -> Option<i32> {
+    if prefs.mode != SubMode::Default {
+        return apply_sub_prefs(prefs, ms);
+    }
+    let subs = || ms.media_streams.iter().filter(|s| s.kind == StreamKind::Subtitle);
+    if let Some(p) = remembered {
+        if p.index < 0 {
+            return None;
+        }
+        let lang = |s: &crate::api::MediaStream| {
+            s.language.as_deref().map(str::to_ascii_lowercase) == p.language.as_deref().map(str::to_ascii_lowercase)
+        };
+        let found = subs()
+            .find(|s| s.index == p.index && lang(s))
+            .or_else(|| subs().find(|s| p.language.is_some() && lang(s) && s.is_forced == p.forced));
+        if let Some(s) = found {
+            return Some(s.index);
+        }
+    }
+    let audio_streams = || ms.media_streams.iter().filter(|s| s.kind == StreamKind::Audio);
+    let chosen = audio
+        .or(ms.default_audio_stream_index)
+        .and_then(|i| audio_streams().find(|s| s.index == i))
+        .or_else(|| audio_streams().next());
+    if chosen.is_none_or(|a| is_english(a.language.as_deref())) {
+        return None;
+    }
+    let english = || subs().filter(|s| is_english(s.language.as_deref()) && s.language.is_some());
+    english()
+        .find(|s| s.is_forced)
+        .or_else(|| english().next())
+        .or_else(|| {
+            let want = prefs.language.trim();
+            subs().find(|s| !want.is_empty() && s.language.as_deref().is_some_and(|l| l.eq_ignore_ascii_case(want)))
+        })
+        .map(|s| s.index)
+}
+
+/// FIX-4 R5: the subtitle choice (`None` = not chosen yet, `Some(None)` = Off) after the audio track becomes `audio`:
+/// a subtitle the viewer picked stays, otherwise the default for that audio is re-applied. Page and player share it.
+pub fn subtitle_after_audio_pick(
+    prefs: &SubPrefs,
+    ms: &MediaSource,
+    audio: i32,
+    remembered: Option<&SubPick>,
+    viewer_picked: bool,
+    current: Option<Option<i32>>,
+) -> Option<Option<i32>> {
+    if viewer_picked {
+        return current;
+    }
+    Some(default_subtitle(prefs, ms, Some(audio), remembered))
+}
+
+/// English, or no language to go on (unset, "und", "unk") — both count as English for the subtitle default.
+fn is_english(lang: Option<&str>) -> bool {
+    let l = lang.unwrap_or("").trim().to_ascii_lowercase();
+    matches!(l.as_str(), "" | "eng" | "en" | "english" | "und" | "unk" | "undetermined")
+        || l.starts_with("en-")
+        || l.starts_with("en_")
 }
 
 /// P-USER-5: which subtitle stream to use when the item page did not choose one. `Always` → the first sub in
@@ -160,12 +250,25 @@ pub fn request_indexes(
     audio: Option<i32>,
     subtitle: Option<Option<i32>>,
 ) -> (Option<i32>, Option<i32>) {
+    request_indexes_on(true, info, source_id, audio, subtitle)
+}
+
+/// FIX-3 T1: `request_indexes` for a backend that cannot draw subtitles: an external subtitle is named too, as the
+/// server has to burn it in.
+pub fn request_indexes_on(
+    renders_subtitles: bool,
+    info: Option<&PlaybackInfo>,
+    source_id: Option<&str>,
+    audio: Option<i32>,
+    subtitle: Option<Option<i32>>,
+) -> (Option<i32>, Option<i32>) {
     let sub = subtitle.map(|s| match s {
         None => -1,
         Some(i) => {
-            let external = info
-                .and_then(|inf| pick_source(inf, source_id))
-                .is_some_and(|ms| ms.media_streams.iter().any(|m| m.index == i && m.is_external));
+            let external = renders_subtitles
+                && info
+                    .and_then(|inf| pick_source(inf, source_id))
+                    .is_some_and(|ms| ms.media_streams.iter().any(|m| m.index == i && m.is_external));
             if external {
                 -1
             } else {
@@ -174,4 +277,10 @@ pub fn request_indexes(
         }
     });
     (audio, sub)
+}
+
+/// FIX-3 T1 / T2: a backend that cannot draw subtitles must transcode whenever one is chosen; with none (Off) it
+/// plays direct.
+pub fn must_transcode(renders_subtitles: bool, subtitle: Option<i32>) -> bool {
+    !renders_subtitles && subtitle.is_some_and(|s| s >= 0)
 }

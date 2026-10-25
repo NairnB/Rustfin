@@ -376,6 +376,25 @@ pub fn screen(view: Item) -> Box<dyn Screen> {
     })
 }
 
+/// What an Up key does on a screen opened from the TV bar (FIX-4 F4-TVUP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpKey {
+    /// Focus goes to this row above.
+    Move(Focus),
+    /// Nothing above: on TV the screen pops and Home shows with the bar focused on this screen's tab.
+    Pop,
+}
+
+/// U1/U2: `next` is where nav put focus for Up from `from`. Up never moves to a row below; on TV, with no row above,
+/// the screen pops (tvOS "Up shows the tab bar"). On desk it stays as it was (U4).
+pub fn up_key(from: Focus, next: Focus, tv: bool) -> UpKey {
+    let above = next.group < from.group || (next.group == from.group && next.index < from.index);
+    match (above, tv) {
+        (true, _) | (false, false) => UpKey::Move(next),
+        (false, true) => UpKey::Pop,
+    }
+}
+
 impl Library {
     /// `nav::move_focus` through the control row: the row is one group (`ctrl`) unless a menu is open.
     fn nav_move(&self, key: Key) -> Focus {
@@ -1689,7 +1708,20 @@ impl Screen for Library {
                 }
                 true
             }
-            Key::Up | Key::Down => {
+            Key::Up => {
+                let next = self.nav_move(key);
+                // Sort, view, Play all, Shuffle and Poster Flow are one screen row, whatever their group numbers.
+                let rank = |f: Focus| match f.group {
+                    G_TOGGLE | G_PLAY => Focus { group: G_DROP, index: 0 },
+                    _ => f,
+                };
+                match up_key(rank(self.focus), rank(next), !cx.sidebar) {
+                    UpKey::Move(_) => self.focus = next,
+                    UpKey::Pop => cx.pop(),
+                }
+                true
+            }
+            Key::Down => {
                 self.focus = self.nav_move(key);
                 true
             }

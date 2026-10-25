@@ -87,6 +87,7 @@ pub fn icon(ui: &Ui, t: &Theme, icon: Icon, c: egui::Pos2, size: f32, ink: Color
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pill_impl(
     ui: &mut Ui,
     t: &Theme,
@@ -95,6 +96,7 @@ fn pill_impl(
     primary: bool,
     size: Option<egui::Vec2>,
     lead: Option<Icon>,
+    tv_hero: bool,
 ) -> Response {
     let font = t.font_w(t.body_size, Weight::SemiBold);
     let g = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER));
@@ -110,7 +112,11 @@ fn pill_impl(
     } else {
         t.glass
     };
-    let ink = plate(ui, t, rect, size.y / 2.0, rest, a, t.pill_focus_scale);
+    let scale = if tv_hero { t.focus_scale } else { t.pill_focus_scale };
+    let ink = plate(ui, t, rect, size.y / 2.0, rest, a, scale);
+    if tv_hero {
+        focus_ring(ui, t, lift(rect, scale, a), size.y / 2.0, a);
+    }
     let ink = if primary { t.focus_ink } else { ink };
     let content_w = g.size().x + icon_w;
     let x0 = rect.center().x - content_w / 2.0;
@@ -123,31 +129,25 @@ fn pill_impl(
 
 /// A pill button: white "primary" (Play/OK) or glass secondary; focused = white plate, lifted.
 pub fn pill_button(ui: &mut Ui, t: &Theme, label: &str, focused: bool, primary: bool) -> Response {
-    pill_impl(ui, t, label, focused, primary, None, None)
+    pill_impl(ui, t, label, focused, primary, None, None, false)
 }
 
 /// A pill button of a fixed width (dialog rows, dropdowns).
 pub fn pill_button_width(ui: &mut Ui, t: &Theme, label: &str, focused: bool, primary: bool, width: f32) -> Response {
-    pill_impl(ui, t, label, focused, primary, Some(vec2(width, t.button_h)), None)
+    pill_impl(ui, t, label, focused, primary, Some(vec2(width, t.button_h)), None, false)
 }
 
-/// How the hero Play pill is drawn (FIX-3 H1/H4): `white` = the plate is white in this state; `rest_white` =
-/// it rests white even unfocused (desktop's primary pill); `scale` = the lift the plate reaches.
+/// How the hero Play pill is drawn (FIX-3 H1/H4): `rest_white` = it rests white even unfocused (desktop's
+/// primary pill); on TV it is glass until focused.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PillStyle {
-    pub white: bool,
     pub rest_white: bool,
-    pub scale: f32,
 }
 
 /// On TV only the focused Play is white (unfocused: translucent plate like the round buttons); desktop keeps
 /// the white primary pill.
-pub fn play_pill_style(t: &Theme, tv: bool, focused: bool) -> PillStyle {
-    if tv {
-        PillStyle { white: focused, rest_white: false, scale: if focused { t.pill_focus_scale } else { 1.0 } }
-    } else {
-        PillStyle { white: true, rest_white: true, scale: t.pill_focus_scale }
-    }
+pub fn play_pill_style(tv: bool) -> PillStyle {
+    PillStyle { rest_white: !tv }
 }
 
 /// The big hero pill: white, a play triangle and the label ("Play", "Resume").
@@ -160,16 +160,46 @@ pub fn play_pill_for(ui: &mut Ui, t: &Theme, label: &str, focused: bool, tv: boo
     let font = t.font_w(t.body_size, Weight::SemiBold);
     let w = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font, t.text)).size().x;
     let size = vec2(w + t.body_size + t.gap / 4.0 + 2.0 * t.pill_pad, t.pill_h);
-    let style = play_pill_style(t, tv, focused);
-    pill_impl(ui, t, label, focused, style.rest_white, Some(size), Some(Icon::Play))
+    let style = play_pill_style(tv);
+    pill_impl(ui, t, label, focused, style.rest_white, Some(size), Some(Icon::Play), false)
 }
 
-/// A round glass icon button (+ add, tick watched, more); focused = white plate, lifted.
+/// The Home hero's Play/Resume pill: `play_pill_for`, and on `tv` the focused pill also wears the card focus
+/// ring and lifts by the card scale (FIX-5 H1/H2). Other screens keep `play_pill_for`.
+pub fn hero_play_pill(ui: &mut Ui, t: &Theme, label: &str, focused: bool, tv: bool) -> Response {
+    let font = t.font_w(t.body_size, Weight::SemiBold);
+    let w = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font, t.text)).size().x;
+    let size = vec2(w + t.body_size + t.gap / 4.0 + 2.0 * t.pill_pad, t.pill_h);
+    let style = play_pill_style(tv);
+    pill_impl(ui, t, label, focused, style.rest_white, Some(size), Some(Icon::Play), tv)
+}
+
+/// Extra room the TV hero row needs between a lifted, ringed Play pill of width `play_w` and the lifted "•••".
+pub fn hero_lift_room(t: &Theme, play_w: f32) -> f32 {
+    let grow = (t.focus_scale - 1.0) / 2.0;
+    (play_w + t.round_button) * grow + 2.0 * t.focus_stroke
+}
+
+/// The card focus ring (same stroke and colour as `parts::card_ring`) just outside `r`, with the pill's `radius`.
+fn focus_ring(ui: &Ui, t: &Theme, r: Rect, radius: f32, a: f32) {
+    if a > 0.01 {
+        let stroke = Stroke::new(t.focus_stroke, t.focus_color.gamma_multiply(a));
+        ui.painter().rect_stroke(r, radius, stroke, egui::StrokeKind::Outside);
+    }
+}
+
+/// A round glass icon button (+ add, tick watched, more); focused = white plate, lifted. On TV the focused
+/// button also wears the card focus ring and lifts by the card scale (FIX-5 H1/H2).
 pub fn round_button(ui: &mut Ui, t: &Theme, i: Icon, focused: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(t.round_button, t.round_button), Sense::click());
     let a = focus_amount(ui, t, resp.id, focused);
     let rest = if resp.hovered() { t.glass_hi } else { t.glass };
-    let ink = plate(ui, t, rect, t.round_button / 2.0, rest, a, t.pill_focus_scale);
+    let tv = super::parts::is_tv(ui.ctx());
+    let scale = if tv { t.focus_scale } else { t.pill_focus_scale };
+    let ink = plate(ui, t, rect, t.round_button / 2.0, rest, a, scale);
+    if tv {
+        focus_ring(ui, t, lift(rect, scale, a), t.round_button / 2.0, a);
+    }
     icon(ui, t, i, rect.center(), t.round_button * 0.36, ink);
     resp
 }
@@ -254,6 +284,48 @@ pub fn dropdown_key(state: DropdownState, key: Key, len: usize) -> (DropdownStat
     }
 }
 
+/// D2: the scroll offset a long list opens at: the selected row is the last one fully in view (clear of the bottom
+/// cue, with half a row of the next one peeking), with as many rows above it as fit. A list that fits (or a selection
+/// near the top) opens at 0.
+pub fn dropdown_open_offset(selected: usize, len: usize, item_h: f32, view_h: f32) -> f32 {
+    let content = len as f32 * item_h;
+    let max = (content - view_h).max(0.0);
+    (((selected.min(len.saturating_sub(1)) + 1) as f32 * item_h) + item_h / 2.0 - view_h).clamp(0.0, max)
+}
+
+/// D1: whether rows are hidden (above, below) a list scrolled to `offset`.
+pub fn dropdown_cues(offset: f32, content_h: f32, view_h: f32) -> (bool, bool) {
+    (offset > 0.5, offset + view_h < content_h - 0.5)
+}
+
+/// A fade into the menu fill, half a row deep, along one edge of `rect` with a chevron at its right end, clear of the
+/// centred row text (`up` = the top edge).
+pub fn dropdown_cue(ui: &Ui, t: &Theme, rect: Rect, up: bool) {
+    let h = t.menu_item_h / 2.0;
+    let edge = if up {
+        Rect::from_min_size(rect.min, vec2(rect.width(), h))
+    } else {
+        Rect::from_min_size(pos2(rect.left(), rect.bottom() - h), vec2(rect.width(), h))
+    };
+    let solid = t.menu_fill.to_opaque();
+    let clear = solid.gamma_multiply(0.0);
+    let (top, bottom) = if up { (solid, clear) } else { (clear, solid) };
+    let mut mesh = egui::Mesh::default();
+    let v = |p, color| egui::epaint::Vertex { pos: p, uv: egui::epaint::WHITE_UV, color };
+    mesh.vertices.push(v(edge.left_top(), top));
+    mesh.vertices.push(v(edge.right_top(), top));
+    mesh.vertices.push(v(edge.right_bottom(), bottom));
+    mesh.vertices.push(v(edge.left_bottom(), bottom));
+    mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+    ui.painter().add(egui::Shape::mesh(mesh));
+    let s = t.small_size * 0.8;
+    let h = s / 2.0;
+    let c = pos2(edge.right() - t.button_pad, edge.center().y);
+    let dy = if up { h * 0.5 } else { -h * 0.5 };
+    let pts = vec![pos2(c.x - h, c.y + dy), pos2(c.x, c.y - dy), pos2(c.x + h, c.y + dy)];
+    ui.painter().add(egui::Shape::line(pts, Stroke::new(t.icon_stroke, t.muted)));
+}
+
 pub struct DropdownOut {
     pub button_x: f32,
     pub item_xs: Vec<f32>,
@@ -320,6 +392,9 @@ fn dropdown_impl(
         state.open = !state.open;
     }
     let mut menu_rects = vec![r.rect];
+    if !state.open {
+        ui.data_mut(|d| d.insert_temp(r.id.with("w0-dropdown-was-open"), false));
+    }
     if state.open {
         // UX R10: the menu is a popover anchored under its button (right-aligned for rows), drawn over the page —
         // the page does not move when it opens.
@@ -343,25 +418,48 @@ fn dropdown_impl(
                     .inner_margin(egui::Margin::same(inset as i8))
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        egui::ScrollArea::vertical()
+                        // D2: on the frame it opens, start with the selected row (and rows above it) in view.
+                        let was_open_id = r.id.with("w0-dropdown-was-open");
+                        let was_open = ui.data(|d| d.get_temp::<bool>(was_open_id)).unwrap_or(false);
+                        ui.data_mut(|d| d.insert_temp(was_open_id, true));
+                        let mut area = egui::ScrollArea::vertical()
                             .id_salt("w0-dropdown-menu")
                             .max_height(t.menu_max_h)
-                            .auto_shrink([true, true])
-                            .show(ui, |ui| {
-                                for (i, opt) in options.iter().enumerate() {
-                                    let item_focused = focused && state.highlighted == i;
-                                    let rr = menu_item(ui, t, opt, item_focused, t.dropdown_w - 2.0 * inset);
-                                    out.item_xs.push(rr.rect.center().x);
-                                    menu_rects.push(rr.rect);
-                                    if rr.hovered() {
-                                        out.item_hovered = Some(i);
-                                        state.highlighted = i;
-                                    }
-                                    if rr.clicked() {
-                                        out.item_clicked = Some(i);
-                                    }
+                            .auto_shrink([true, true]);
+                        if !was_open {
+                            let view_h = (options.len() as f32 * t.menu_item_h).min(t.menu_max_h);
+                            area = area.vertical_scroll_offset(dropdown_open_offset(
+                                state.highlighted,
+                                options.len(),
+                                t.menu_item_h,
+                                view_h,
+                            ));
+                        }
+                        let scrolled = area.show(ui, |ui| {
+                            for (i, opt) in options.iter().enumerate() {
+                                let item_focused = focused && state.highlighted == i;
+                                let rr = menu_item(ui, t, opt, item_focused, t.dropdown_w - 2.0 * inset);
+                                out.item_xs.push(rr.rect.center().x);
+                                menu_rects.push(rr.rect);
+                                if rr.hovered() {
+                                    out.item_hovered = Some(i);
+                                    state.highlighted = i;
                                 }
-                            });
+                                if rr.clicked() {
+                                    out.item_clicked = Some(i);
+                                }
+                            }
+                        });
+                        // D1: a fade and a chevron on each edge that has rows hidden past it.
+                        let view = scrolled.inner_rect;
+                        let (above, below) =
+                            dropdown_cues(scrolled.state.offset.y, scrolled.content_size.y, view.height());
+                        if above {
+                            dropdown_cue(ui, t, view, true);
+                        }
+                        if below {
+                            dropdown_cue(ui, t, view, false);
+                        }
                     });
             });
         if out.item_clicked.is_none() && ui.input(|i| i.pointer.any_click()) {

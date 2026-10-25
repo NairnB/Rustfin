@@ -1,0 +1,51 @@
+# args: --tv
+# FIX-3 tv-subs: the Audio & Subtitles sheet on the TV layout still lists and picks subtitles (the desktop player draws them; on the real TV the core asks the server to burn the pick in — that part is covered by core/tests/fix3_tv_subs.rs and the pit crew's .tpk check).
+wait-screen connect
+wait 2500
+idle
+key down 10
+key up
+type http://jf-test:8096
+key enter
+wait-screen signin
+idle
+type viewer
+key down
+type view-pass-1
+key enter
+wait-screen home
+idle
+
+key search
+wait-screen search
+idle
+type Amber
+wait 600
+idle
+key down
+key enter
+wait-screen movie
+idle
+key enter
+wait-screen player
+wait 3000
+key up
+key down
+key right 2
+key enter
+wait 400
+shot fix3-tv-subs-sheet
+key up 10
+key left
+wait 400
+shot fix1-sheet-audio
+key right
+# Off, German, English, then Subtitle options…
+key down 4
+key enter
+wait 400
+shot fix1-sheet-options
+key back
+wait 400
+shot fix1-sheet-back
+quit
