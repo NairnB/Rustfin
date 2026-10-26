@@ -39,6 +39,11 @@ pub trait Screen {
     fn poster_tags(&self) -> Vec<(String, Option<String>)> {
         vec![]
     }
+    /// The app went to the background. Player screens pause their player (position kept) and report progress
+    /// paused; on resume they stay paused until the viewer presses Play.
+    fn on_pause(&mut self, cx: &mut Cx) {
+        let _ = cx;
+    }
     /// Called when popped or the app quits (player: report stopped).
     fn on_leave(&mut self, cx: &mut Cx) {
         let _ = cx;
@@ -1144,6 +1149,20 @@ impl App {
         self.with_top(player, |s, cx| s.on_resume(cx));
     }
 
+    /// The app went to the background (the TV pauses it, and the shell stops drawing frames, so nothing else would
+    /// silence the audio): the playing screen pauses `player`, position kept, progress reported paused. Resume does
+    /// nothing — the viewer presses Play.
+    pub fn on_pause(&mut self, player: &mut dyn Player) {
+        self.with_top(player, |s, cx| s.on_pause(cx));
+    }
+
+    /// The app is ending (Tizen OnTerminate, Exit): every screen leaves (a player reports stopped, once, which also
+    /// closes its transcode session) and the player is stopped even when no player screen is up.
+    pub fn on_terminate(&mut self, player: &mut dyn Player) {
+        self.shutdown(player);
+        player.stop();
+    }
+
     /// Window closing: let every screen clean up (the player reports stopped).
     pub fn shutdown(&mut self, player: &mut dyn Player) {
         while !self.stack.is_empty() {
@@ -1227,7 +1246,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::NullPlayer;
+    use crate::platform::{NullPlayer, PlayerState};
     use crate::settings::MemStorage;
 
     struct Fake(&'static str, bool);
@@ -1242,6 +1261,34 @@ mod tests {
     }
     fn s(name: &'static str) -> Box<dyn Screen> {
         Box::new(Fake(name, false))
+    }
+
+    #[test]
+    fn on_pause_pauses_a_playing_stock_player_and_on_terminate_stops_it() {
+        let mut a = App::new(Arc::new(MemStorage::default()), AppOptions::default());
+        let mut p = NullPlayer::default();
+        a.open_screen(crate::ui::player::screen(
+            crate::api::Item { id: "f1".into(), name: "A Film".into(), ..Default::default() },
+            Default::default(),
+        ));
+        p.state = PlayerState::Playing;
+        p.pos = 321.0;
+        a.on_pause(&mut p);
+        assert_eq!(p.state, PlayerState::Paused, "background pauses the player");
+        assert_eq!(p.pos, 321.0, "the position is kept");
+        a.on_pause(&mut p);
+        assert_eq!(p.state, PlayerState::Paused, "a second pause changes nothing");
+        a.on_terminate(&mut p);
+        assert_eq!(p.state, PlayerState::Idle, "terminate stops it");
+        assert!(a.stack.is_empty(), "every screen left");
+    }
+
+    #[test]
+    fn on_terminate_stops_a_player_with_no_player_screen() {
+        let mut a = App::new(Arc::new(MemStorage::default()), AppOptions::default());
+        let mut p = NullPlayer { state: PlayerState::Playing, ..Default::default() };
+        a.on_terminate(&mut p);
+        assert_eq!(p.state, PlayerState::Idle);
     }
 
     /// An app whose stack is `names` (bottom first).

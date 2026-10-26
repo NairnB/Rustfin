@@ -3030,6 +3030,13 @@ impl Screen for PlayerScreen {
         }
     }
 
+    fn on_pause(&mut self, cx: &mut Cx) {
+        if matches!(cx.player.state(), PlayerState::Playing) {
+            cx.player.set_paused(true);
+            self.report_now(cx);
+        }
+    }
+
     fn on_leave(&mut self, cx: &mut Cx) {
         self.leave_fullscreen(cx);
         if !self.stop_sent {
